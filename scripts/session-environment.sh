@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+dbus-update-activation-environment \
+    "DISPLAY=${DISPLAY:-}" \
+    "WAYLAND_DISPLAY=$WAYLAND_DISPLAY" \
+    "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" \
+    "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" \
+    "HYPRLAND_INSTANCE_SIGNATURE=$HYPRLAND_INSTANCE_SIGNATURE" \
+    "XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-Hyprland}" \
+    "XDG_SESSION_TYPE=wayland" \
+    "PATH=$PATH" \
+    "PULSE_SERVER=${PULSE_SERVER:-}" \
+    "PULSE_CLIENTCONFIG=${PULSE_CLIENTCONFIG:-}"
+printf '%s\n' "${DISPLAY:-}" > "$1.pending"
+mv -f -- "$1.pending" "$1"

@@ -1,7 +1,9 @@
 use std::{
     fs::{self, File, OpenOptions},
+    io::{Read, Write},
     os::unix::{
         fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+        net::UnixStream,
         process::CommandExt,
     },
     path::{Path, PathBuf},
@@ -107,7 +109,10 @@ impl Session {
         let bus_path = session.runtime.join("bus");
         let mut bus = Command::new("dbus-daemon");
         bus.args(["--session", "--nofork", "--nopidfile"])
-            .arg(format!("--address=unix:path={}", bus_path.display()));
+            .arg(format!("--address=unix:path={}", bus_path.display()))
+            .env("XDG_RUNTIME_DIR", &session.runtime)
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_DISPLAY");
         session.spawn(bus, "dbus.log")?;
         session.wait_for(Duration::from_secs(5), || bus_path.exists())?;
         if config.audio {
@@ -187,6 +192,7 @@ impl Session {
             .filter_map(Result::ok)
             .find(|entry| entry.path().join(".socket.sock").exists())
             .map(|entry| entry.file_name().to_string_lossy().into_owned());
+        let display = session.prepare_application_environment()?;
         if let Some(path) = &omarchy {
             let mut shell = Command::new("quickshell");
             shell
@@ -206,7 +212,7 @@ impl Session {
                     "DBUS_SESSION_BUS_ADDRESS",
                     format!("unix:path={}", bus_path.display()),
                 )
-                .env_remove("DISPLAY")
+                .env("DISPLAY", &display)
                 .env("XDG_CURRENT_DESKTOP", "Hyprland")
                 .env("QT_QPA_PLATFORM", "wayland")
                 .env("QS_DISABLE_FILE_WATCHER", "1")
@@ -220,6 +226,40 @@ impl Session {
         }
         tracing::info!(socket = %session.socket.display(), "native desktop session ready");
         Ok(session)
+    }
+
+    fn prepare_application_environment(&mut self) -> Result<String> {
+        let script = self.runtime.join("session-environment");
+        fs::write(&script, include_str!("../scripts/session-environment.sh"))?;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700))?;
+        let initialization = tempfile::Builder::new()
+            .prefix("application-environment.")
+            .tempdir_in(&self.runtime)?;
+        let output = initialization.path().join("display");
+        let signature = self
+            .signature
+            .as_ref()
+            .context("missing desktop signature")?;
+        let mut socket = UnixStream::connect(
+            self.runtime
+                .join("hypr")
+                .join(signature)
+                .join(".socket.sock"),
+        )?;
+        socket.set_read_timeout(Some(Duration::from_secs(3)))?;
+        socket.set_write_timeout(Some(Duration::from_secs(3)))?;
+        let quote = |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
+        socket
+            .write_all(format!("dispatch exec {} {}", quote(&script), quote(&output)).as_bytes())?;
+        let mut response = [0_u8; 256];
+        let length = socket.read(&mut response)?;
+        ensure!(
+            response[..length].starts_with(b"ok"),
+            "compositor rejected session environment initialization"
+        );
+        self.wait_for(Duration::from_secs(5), || output.is_file())?;
+        let display = fs::read_to_string(output)?;
+        Ok(display.trim().to_owned())
     }
 
     fn prepare_application_launchers(&self) -> Result<()> {
@@ -541,6 +581,52 @@ mod tests {
                     .success()
             );
         }
+    }
+
+    #[test]
+    fn application_activation_environment_uses_private_bus_and_discovered_display() {
+        let directory = tempfile::tempdir().unwrap();
+        let stub = directory.path().join("dbus-update-activation-environment");
+        fs::write(
+            &stub,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$TEST_ARGUMENTS\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o700)).unwrap();
+        let arguments = directory.path().join("arguments");
+        let display = directory.path().join("display with ' quotes");
+        let script = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/scripts/session-environment.sh"
+        );
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([script])
+            .arg(&display)
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", directory.path().display()),
+            )
+            .env("TEST_ARGUMENTS", &arguments)
+            .env("DISPLAY", ":93")
+            .env("WAYLAND_DISPLAY", "wayland-7")
+            .env("XDG_RUNTIME_DIR", directory.path())
+            .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/private/test/bus")
+            .env("HYPRLAND_INSTANCE_SIGNATURE", "private-desktop");
+        assert!(command.status().unwrap().success());
+        assert_eq!(fs::read_to_string(&display).unwrap(), ":93\n");
+        let updated = fs::read_to_string(&arguments).unwrap();
+        assert!(updated.contains("DISPLAY=:93\n"));
+        assert!(updated.contains("WAYLAND_DISPLAY=wayland-7\n"));
+        assert!(updated.contains("DBUS_SESSION_BUS_ADDRESS=unix:path=/private/test/bus\n"));
+        assert!(!updated.contains("--systemd"));
+        command.env_remove("DISPLAY");
+        assert!(command.status().unwrap().success());
+        assert_eq!(fs::read_to_string(&display).unwrap(), "\n");
+        fs::write(&stub, "#!/bin/sh\nexit 1\n").unwrap();
+        fs::remove_file(&display).unwrap();
+        assert!(!command.status().unwrap().success());
+        assert!(!display.exists());
     }
 
     #[test]

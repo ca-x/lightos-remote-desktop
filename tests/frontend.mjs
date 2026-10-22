@@ -7,7 +7,7 @@ const source = readFileSync(new URL("../web/app.js", import.meta.url), "utf8");
 const html = readFileSync(new URL("../web/index.html", import.meta.url), "utf8");
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-function harness(pathname = "/") {
+function harness(pathname = "/", storage = new Map()) {
   class Target {
     handlers = new Map();
     disabled = false;
@@ -27,11 +27,12 @@ function harness(pathname = "/") {
       options?.signal?.cleanups.push(() => this.handlers.get(name).delete(callback));
     }
     fire(name, properties = {}) {
-      const event = { target: this, preventDefault() { this.defaultPrevented = true; }, ...properties };
+      const event = { target: this, type: name, preventDefault() { this.defaultPrevented = true; }, ...properties };
       for (const callback of this.handlers.get(name) || []) callback(event);
       return event;
     }
     setAttribute(name, value) { this.attributes[name] = value; }
+    appendChild(child) { (this.children ??= []).push(child); }
     getBoundingClientRect() { return { left: 10, top: 20, width: 200, height: 100 }; }
     focus() { document.activeElement = this; }
     setPointerCapture(id) { this.captures.add(id); }
@@ -46,10 +47,13 @@ function harness(pathname = "/") {
   const nodes = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map((match) => [match[1], new Target()]));
   const document = new Target();
   document.hidden = false;
+  document.focused = true;
+  document.hasFocus = () => document.focused;
   document.getElementById = (id) => {
     assert.ok(nodes[id], `Missing element ${id}`);
     return nodes[id];
   };
+  document.createElement = () => new Target();
   const draws = [];
   nodes.viewport.classList.toggle("fit", true);
   nodes.viewport.requestFullscreen = async () => { document.fullscreenElement = nodes.viewport; document.fire("fullscreenchange"); };
@@ -58,6 +62,8 @@ function harness(pathname = "/") {
   nodes.width.value = "1280";
   nodes.height.value = "720";
   const window = new Target();
+  window.innerWidth = 1280;
+  window.innerHeight = 720;
   const sockets = [];
   class WebSocket {
     static OPEN = 1;
@@ -80,6 +86,7 @@ function harness(pathname = "/") {
   let timerId = 0;
   const decodes = [];
   const contexts = [];
+  let now = 0;
   class AudioContext {
     state = "running";
     currentTime = 1;
@@ -106,7 +113,8 @@ function harness(pathname = "/") {
   const navigator = { clipboard: { readText: async () => "local text" } };
   const context = vm.createContext({ document, window, navigator, AbortController, WebSocket,
     URL, location: { href: `https://desktop.test${pathname}`, pathname, protocol: "https:" },
-    ArrayBuffer, Uint8Array, DataView, TextEncoder, Blob,
+    ArrayBuffer, Uint8Array, DataView, TextEncoder, Blob, performance: { now: () => now },
+    localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     setTimeout(callback, delay) { timers.set(++timerId, { callback, delay }); return timerId; },
     clearTimeout(id) { timers.delete(id); },
     requestAnimationFrame(callback) { animationFrames.set(++timerId, callback); return timerId; },
@@ -135,8 +143,208 @@ function harness(pathname = "/") {
     animationFrames.clear();
     for (const callback of callbacks) callback();
   };
-  return { nodes, document, window, sockets, ready, fireKey, run, timers, tick, decodes, draws, contexts, navigator, AudioContext, paint, animationFrames };
+  return { nodes, document, window, sockets, ready, fireKey, run, timers, tick, decodes, draws, contexts, navigator, AudioContext, paint, animationFrames, advance: (elapsed) => { now += elapsed; } };
 }
+
+test("toolbar drags to all four edges, suppresses drag click and restores persisted position", () => {
+  const storage = new Map();
+  const app = harness("/", storage);
+  const handle = app.nodes["tools-toggle"];
+  for (const [edge, clientX, clientY] of [["left", 0, 350], ["right", 1270, 350], ["top", 600, 0], ["bottom", 600, 710]]) {
+    handle.fire("pointerdown", { button: 0, pointerId: 1, clientX: 20, clientY: 30 });
+    handle.fire("pointermove", { pointerId: 1, clientX, clientY });
+    handle.fire("pointerup", { pointerId: 1, clientX, clientY });
+    handle.fire("click", { detail: 1 });
+    assert.equal(app.nodes["tool-panel"].hidden, true);
+    assert.equal(handle.hasPointerCapture(1), false);
+    assert.equal(JSON.parse(storage.get("lightos-desktop-toolbar-position")).edge, edge);
+  }
+  const restored = harness("/", storage);
+  assert.equal(restored.nodes.tools.style.values["--tool-y"], "660px");
+  handle.fire("keydown", { altKey: true, code: "ArrowLeft" });
+  handle.fire("click", { detail: 0 });
+  assert.equal(app.nodes["tool-panel"].hidden, false);
+  assert.equal(app.nodes.tools.style.values["--tool-x"], "12px");
+  assert.equal(app.nodes.tools.style.values["--panel-x"], "60px");
+  app.window.innerWidth = 360;
+  app.window.innerHeight = 240;
+  app.window.fire("resize");
+  assert.equal(app.nodes.tools.style.values["--tool-y"], "96px");
+  assert.ok(parseFloat(app.nodes.tools.style.values["--panel-y"]) >= 12);
+});
+
+test("toolbar tap opens without moving, cancelled drag restores location and releases capture", () => {
+  const app = harness();
+  const handle = app.nodes["tools-toggle"];
+  const original = app.nodes.tools.style.values["--tool-x"];
+  handle.fire("pointerdown", { button: 0, pointerId: 1, clientX: 20, clientY: 30 });
+  handle.fire("pointermove", { pointerId: 1, clientX: 22, clientY: 31 });
+  handle.fire("pointerup", { pointerId: 1, clientX: 22, clientY: 31 });
+  handle.fire("click", { detail: 1 });
+  assert.equal(app.nodes["tool-panel"].hidden, false);
+  handle.fire("pointerdown", { button: 0, pointerId: 2, clientX: 20, clientY: 30 });
+  handle.fire("pointermove", { pointerId: 2, clientX: 600, clientY: 300 });
+  handle.fire("pointercancel", { pointerId: 2 });
+  assert.equal(app.nodes.tools.style.values["--tool-x"], original);
+  assert.equal(handle.hasPointerCapture(2), false);
+});
+
+test("fullscreen requests all-key capture, emergency escape unlocks and disables recapture", async () => {
+  const app = harness();
+  const requests = [];
+  let unlocks = 0;
+  app.navigator.keyboard = { lock: async (...args) => requests.push(args), unlock: () => { unlocks += 1; } };
+  app.ready();
+  app.nodes.fullscreen.fire("click");
+  await flush();
+  assert.deepEqual(requests, [[]]);
+  assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "true");
+  app.fireKey("Escape", { ctrlKey: true, altKey: true, shiftKey: true });
+  assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "false");
+  assert.equal(app.nodes["tool-panel"].hidden, false);
+  app.nodes.desktop.focus();
+  app.nodes.desktop.fire("focus");
+  await flush();
+  assert.equal(requests.length, 1);
+  assert.ok(unlocks >= 1);
+});
+
+test("late keyboard permission cannot capture after disconnect, denial and unsupported remain usable", async () => {
+  const app = harness();
+  let resolveLock;
+  let unlocks = 0;
+  app.navigator.keyboard = { lock: () => new Promise((resolve) => { resolveLock = resolve; }), unlock: () => { unlocks += 1; } };
+  app.ready();
+  app.nodes.fullscreen.fire("click");
+  await flush();
+  app.nodes.connection.fire("click");
+  resolveLock();
+  await flush();
+  assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "false");
+  assert.ok(unlocks >= 2);
+  const denied = harness();
+  denied.navigator.keyboard = { lock: async () => { throw Error("NotAllowedError"); }, unlock() {} };
+  denied.ready();
+  denied.nodes.fullscreen.fire("click");
+  await flush();
+  assert.match(denied.nodes["keyboard-state"].textContent, /被拒绝/);
+  const unsupported = harness();
+  unsupported.ready();
+  unsupported.nodes.fullscreen.fire("click");
+  await flush();
+  assert.match(unsupported.nodes["keyboard-state"].textContent, /不支持/);
+});
+
+test("keyboard capture resumes after pending permission loses focus and after automatic reconnect", async () => {
+  const app = harness();
+  let resolveLock;
+  let requests = 0;
+  app.navigator.keyboard = {
+    lock: () => ++requests === 1 ? new Promise((resolve) => { resolveLock = resolve; }) : Promise.resolve(),
+    unlock() {},
+  };
+  const socket = app.ready();
+  app.nodes.fullscreen.fire("click");
+  await flush();
+  app.nodes.desktop.fire("blur");
+  app.nodes.desktop.focus();
+  app.nodes.desktop.fire("focus");
+  resolveLock();
+  await flush();
+  assert.equal(requests, 2);
+  assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "true");
+  socket.finishClose();
+  assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "false");
+  app.tick();
+  app.ready();
+  await flush();
+  assert.equal(requests, 3);
+  assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "true");
+});
+
+test("pending keyboard permission does not recapture while window remains unfocused", async () => {
+  const app = harness();
+  let resolveLock;
+  let requests = 0;
+  app.navigator.keyboard = {
+    lock: () => ++requests === 1 ? new Promise((resolve) => { resolveLock = resolve; }) : Promise.resolve(),
+    unlock() {},
+  };
+  app.ready();
+  app.nodes.fullscreen.fire("click");
+  await flush();
+  app.document.focused = false;
+  app.window.fire("blur");
+  resolveLock();
+  await flush();
+  assert.equal(requests, 1);
+  assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "false");
+  app.document.focused = true;
+  app.window.fire("focus");
+  await flush();
+  assert.equal(requests, 2);
+  assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "true");
+});
+
+test("capture releases on focus loss and fullscreen exit; composer sends arbitrary chord in reverse release order", async () => {
+  const app = harness();
+  app.navigator.keyboard = { lock: async () => {}, unlock() {} };
+  const socket = app.ready();
+  app.nodes["keyboard-capture"].fire("click");
+  await flush();
+  assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "true");
+  app.nodes.desktop.fire("blur");
+  assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "false");
+  app.nodes.desktop.focus();
+  app.nodes.desktop.fire("focus");
+  await flush();
+  assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "true");
+  await app.document.exitFullscreen();
+  assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "false");
+  app.nodes["shortcut-super"].checked = true;
+  app.nodes["shortcut-alt"].checked = true;
+  app.nodes["shortcut-key"].value = "F7";
+  socket.sent.length = 0;
+  app.nodes["send-shortcut"].fire("click");
+  assert.deepEqual(socket.sent, [
+    { type: "release" },
+    { type: "key", code: 56, pressed: true }, { type: "key", code: 125, pressed: true }, { type: "key", code: 65, pressed: true },
+    { type: "key", code: 65, pressed: false }, { type: "key", code: 125, pressed: false }, { type: "key", code: 56, pressed: false },
+  ]);
+  assert.equal(app.nodes["shortcut-key"].children.length, Object.keys(app.run("KEY_CODES")).length);
+  socket.sent.length = 0;
+  app.nodes["shortcut-key"].value = "invalid";
+  app.nodes["send-shortcut"].fire("click");
+  assert.equal(socket.sent.length, 0);
+});
+
+test("toolbar counts drawn frames and matched monotonic RTT, clears metrics on disconnect", async () => {
+  const app = harness();
+  const socket = app.sockets[0];
+  socket.open();
+  socket.json({ type: "ready", width: 1280, height: 720, metrics: true });
+  const ping = socket.sent.find((value) => value.type === "ping");
+  app.advance(80);
+  socket.json({ type: "pong", id: ping.id + 1 });
+  socket.json({ type: "pong", id: ping.id });
+  socket.binary(new Uint8Array([1, 0xff, 0xd8]).buffer);
+  app.decodes[0].resolve(bitmap());
+  await flush();
+  app.advance(920);
+  const timer = [...app.timers].find(([, value]) => value.delay === 1000);
+  app.timers.delete(timer[0]);
+  timer[1].callback();
+  assert.equal(app.nodes.performance.textContent, "1.0 FPS · RTT 80 ms · P95 80 ms");
+  assert.equal(app.nodes["video-details"].textContent, "JPEG · 1280 × 720");
+  app.advance(5000);
+  const next = [...app.timers].find(([, value]) => value.delay === 1000);
+  app.timers.delete(next[0]);
+  next[1].callback();
+  assert.match(app.nodes.performance.textContent, /0.0 FPS · RTT 超时/);
+  app.nodes.connection.fire("click");
+  assert.equal(app.nodes.performance.textContent, "-- FPS · RTT -- ms");
+  assert.equal(app.timers.size, 0);
+});
 
 test("floating tools start collapsed, close on desktop click and remain keyboard accessible", () => {
   const app = harness();

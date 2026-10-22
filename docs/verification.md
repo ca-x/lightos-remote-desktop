@@ -3,12 +3,66 @@
 Date: 2026-10-22 (machine local date). This records a verified initial native
 implementation, not complete Selkies or Omarchy feature parity.
 
+## Latency instrumentation follow-up
+
+The floating toolbar now samples actual canvas draws per second, codec and
+resolution, and application WebSocket ping/pong RTT. P95 covers the last 30
+completed replies. Browser monotonic timestamps avoid cross-machine clock
+subtraction. Missing replies time out after five seconds; disconnect clears
+the samples. Static-frame suppression can legitimately produce zero idle FPS.
+RTT includes application queueing, not input-to-display latency.
+
+The 23 frontend tests pass, including matched/stale replies, a drawn JPEG,
+timeout and disconnect cleanup. Rust tests (29 unit tests plus installer),
+fmt, clippy and bundled release build pass. The candidate live protocol test
+passes with a real ping/pong ID check. Chrome displays H.264 and the toolbar
+metrics on a real Omarchy desktop (local RTT 0..4 ms, not a WAN benchmark).
+The binary self-installer successfully activates this instrumentation update.
+
+The reported user-visible latency remains unresolved. The current single
+render-ack window bounds video throughput by round-trip time; this is a code
+observation, not yet confirmation of the user's bottleneck. DDIA's bounded
+backpressure, monotonic timing and tail-latency principles inform diagnosis;
+they do not imply adding database/log infrastructure to the media hot path.
+
 ## Automated checks
 
-- Rust unit suite: 29 passed; compositor timeout and FFmpeg integration tests
+Application-launch regression: production Ghostty menu activation failed with
+`Gtk: Failed to open display`, while direct Wayland execution loaded OpenGL
+4.6. An isolated v2rayN profile reproduced `Avalonia.X11: XOpenDisplay failed`
+with no DISPLAY. These are display-environment failures, not evidence that GPU
+access is unavailable. The compositor now initializes only its private D-Bus
+activation environment before launching the panel; its discovered Xwayland
+DISPLAY is also supplied to the panel's application launchers. No host user
+systemd environment import or per-application exception is used. In the real
+candidate, Ghostty launched through gtk-launch/D-Bus and v2rayN with isolated
+HOME both had mapped Xwayland windows, confirmed through Hyprland IPC. A fixture
+checks environment propagation, absent DISPLAY and failure before completion.
+
+Keyboard capture follow-up: 30 frontend tests pass, including all-key lock
+requests, permission denial, unsupported browsers, late permission after
+disconnect, recovery after pending permission loses focus, automatic reconnect,
+emergency escape, focus loss/fullscreen exit and arbitrary chord
+ordering. Chrome successfully granted Keyboard Lock in fullscreen on the
+candidate. Its generic composer sent Super+Digit2 and Hyprland IPC confirmed
+workspace 1 changed to 2. This does not verify physical client OS shortcut
+inhibition; compositor-reserved keys may still be intercepted before the page.
+Rust unit tests, fmt/clippy, bundled build, installer fixtures and explicit
+FFmpeg integration are release gates, not evidence of WAN latency resolution.
+
+Toolbar docking follow-up: 25 frontend tests pass, covering four-edge drag
+docking, click suppression, persisted position, viewport resize, keyboard
+docking, tap versus drag and cancellation. A real Chrome pointer drag docked
+the handle left without opening the panel. All four panel placements stayed
+inside a 1280x633 viewport; reload restored bottom docking, and a 360x640
+mobile viewport kept the panel within bounds. Rust unit tests and bundled
+release build also pass. Panel size changes are observed so expanding its
+settings cannot push it off screen. Position storage is browser-local only.
+
+- Rust unit suite: 30 passed; compositor timeout and FFmpeg integration tests
   are ignored by default. Both have been run separately; the encoder produces
   an initial keyframe followed by predictive output without lookahead.
-- Frontend: 22 dependency-free Node tests passed.
+- Frontend: 30 dependency-free Node tests passed.
 - Embedded CLI installer: fixture verifies dry-run, source-tree-independent
   self-staging, preserved Python unit/environment and transaction rollback.
 - Migration installer: 40 behaviors passed with isolated filesystems and mocked

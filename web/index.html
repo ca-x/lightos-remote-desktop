@@ -23,7 +23,7 @@
   <main id="viewport" class="fit" aria-label="Remote desktop viewport">
     <canvas id="desktop" width="1280" height="720" tabindex="0" aria-label="Remote desktop. Focus here to send keyboard and pointer input." aria-describedby="help"></canvas>
     <aside id="tools" aria-label="远程桌面工具栏">
-      <button id="tools-toggle" class="tool-handle" type="button" aria-label="打开桌面工具栏" title="桌面工具栏 · Ctrl+Alt+Shift+Esc" aria-controls="tool-panel" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#icon-menu"/></svg></button>
+      <button id="tools-toggle" class="tool-handle" type="button" aria-label="打开桌面工具栏" title="点击打开 · 拖动吸附四边 · Alt+方向键移动" aria-controls="tool-panel" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#icon-menu"/></svg></button>
       <section id="tool-panel" hidden aria-label="桌面控制">
         <div class="panel-heading">
           <h1>远程桌面</h1>
@@ -42,7 +42,24 @@
           <button id="settings-toggle" class="icon-button" type="button" aria-label="分辨率设置" title="分辨率设置" data-tip="分辨率设置"><svg class="icon" aria-hidden="true"><use href="#icon-settings"/></svg></button>
         </div>
         <p id="display-mode" aria-live="polite">适应窗口</p>
+        <p id="performance" title="FPS 为最近一秒实际绘制帧数，静止桌面不重复发送。RTT 为同一 WebSocket 的应用层往返时间，包含排队，不等于操作到画面的端到端延迟。">-- FPS · RTT -- ms</p>
+        <p id="video-details">等待画面</p>
         <p id="message" role="status" aria-live="polite">Connecting. Authentication uses your browser’s sign-in dialog.</p>
+        <details id="keyboard-section">
+          <summary>键盘捕获与组合键</summary>
+          <button id="keyboard-capture" type="button" aria-pressed="false" disabled>全屏捕获键盘</button>
+          <p id="keyboard-state">全屏时尝试捕获所有可用按键，不针对特定快捷键。系统保留键可能仍无法捕获；长按 Esc 可退出浏览器全屏。</p>
+          <fieldset id="shortcut-modifiers">
+            <legend>发送任意组合键到远程</legend>
+            <label><input id="shortcut-ctrl" type="checkbox"> Ctrl</label>
+            <label><input id="shortcut-alt" type="checkbox"> Alt</label>
+            <label><input id="shortcut-shift" type="checkbox"> Shift</label>
+            <label><input id="shortcut-super" type="checkbox"> Super</label>
+          </fieldset>
+          <label class="shortcut-key-label" for="shortcut-key">主键</label>
+          <select id="shortcut-key" aria-label="远程组合键主键"></select>
+          <button id="send-shortcut" type="button" disabled>发送组合键</button>
+        </details>
         <details id="settings-section">
           <summary>画面与分辨率</summary>
           <label class="fit-control"><input id="auto-resolution" type="checkbox" checked> 跟随浏览器窗口分辨率</label>

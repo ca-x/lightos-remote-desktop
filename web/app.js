@@ -33,7 +33,7 @@ function createClient() {
   const drawing = canvas.getContext("2d", { alpha: false });
   const viewport = element("viewport");
   const textBox = element("text");
-  const controls = ["apply-size", "send-text", "clipboard-get", "clipboard-set", "paste-local"];
+  const controls = ["apply-size", "send-text", "clipboard-get", "clipboard-set", "paste-local", "keyboard-capture", "send-shortcut"];
   const listeners = new AbortController();
   const keys = new Set();
   const buttons = new Set();
@@ -69,6 +69,132 @@ function createClient() {
   const videoFrameIds = new Map();
   let autoResizeTimer = null;
   let lastRequestedSize = null;
+  let keyboardCaptured = false;
+  let keyboardCaptureWanted = true;
+  let keyboardRequest = false;
+  let keyboardToken = 0;
+
+  function updateKeyboardCapture() {
+    element("keyboard-capture").setAttribute("aria-pressed", String(keyboardCaptured));
+    element("keyboard-capture").textContent = keyboardCaptured ? "释放键盘捕获" : "全屏捕获键盘";
+  }
+
+  function unlockKeyboard() {
+    keyboardToken += 1;
+    try { navigator.keyboard?.unlock(); } catch {}
+    keyboardCaptured = false;
+    element("keyboard-state").textContent = "未捕获键盘。全屏可尝试捕获；系统拦截的按键可通过通用组合键发送器发送。";
+    updateKeyboardCapture();
+  }
+
+  async function captureKeyboard() {
+    if (!ready || destroyed || keyboardRequest || keyboardCaptured || !keyboardCaptureWanted || document.hidden || !document.hasFocus() || document.fullscreenElement !== viewport || document.activeElement !== canvas) return;
+    if (!navigator.keyboard?.lock) {
+      element("keyboard-state").textContent = "浏览器不支持键盘捕获。系统截走的组合键可用下方通用发送器发送。";
+      return;
+    }
+    const token = keyboardToken;
+    keyboardRequest = true;
+    try {
+      await navigator.keyboard.lock();
+      if (token !== keyboardToken || !ready || destroyed || document.hidden || !document.hasFocus() || document.fullscreenElement !== viewport || document.activeElement !== canvas) {
+        navigator.keyboard.unlock();
+        return;
+      }
+      keyboardCaptured = true;
+      updateKeyboardCapture();
+      element("keyboard-state").textContent = "已请求捕获所有可用按键。部分系统快捷键仍可能被本机拦截。Ctrl+Alt+Shift+Esc 释放捕获并打开工具栏。";
+    } catch {
+      if (token === keyboardToken) element("keyboard-state").textContent = "键盘捕获被拒绝，请检查浏览器权限或使用下方通用发送器。";
+    } finally {
+      keyboardRequest = false;
+      if (token !== keyboardToken) void captureKeyboard();
+    }
+  }
+  const toolHandle = element("tools-toggle");
+  const tools = element("tools");
+  const toolPositionKey = "lightos-desktop-toolbar-position";
+  let toolPosition = { edge: "right", ratio: 0.5 };
+  let toolDrag = null;
+  let suppressToolClick = false;
+  try {
+    const saved = JSON.parse(localStorage.getItem(toolPositionKey));
+    if (["left", "right", "top", "bottom"].includes(saved?.edge) && Number.isFinite(saved.ratio)) {
+      toolPosition = { edge: saved.edge, ratio: Math.max(0, Math.min(1, saved.ratio)) };
+    }
+  } catch {}
+
+  function layoutTools(point = null) {
+    const width = window.innerWidth || 1280;
+    const height = window.innerHeight || 720;
+    const maxX = Math.max(12, width - 52);
+    const maxY = Math.max(12, height - 60);
+    const horizontal = toolPosition.edge === "top" || toolPosition.edge === "bottom";
+    const left = point ? Math.max(12, Math.min(maxX, point.x)) :
+      horizontal ? 12 + toolPosition.ratio * (maxX - 12) : toolPosition.edge === "left" ? 12 : maxX;
+    const top = point ? Math.max(12, Math.min(maxY, point.y)) :
+      horizontal ? toolPosition.edge === "top" ? 12 : maxY : 12 + toolPosition.ratio * (maxY - 12);
+    tools.style.setProperty("--tool-x", `${left}px`);
+    tools.style.setProperty("--tool-y", `${top}px`);
+    if (element("tool-panel").hidden) return;
+    const panel = element("tool-panel").getBoundingClientRect();
+    const panelX = toolPosition.edge === "left" ? left + 48 : toolPosition.edge === "right" ? left - panel.width - 8 : left + 20 - panel.width / 2;
+    const panelY = toolPosition.edge === "top" ? top + 56 : toolPosition.edge === "bottom" ? top - panel.height - 8 : top + 24 - panel.height / 2;
+    tools.style.setProperty("--panel-x", `${Math.max(12, Math.min(width - panel.width - 12, panelX))}px`);
+    tools.style.setProperty("--panel-y", `${Math.max(12, Math.min(height - panel.height - 12, panelY))}px`);
+  }
+
+  function saveToolPosition() {
+    try { localStorage.setItem(toolPositionKey, JSON.stringify(toolPosition)); } catch {}
+    layoutTools();
+  }
+  let metricsTimer = null;
+  let metricsStarted = 0;
+  let renderedFrames = 0;
+  let pingSequence = 0;
+  let pendingPing = null;
+  let latestRtt = null;
+  const rttSamples = [];
+
+  function recordFrame(codec) {
+    renderedFrames += 1;
+    element("video-details").textContent = `${codec} · ${canvas.width} × ${canvas.height}`;
+  }
+
+  function stopMetrics() {
+    clearTimeout(metricsTimer);
+    metricsTimer = null;
+    pendingPing = null;
+    latestRtt = null;
+    rttSamples.length = 0;
+    renderedFrames = 0;
+    element("performance").textContent = "-- FPS · RTT -- ms";
+    element("video-details").textContent = "等待画面";
+  }
+
+  function sampleMetrics() {
+    metricsTimer = null;
+    if (!ready || destroyed) return;
+    const now = performance.now();
+    const fps = renderedFrames * 1000 / Math.max(1, now - metricsStarted);
+    renderedFrames = 0;
+    metricsStarted = now;
+    const sorted = [...rttSamples].sort((first, second) => first - second);
+    const p95 = sorted.length ? Math.round(sorted[Math.ceil(sorted.length * 0.95) - 1]) : "--";
+    const rtt = latestRtt === null ? "--" : Math.round(latestRtt);
+    element("performance").textContent = `${fps.toFixed(1)} FPS · RTT ${rtt} ms · P95 ${p95} ms`;
+    if (pendingPing && now - pendingPing.started >= 5000) {
+      pendingPing = null;
+      latestRtt = null;
+      element("performance").textContent = `${fps.toFixed(1)} FPS · RTT 超时 · P95 ${p95} ms`;
+    }
+    if (!pendingPing && !document.hidden) {
+      const id = ++pingSequence;
+      pendingPing = { id, started: now };
+      if (!send({ type: "ping", id })) pendingPing = null;
+    }
+    if (ready && !destroyed) metricsTimer = setTimeout(sampleMetrics, 1000);
+  }
 
   function listen(target, name, handler, options = {}) {
     target.addEventListener(name, handler, { ...options, signal: listeners.signal });
@@ -77,9 +203,11 @@ function createClient() {
   function message(value) { element("message").textContent = value; }
 
   function setToolsOpen(open, focus = false) {
+    if (open) unlockKeyboard();
     element("tool-panel").hidden = !open;
     element("tools-toggle").setAttribute("aria-expanded", String(open));
     element("tools-toggle").setAttribute("aria-label", open ? "收起桌面工具栏" : "打开桌面工具栏");
+    layoutTools();
     if (focus) (open ? element("connection") : canvas).focus({ preventScroll: true });
   }
 
@@ -153,6 +281,8 @@ function createClient() {
   }
 
   function resetSession() {
+    unlockKeyboard();
+    stopMetrics();
     clearTimeout(autoResizeTimer);
     autoResizeTimer = null;
     lastRequestedSize = null;
@@ -272,6 +402,11 @@ function createClient() {
         element("height").value = height;
       }
       ready = true;
+      if (value.metrics === true) {
+        stopMetrics();
+        metricsStarted = performance.now();
+        sampleMetrics();
+      }
       frameAcknowledgements = value.frame_ack === true;
       sequencedFrames = value.frame_ids === true;
       if (frameAcknowledgements) send({ type: "video_flow", enabled: true, sequenced: sequencedFrames });
@@ -285,6 +420,12 @@ function createClient() {
       message(audioAvailable ? `Desktop ready. Audio is ${audioEnabled ? "on" : "off until enabled"}.` : "Desktop ready. Server audio is unavailable.");
       updateControls();
       scheduleAutoResize();
+      void captureKeyboard();
+    } else if (value.type === "pong" && pendingPing && value.id === pendingPing.id) {
+      latestRtt = Math.max(0, performance.now() - pendingPing.started);
+      rttSamples.push(latestRtt);
+      if (rttSamples.length > 30) rttSamples.shift();
+      pendingPing = null;
     } else if (value.type === "frame_id" && Number.isSafeInteger(value.id) && value.id > 0) {
       pendingFrameId = value.id;
     } else if (value.type === "video_config" && typeof value.codec === "string") {
@@ -318,6 +459,7 @@ function createClient() {
             }
             resizeCanvas(bitmap.width, bitmap.height);
             drawing.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+            recordFrame("JPEG");
           }
         } catch {
           if (frame.generation === generation && ready) message("Could not decode a desktop JPEG frame.");
@@ -379,6 +521,7 @@ function createClient() {
             if (!validDimensions(frame.displayWidth, frame.displayHeight)) { fallbackVideo(); return; }
             resizeCanvas(frame.displayWidth, frame.displayHeight);
             drawing.drawImage(frame, 0, 0, canvas.width, canvas.height);
+            recordFrame("H.264");
             const id = videoFrameIds.get(frame.timestamp);
             videoFrameIds.delete(frame.timestamp);
             if (frameAcknowledgements) acknowledgeFrame(id);
@@ -507,7 +650,56 @@ function createClient() {
     if (event) move(event);
   }
 
-  listen(element("tools-toggle"), "click", () => setToolsOpen(element("tool-panel").hidden, true));
+  listen(toolHandle, "click", (event) => {
+    if (suppressToolClick && event.detail !== 0) { suppressToolClick = false; return; }
+    setToolsOpen(element("tool-panel").hidden, true);
+  });
+  listen(toolHandle, "pointerdown", (event) => {
+    if (event.button !== 0 || toolDrag) return;
+    suppressToolClick = false;
+    const bounds = toolHandle.getBoundingClientRect();
+    toolDrag = { id: event.pointerId, startX: event.clientX, startY: event.clientY,
+      offsetX: event.clientX - bounds.left, offsetY: event.clientY - bounds.top, moved: false };
+    toolHandle.setPointerCapture(event.pointerId);
+  });
+  listen(toolHandle, "pointermove", (event) => {
+    if (!toolDrag || toolDrag.id !== event.pointerId) return;
+    if (!toolDrag.moved && Math.hypot(event.clientX - toolDrag.startX, event.clientY - toolDrag.startY) < 6) return;
+    toolDrag.moved = true;
+    setToolsOpen(false);
+    layoutTools({ x: event.clientX - toolDrag.offsetX, y: event.clientY - toolDrag.offsetY });
+  });
+  function finishToolDrag(event) {
+    if (!toolDrag || toolDrag.id !== event.pointerId) return;
+    const drag = toolDrag;
+    toolDrag = null;
+    suppressToolClick = drag.moved;
+    if (drag.moved && event.type === "pointerup") {
+      const width = window.innerWidth || 1280;
+      const height = window.innerHeight || 720;
+      const centerX = Math.max(0, Math.min(width, event.clientX - drag.offsetX + 20));
+      const centerY = Math.max(0, Math.min(height, event.clientY - drag.offsetY + 24));
+      const distances = { left: centerX, right: width - centerX, top: centerY, bottom: height - centerY };
+      const edge = Object.keys(distances).reduce((nearest, candidate) => distances[candidate] < distances[nearest] ? candidate : nearest);
+      const horizontal = edge === "top" || edge === "bottom";
+      const ratio = horizontal ? (centerX - 32) / Math.max(1, width - 64) : (centerY - 36) / Math.max(1, height - 72);
+      toolPosition = { edge, ratio: Math.max(0, Math.min(1, ratio)) };
+      saveToolPosition();
+    } else layoutTools();
+    if (toolHandle.hasPointerCapture(event.pointerId)) toolHandle.releasePointerCapture(event.pointerId);
+  }
+  for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) listen(toolHandle, name, finishToolDrag);
+  listen(toolHandle, "keydown", (event) => {
+    const edges = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "top", ArrowDown: "bottom" };
+    if (!event.altKey || !edges[event.code]) return;
+    event.preventDefault();
+    toolPosition = { edge: edges[event.code], ratio: 0.5 };
+    saveToolPosition();
+  });
+  listen(window, "resize", () => layoutTools());
+  listen(document, "fullscreenchange", () => layoutTools());
+  const toolObserver = window.ResizeObserver ? new window.ResizeObserver(() => layoutTools()) : null;
+  toolObserver?.observe(element("tool-panel"));
   listen(element("tools-close"), "click", () => setToolsOpen(false, true));
   listen(element("clipboard-toggle"), "click", () => { element("clipboard-section").open = !element("clipboard-section").open; });
   listen(element("settings-toggle"), "click", () => { element("settings-section").open = !element("settings-section").open; });
@@ -560,6 +752,7 @@ function createClient() {
     if (event.code === "Escape" && event.ctrlKey && event.altKey && event.shiftKey) {
       event.preventDefault();
       release();
+      keyboardCaptureWanted = false;
       setToolsOpen(true);
       element("connection").focus();
       return;
@@ -588,10 +781,12 @@ function createClient() {
     event.preventDefault();
     typeText(event.clipboardData?.getData("text/plain") || "");
   });
-  listen(canvas, "blur", release);
-  listen(window, "blur", () => { composing = false; release(); });
+  listen(canvas, "focus", () => { void captureKeyboard(); });
+  listen(window, "focus", () => { void captureKeyboard(); });
+  listen(canvas, "blur", () => { release(); unlockKeyboard(); });
+  listen(window, "blur", () => { composing = false; release(); unlockKeyboard(); });
   listen(document, "visibilitychange", () => {
-    if (document.hidden) { composing = false; release(); stopAudio(); }
+    if (document.hidden) { composing = false; release(); stopAudio(); unlockKeyboard(); }
     else scheduleAutoResize();
   });
   listen(element("connection"), "click", () => {
@@ -615,6 +810,7 @@ function createClient() {
         viewport.classList.toggle("fit", windowMode === "fit");
       }
       canvas.focus({ preventScroll: true });
+      if (mode === "fullscreen") await captureKeyboard();
       updateDisplayMode();
     } catch (error) {
       updateDisplayMode();
@@ -626,7 +822,7 @@ function createClient() {
     element("mode-fit").setAttribute("aria-pressed", String(mode === "fit"));
     element("mode-actual").setAttribute("aria-pressed", String(mode === "actual"));
     element("fullscreen").setAttribute("aria-pressed", String(mode === "fullscreen"));
-    element("display-mode").textContent = mode === "actual" ? "原始大小 · 按设定分辨率 1:1 显示" : mode === "fullscreen" ? "全屏 · Esc 退出" : "适应窗口";
+    element("display-mode").textContent = mode === "actual" ? "原始大小 · 按设定分辨率 1:1 显示" : mode === "fullscreen" ? "全屏 · Ctrl+Alt+Shift+Esc 释放键盘" : "适应窗口";
     for (const attribute of ["aria-label", "title", "data-tip"]) element("fullscreen").setAttribute(attribute, mode === "fullscreen" ? "退出全屏" : "全屏");
   }
   listen(element("mode-fit"), "click", () => { void displayMode("fit"); });
@@ -657,9 +853,49 @@ function createClient() {
     await displayMode(document.fullscreenElement ? windowMode : "fullscreen");
   });
   listen(document, "fullscreenchange", () => {
+    if (document.fullscreenElement !== viewport) { release(); unlockKeyboard(); }
     updateDisplayMode();
     viewport.classList.toggle("fit", document.fullscreenElement ? true : windowMode === "fit");
     scheduleAutoResize();
+  });
+  listen(element("keyboard-capture"), "click", async () => {
+    if (keyboardCaptured) {
+      keyboardCaptureWanted = false;
+      release();
+      unlockKeyboard();
+      return;
+    }
+    keyboardCaptureWanted = true;
+    setToolsOpen(false);
+    if (document.fullscreenElement !== viewport) await displayMode("fullscreen");
+    else { canvas.focus({ preventScroll: true }); await captureKeyboard(); }
+  });
+  for (const code of Object.keys(KEY_CODES)) {
+    const option = document.createElement("option");
+    option.value = code;
+    option.textContent = code;
+    element("shortcut-key").appendChild(option);
+  }
+  element("shortcut-key").value = "Enter";
+  listen(element("send-shortcut"), "click", () => {
+    if (!ready) return;
+    const mainKey = element("shortcut-key").value;
+    if (!Object.hasOwn(KEY_CODES, mainKey)) return;
+    const chord = [];
+    for (const [id, code] of [["shortcut-ctrl", "ControlLeft"], ["shortcut-alt", "AltLeft"], ["shortcut-shift", "ShiftLeft"], ["shortcut-super", "MetaLeft"]]) {
+      if (element(id).checked) chord.push(KEY_CODES[code]);
+    }
+    if (!chord.includes(KEY_CODES[mainKey])) chord.push(KEY_CODES[mainKey]);
+    release();
+    for (const code of chord) {
+      if (!send({ type: "key", code, pressed: true })) return;
+      keys.add(code);
+    }
+    for (const code of [...chord].reverse()) {
+      if (!send({ type: "key", code, pressed: false })) return;
+      keys.delete(code);
+    }
+    message("组合键已发送到远程桌面。");
   });
   listen(element("resize"), "submit", (event) => {
     event.preventDefault();
@@ -694,6 +930,7 @@ function createClient() {
     if (destroyed) return;
     disconnect();
     destroyed = true;
+    toolObserver?.disconnect();
     listeners.abort();
     if (socket) {
       socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;

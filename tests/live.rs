@@ -102,6 +102,23 @@ async fn browser_protocol_against_real_desktop() {
     assert!(image.width() >= 320 && image.height() >= 200);
     let initial_size = (image.width(), image.height());
     socket
+        .send(Message::Text("{\"type\":\"ping\",\"id\":42}".into()))
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(3), async {
+        loop {
+            if let Message::Text(text) = socket.next().await.unwrap().unwrap()
+                && let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
+                && value["type"] == "pong"
+            {
+                assert_eq!(value["id"], 42);
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    socket
         .send(Message::Text(
             "{\"type\":\"key\",\"code\":0,\"pressed\":true}".into(),
         ))

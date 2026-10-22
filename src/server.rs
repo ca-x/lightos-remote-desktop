@@ -276,7 +276,7 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
         .and_then(|session| session.audio_source.clone());
     let audio_available = state.config.audio && audio_source.is_some();
     let ready = Message::Text(
-        json!({"type":"ready","width":width,"height":height,"audio":audio_available,"frame_ack":true,"frame_ids":true,"video_codecs":["h264","jpeg"]})
+        json!({"type":"ready","width":width,"height":height,"audio":audio_available,"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":["h264","jpeg"]})
             .to_string()
             .into(),
     );
@@ -526,6 +526,13 @@ async fn handle_command(
         .and_then(|kind| kind.as_str())
         .unwrap_or_default();
     match kind {
+        "ping" => {
+            let id = value.get("id").and_then(|id| id.as_u64());
+            anyhow::ensure!(id.is_some(), "invalid ping id");
+            return Ok(Some(Message::Text(
+                json!({"type":"pong","id":id}).to_string().into(),
+            )));
+        }
         "clipboard_get" => {
             let mut command = helper(state, "wl-paste");
             command.args(["--no-newline", "--type", "text"]);

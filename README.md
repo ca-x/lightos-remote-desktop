@@ -6,12 +6,31 @@ does not embed CPython or invoke the original Selkies Python launcher.
 ## Current implementation
 
 - Authenticated same-origin WebSocket client with canvas display and reconnect.
+- Drag the floating toolbar handle to dock on any screen edge; its position is
+  saved in this browser. Click to open, or focus it and use Alt+arrow keys to
+  dock left/right/top/bottom. The panel stays within the viewport.
+- Fullscreen requests all available keys via the browser Keyboard Lock API,
+  without application-specific shortcut mappings. It requires browser support
+  and permission, generally a secure context; OS/compositor-reserved shortcuts
+  may still never reach the page. Focus loss, disconnect or leaving fullscreen
+  releases capture and held input. Ctrl+Alt+Shift+Esc releases capture and opens
+  tools; the browser's long-Escape fullscreen exit remains available.
+  The keyboard section can send any supported physical key with arbitrary
+  Ctrl/Alt/Shift/Super modifiers directly to the remote machine, bypassing local
+  shortcut interception without changing host bindings.
+- Floating toolbar shows actual drawn FPS, codec/resolution and application
+  WebSocket RTT (latest and P95 of the last 30 replies). RTT includes queueing,
+  not input-to-display latency. Static desktops skip duplicate frames, so low
+  idle FPS is normal. Measurements use the browser's monotonic clock.
 - Native Wayland capture and virtual keyboard/pointer through libwayshot and
   standard Wayland protocols; Unicode text injection and held-input cleanup.
 - Isolated Cage/wlroots host with nested Hyprland, a private D-Bus, and owned
   process-group cleanup. No UWSM source modification.
 - Dynamic resolution, text clipboard and optional private PipeWire/Pulse sink
   with browser audio playback.
+- Applications launched from the desktop receive its actual Xwayland display;
+  D-Bus activation is initialized from the compositor's final environment on
+  the private bus only, without importing it into the host user systemd manager.
 - Supervised health/readiness checks and transactional migration/rollback of
   an existing `lightos-remote-desktop.service`.
 
