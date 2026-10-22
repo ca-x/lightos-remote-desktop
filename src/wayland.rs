@@ -21,9 +21,9 @@ use libwayshot::WayshotConnection;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
 use wayland_client::{
-    Connection, Dispatch, QueueHandle, delegate_noop,
+    Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
     globals::{GlobalListContents, registry_queue_init},
-    protocol::{wl_pointer, wl_registry, wl_seat},
+    protocol::{wl_output, wl_pointer, wl_registry, wl_seat},
 };
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
     zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
@@ -38,6 +38,70 @@ use xkbcommon::xkb;
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_TEXT_BYTES: usize = 16 * 1024;
 const MAX_EVDEV_CODE: u32 = 767;
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DisplayOutput {
+    pub name: String,
+    pub description: String,
+    pub width: u32,
+    pub height: u32,
+    pub x: i32,
+    pub y: i32,
+    pub scale: f64,
+}
+
+pub fn display_outputs(socket: &Path) -> Result<Vec<DisplayOutput>> {
+    let stream = connect(socket, Instant::now() + Duration::from_secs(3), None)?;
+    let interrupt = stream.try_clone()?;
+    let (done, finished) = sync_mpsc::channel();
+    let watchdog = thread::spawn(move || {
+        if finished.recv_timeout(Duration::from_secs(3)).is_err() {
+            let _ = interrupt.shutdown(Shutdown::Both);
+        }
+    });
+    let result = (|| {
+        let capture = WayshotConnection::from_connection(Connection::from_socket(stream)?)?;
+        let outputs = capture
+            .get_all_outputs()
+            .iter()
+            .map(|output| {
+                let size = output.physical_size();
+                let logical = output.logical_size();
+                let position = output.logical_position();
+                let (width, height) =
+                    oriented_dimensions(size.width, size.height, output.transform);
+                DisplayOutput {
+                    name: output.name.clone(),
+                    description: output.description.clone(),
+                    width,
+                    height,
+                    x: position.x,
+                    y: position.y,
+                    scale: f64::from(height) / f64::from(logical.height.max(1)),
+                }
+            })
+            .collect();
+        Ok(outputs)
+    })();
+    let _ = done.send(());
+    let _ = watchdog.join();
+    result
+}
+
+struct CaptureTarget {
+    socket: PathBuf,
+    output: Option<String>,
+}
+
+fn oriented_dimensions(width: u32, height: u32, transform: wl_output::Transform) -> (u32, u32) {
+    match transform {
+        wl_output::Transform::_90
+        | wl_output::Transform::_270
+        | wl_output::Transform::Flipped90
+        | wl_output::Transform::Flipped270 => (height, width),
+        _ => (width, height),
+    }
+}
 
 #[derive(Debug)]
 pub struct Frame {
@@ -136,6 +200,15 @@ impl Backend {
     }
 
     pub fn start(socket: PathBuf, fps: u32, quality: u8) -> Result<Self> {
+        Self::start_with_output(socket, fps, quality, None)
+    }
+
+    pub fn start_with_output(
+        socket: PathBuf,
+        fps: u32,
+        quality: u8,
+        output: Option<String>,
+    ) -> Result<Self> {
         ensure!((1..=60).contains(&fps), "FPS must be between 1 and 60");
         ensure!(
             (1..=100).contains(&quality),
@@ -164,11 +237,18 @@ impl Backend {
         };
         let input_shared = shared.clone();
         let input_ready = ready_tx.clone();
+        let input_output = output.clone();
         let input_worker =
             thread::Builder::new()
                 .name("wayland-input".into())
                 .spawn(move || {
-                    let result = run_input(input_stream, input_rx, &input_shared, &input_ready);
+                    let result = run_input(
+                        input_stream,
+                        input_rx,
+                        &input_shared,
+                        &input_ready,
+                        input_output.as_deref(),
+                    );
                     if let Err(error) = result
                         && !input_shared.stopped.load(Ordering::Acquire)
                     {
@@ -184,7 +264,7 @@ impl Backend {
             .spawn(move || {
                 let result = run_capture(
                     capture_stream,
-                    &socket,
+                    &CaptureTarget { socket, output },
                     deadline,
                     fps,
                     quality,
@@ -341,7 +421,7 @@ fn connect(socket: &Path, deadline: Instant, stopped: Option<&AtomicBool>) -> Re
 
 fn run_capture(
     stream: UnixStream,
-    socket: &Path,
+    target: &CaptureTarget,
     startup_deadline: Instant,
     fps: u32,
     quality: u8,
@@ -362,7 +442,7 @@ fn run_capture(
         let stream = match initial_stream.take() {
             Some(stream) => stream,
             None => connect(
-                socket,
+                &target.socket,
                 if first {
                     startup_deadline
                 } else {
@@ -377,7 +457,17 @@ fn run_capture(
         let connection = Connection::from_socket(stream)?;
         let capture = WayshotConnection::from_connection(connection)
             .context("initialize native screencopy (compositor protocols required)")?;
-        let image = capture.screenshot_all(false).context("capture desktop")?;
+        let image = if let Some(name) = &target.output {
+            let output = capture
+                .get_all_outputs()
+                .iter()
+                .find(|output| &output.name == name)
+                .context("selected monitor disconnected")?;
+            capture.screenshot_single_output(output, false)
+        } else {
+            capture.screenshot_all(false)
+        }
+        .context("capture desktop")?;
         let captured_at = Instant::now();
         drop(capture);
         if let Some(socket) = shared
@@ -655,6 +745,7 @@ fn run_input(
     mut receiver: mpsc::Receiver<InputCommand>,
     shared: &Shared,
     ready: &sync_mpsc::SyncSender<std::result::Result<(), String>>,
+    output: Option<&str>,
 ) -> Result<()> {
     let connection = Connection::from_socket(stream)?;
     let (globals, mut queue) = registry_queue_init::<InputState>(&connection)?;
@@ -669,7 +760,32 @@ fn run_input(
         .bind(&handle, 1..=2, ())
         .context("compositor does not support zwlr_virtual_pointer_manager_v1")?;
     let keyboard = keyboard_manager.create_virtual_keyboard(&seat, &handle, ());
-    let pointer = pointer_manager.create_virtual_pointer(Some(&seat), &handle, ());
+    let output_connection = if output.is_some() {
+        Some(WayshotConnection::from_connection(connection.clone())?)
+    } else {
+        None
+    };
+    let pointer = if let Some(name) = output {
+        ensure!(
+            pointer_manager.version() >= 2,
+            "compositor cannot bind input to a selected monitor"
+        );
+        let selected = output_connection
+            .as_ref()
+            .unwrap()
+            .get_all_outputs()
+            .iter()
+            .find(|candidate| candidate.name == name)
+            .context("selected input monitor disconnected")?;
+        pointer_manager.create_virtual_pointer_with_output(
+            Some(&seat),
+            Some(&selected.wl_output),
+            &handle,
+            (),
+        )
+    } else {
+        pointer_manager.create_virtual_pointer(Some(&seat), &handle, ())
+    };
     let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
     let base_keymap = xkb::Keymap::new_from_names(
         &context,
@@ -748,6 +864,26 @@ fn run_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rotated_outputs_report_oriented_pixel_dimensions() {
+        for transform in [
+            wl_output::Transform::_90,
+            wl_output::Transform::_270,
+            wl_output::Transform::Flipped90,
+            wl_output::Transform::Flipped270,
+        ] {
+            assert_eq!(oriented_dimensions(1920, 1080, transform), (1080, 1920));
+        }
+        for transform in [
+            wl_output::Transform::Normal,
+            wl_output::Transform::_180,
+            wl_output::Transform::Flipped,
+            wl_output::Transform::Flipped180,
+        ] {
+            assert_eq!(oriented_dimensions(1920, 1080, transform), (1920, 1080));
+        }
+    }
 
     #[test]
     fn unchanged_frame_refreshes_health_without_waking_video_subscribers() {

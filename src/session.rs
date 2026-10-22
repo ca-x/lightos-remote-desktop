@@ -2,7 +2,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     os::unix::{
-        fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+        fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
         net::UnixStream,
         process::CommandExt,
     },
@@ -34,6 +34,41 @@ pub struct Session {
 }
 
 impl Session {
+    pub fn physical_socket(config: &Config) -> Result<PathBuf> {
+        let owner = unsafe { libc::geteuid() };
+        if let Some(socket) = &config.physical_wayland_socket {
+            ensure!(
+                is_owned_socket(socket, owner),
+                "configured physical Wayland socket is unavailable or belongs to another user"
+            );
+            return Ok(socket.clone());
+        }
+        let directory = PathBuf::from(format!("/run/user/{owner}"));
+        let mut sockets: Vec<_> = fs::read_dir(&directory)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("wayland-"))
+                    && is_owned_socket(path, owner)
+            })
+            .collect();
+        sockets.sort();
+        if let Some(display) = std::env::var_os("WAYLAND_DISPLAY") {
+            let preferred = directory.join(display);
+            if sockets.contains(&preferred) {
+                return Ok(preferred);
+            }
+        }
+        match sockets.as_slice() {
+            [socket] => Ok(socket.clone()),
+            [] => bail!("未发现当前用户的物理 Wayland 会话；请先登录本机桌面"),
+            _ => bail!("发现多个 Wayland 会话；请用 --physical-wayland-socket 指定物理桌面"),
+        }
+    }
+
     pub fn start(config: &Config) -> Result<Self> {
         Self::start_cancellable(config, Arc::new(AtomicBool::new(false)))
     }
@@ -449,6 +484,11 @@ impl Session {
     }
 }
 
+fn is_owned_socket(path: &Path, owner: u32) -> bool {
+    fs::symlink_metadata(path)
+        .is_ok_and(|metadata| metadata.file_type().is_socket() && metadata.uid() == owner)
+}
+
 fn desktop_configuration(width: u32, height: u32, fps: u32, omarchy: bool) -> String {
     let mut configuration = include_str!("../config/hyprland.conf")
         .replace("1280x720@30", &format!("{width}x{height}@{fps}"));
@@ -537,6 +577,28 @@ fn child_exited(child: &Child) -> Result<bool> {
 mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn physical_socket_requires_an_owned_socket_not_a_file_or_symlink() {
+        use clap::Parser;
+        use std::os::unix::net::UnixListener;
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("wayland-test");
+        let mut config =
+            Config::try_parse_from(["test", "--password", "socket-test-secret"]).unwrap();
+        config.physical_wayland_socket = Some(socket.clone());
+        assert!(Session::physical_socket(&config).is_err());
+        fs::write(&socket, "not a socket").unwrap();
+        assert!(Session::physical_socket(&config).is_err());
+        fs::remove_file(&socket).unwrap();
+        let _listener = UnixListener::bind(&socket).unwrap();
+        assert_eq!(Session::physical_socket(&config).unwrap(), socket);
+        let link = directory.path().join("link");
+        symlink(&socket, &link).unwrap();
+        config.physical_wayland_socket = Some(link);
+        assert!(Session::physical_socket(&config).is_err());
+        assert!(!is_owned_socket(&socket, unsafe { libc::geteuid() } + 1));
+    }
 
     #[test]
     fn default_desktop_starts_a_visible_application() {

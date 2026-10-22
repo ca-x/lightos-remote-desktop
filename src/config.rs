@@ -98,6 +98,8 @@ pub struct Config {
     pub runtime_dir: Option<PathBuf>,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_WAYLAND_SOCKET")]
     pub wayland_socket: Option<PathBuf>,
+    #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_PHYSICAL_WAYLAND_SOCKET")]
+    pub physical_wayland_socket: Option<PathBuf>,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_DESKTOP_CONFIG")]
     pub desktop_config: Option<PathBuf>,
     #[arg(
@@ -200,6 +202,12 @@ impl Config {
             ensure!(
                 socket.is_absolute(),
                 "Wayland socket must be an absolute path"
+            );
+        }
+        if let Some(socket) = &self.physical_wayland_socket {
+            ensure!(
+                socket.is_absolute(),
+                "physical Wayland socket must be absolute"
             );
         }
         if let Some(directory) = &self.runtime_dir {

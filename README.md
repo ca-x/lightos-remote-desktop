@@ -47,12 +47,21 @@ libwayshot 0.9 protocol-object lifetime defects observed during real resize
 tests. This bounds resources but adds per-frame protocol setup overhead.
 Unchanged images are not repeatedly encoded or transmitted. Each browser
 acknowledges rendered frames; input is processed independently of video writes.
+Sequenced clients use a render-ACK-timed window of one to three frames; codec
+changes and new H.264 encoders wait for their first rendered frame before expanding.
 H.264 samples the latest raw frame only when video credit is available, so it
 does not discard predictive frames after encoding. Reconnect and resolution
 changes create a fresh encoder/keyframe. RustDesk-inspired adaptive bitrate,
 GPU capture and remote cursor-shape streaming are not implemented.
 
 ## Build and test
+
+The toolbar's desktop-source selector switches between the persistent virtual
+desktop and an existing same-user Wayland desktop. Physical mode lists active
+outputs and captures/controls one selected monitor, without changing its resolution.
+No physical session means an unavailable option, not a new physical login.
+Physical audio is not yet supported. See `docs/desktop-switching.md` for discovery,
+nonstandard socket configuration and protocol requirements.
 
 GitHub Actions tests every push/PR, then builds a Linux x86_64 archive and
 SHA256 checksum (also available through `workflow_dispatch`). A `v*` tag

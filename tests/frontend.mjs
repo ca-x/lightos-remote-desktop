@@ -33,6 +33,7 @@ function harness(pathname = "/", storage = new Map()) {
     }
     setAttribute(name, value) { this.attributes[name] = value; }
     appendChild(child) { (this.children ??= []).push(child); }
+    replaceChildren(...children) { this.children = children; }
     getBoundingClientRect() { return { left: 10, top: 20, width: 200, height: 100 }; }
     focus() { document.activeElement = this; }
     setPointerCapture(id) { this.captures.add(id); }
@@ -145,6 +146,182 @@ function harness(pathname = "/", storage = new Map()) {
   };
   return { nodes, document, window, sockets, ready, fireKey, run, timers, tick, decodes, draws, contexts, navigator, AudioContext, paint, animationFrames, advance: (elapsed) => { now += elapsed; } };
 }
+
+const desktopChoices = [
+  { mode: "virtual", label: "虚拟桌面", available: true },
+  { mode: "physical", label: "物理桌面", available: true },
+];
+const physicalOutputs = [
+  { name: "DP-1", description: "主显示器", width: 1920, height: 1080, x: 0, y: 0, scale: 1 },
+  { name: "HDMI A&2", description: "副显示器", width: 2560, height: 1440, x: 1920, y: 0, scale: 1.5 },
+];
+function desktopReady(socket, mode = "virtual", extra = {}) {
+  socket.json({ type: "ready", width: 1280, height: 720, audio: false,
+    desktop: mode, resize: mode === "virtual", desktops: desktopChoices,
+    outputs: mode === "physical" ? physicalOutputs : [], output: mode === "physical" ? "DP-1" : null, ...extra });
+}
+
+test("desktop selector is capability-gated, rejects unavailable modes and reload defaults virtual", () => {
+  const app = harness();
+  const socket = app.ready();
+  assert.equal(app.nodes["desktop-controls"].hidden, true);
+  desktopReady(socket, "virtual", { desktops: [desktopChoices[0],
+    { mode: "physical", label: "物理桌面", available: false, reason: "未找到物理会话" }] });
+  assert.equal(app.nodes["desktop-controls"].hidden, false);
+  const physical = app.nodes["desktop-source"].children[1];
+  assert.equal(physical.disabled, true);
+  assert.match(physical.attributes.title, /未找到物理会话/);
+  app.nodes["desktop-source"].value = "physical";
+  app.nodes["desktop-source"].fire("change");
+  assert.equal(app.sockets.length, 1);
+  assert.equal(socket.readyState, 1);
+  assert.equal(app.nodes["desktop-source"].value, "virtual");
+  assert.match(app.nodes["desktop-status"].textContent, /未找到物理会话/);
+  assert.equal(new URL(harness().sockets[0].url).searchParams.get("desktop"), "virtual");
+});
+
+test("desktop switch releases input, ignores old readiness and connects only after old close", async () => {
+  const app = harness("/gateway/opaque/");
+  const socket = app.ready();
+  desktopReady(socket);
+  app.fireKey("ControlLeft", { ctrlKey: true });
+  app.nodes["desktop-source"].value = "physical";
+  app.nodes["desktop-source"].fire("change");
+  assert.equal(socket.sent.at(-1).type, "release");
+  assert.equal(socket.readyState, 2);
+  assert.equal(app.sockets.length, 1);
+  assert.equal(app.nodes.desktop.hidden, true);
+  assert.match(app.nodes["desktop-status"].textContent, /尚未确认/);
+  desktopReady(socket);
+  assert.equal(app.nodes["send-text"].disabled, true);
+  socket.finishClose();
+  assert.equal(app.sockets.length, 2);
+  const physical = app.sockets[1];
+  assert.equal(physical.url, "wss://desktop.test/gateway/opaque/ws?desktop=physical");
+  physical.open();
+  desktopReady(physical, "physical");
+  assert.match(app.nodes["desktop-status"].textContent, /已连接.*物理桌面/);
+  assert.equal(app.nodes["monitor-source"].value, "DP-1");
+  assert.match(app.nodes["monitor-source"].attributes.title, /DP-1.*1920 × 1080.*缩放 1×.*位置 \(0, 0\)/);
+  assert.match(app.nodes["desktop-status"].textContent, /DP-1.*1920 × 1080.*缩放 1×/);
+  assert.match(app.nodes["monitor-source"].children[1].textContent, /2560 × 1440/);
+  physical.binary(jpeg(1));
+  app.decodes[0].resolve(bitmap());
+  await flush();
+  assert.equal(app.nodes.desktop.hidden, false);
+  assert.equal(app.nodes["clipboard-get"].disabled, false);
+});
+
+test("physical desktop cannot resize, monitor switches are encoded and virtual restores resize", async () => {
+  const app = harness();
+  const socket = app.ready();
+  app.nodes["auto-resolution"].checked = true;
+  desktopReady(socket, "physical");
+  for (const id of ["width", "height", "apply-size", "auto-resolution"]) assert.equal(app.nodes[id].disabled, true);
+  app.nodes.viewport.clientWidth = 1600;
+  app.nodes.viewport.clientHeight = 900;
+  app.window.fire("resize");
+  app.nodes["auto-resolution"].fire("change");
+  app.nodes.resize.fire("submit");
+  assert.equal(socket.sent.filter((command) => command.type === "resize").length, 0);
+  app.nodes["mode-fit"].fire("click");
+  app.nodes.fullscreen.fire("click");
+  await flush();
+  assert.equal(app.document.fullscreenElement, app.nodes.viewport);
+  app.nodes["monitor-source"].value = "HDMI A&2";
+  app.nodes["monitor-source"].fire("change");
+  socket.finishClose();
+  const selected = app.sockets.at(-1);
+  assert.equal(new URL(selected.url).searchParams.get("output"), "HDMI A&2");
+  assert.equal(new URL(selected.url).searchParams.get("desktop"), "physical");
+  selected.open();
+  desktopReady(selected, "physical", { output: "HDMI A&2" });
+  assert.match(app.nodes["monitor-source"].attributes.title, /HDMI A&2.*2560 × 1440.*缩放 1.5×.*位置 \(1920, 0\)/);
+  assert.match(app.nodes["desktop-status"].textContent, /HDMI A&2.*2560 × 1440.*缩放 1.5×/);
+  app.nodes["desktop-source"].value = "virtual";
+  app.nodes["desktop-source"].fire("change");
+  selected.finishClose();
+  const virtual = app.sockets.at(-1);
+  assert.equal(new URL(virtual.url).searchParams.has("output"), false);
+  virtual.open();
+  desktopReady(virtual);
+  assert.equal(app.nodes["monitor-controls"].hidden, true);
+  for (const id of ["width", "height", "apply-size", "auto-resolution"]) assert.equal(app.nodes[id].disabled, false);
+});
+
+test("failed physical connection can return virtual without enabling unconfirmed input", () => {
+  const app = harness();
+  const socket = app.ready();
+  desktopReady(socket);
+  app.nodes["desktop-source"].value = "physical";
+  app.nodes["desktop-source"].fire("change");
+  socket.finishClose();
+  const failed = app.sockets.at(-1);
+  failed.onerror();
+  assert.match(app.nodes["desktop-status"].textContent, /失败/);
+  assert.equal(app.nodes["send-shortcut"].disabled, true);
+  app.nodes["desktop-source"].value = "virtual";
+  app.nodes["desktop-source"].fire("change");
+  assert.equal(app.sockets.length, 2);
+  failed.finishClose();
+  assert.equal(app.sockets.length, 3);
+  assert.equal(new URL(app.sockets.at(-1).url).searchParams.get("desktop"), "virtual");
+});
+
+test("desktop discovery refresh stays prefix-relative, reports errors and ignores stale responses", async () => {
+  const app = harness("/gateway/opaque/");
+  const socket = app.ready();
+  desktopReady(socket, "virtual", { desktops: [desktopChoices[0],
+    { mode: "physical", label: "物理桌面", available: false, reason: "没有可用会话" }] });
+  app.run("globalThis.discoveryRequests = []; globalThis.fetch = (url, options) => new Promise(resolve => discoveryRequests.push({url: String(url), options, resolve}))");
+  app.nodes["refresh-desktops"].fire("click");
+  const request = app.run("discoveryRequests[0]");
+  assert.equal(request.url, "https://desktop.test/gateway/opaque/desktops");
+  assert.equal(request.options.credentials, "same-origin");
+  request.resolve({ ok: true, json: async () => ({ desktops: desktopChoices, outputs: physicalOutputs }) });
+  await flush();
+  assert.equal(app.nodes["desktop-source"].children[1].disabled, false);
+  assert.equal(app.nodes["monitor-controls"].hidden, true);
+  app.nodes["refresh-desktops"].fire("click");
+  const stale = app.run("discoveryRequests[1]");
+  app.nodes["desktop-source"].value = "physical";
+  app.nodes["desktop-source"].fire("change");
+  stale.resolve({ ok: true, json: async () => ({ desktops: [] }) });
+  await flush();
+  assert.equal(app.nodes["desktop-controls"].hidden, false);
+  socket.finishClose();
+  const physical = app.sockets.at(-1);
+  physical.open();
+  desktopReady(physical, "physical");
+  app.nodes["refresh-desktops"].fire("click");
+  app.run("discoveryRequests[2]").resolve({ ok: false, status: 503 });
+  await flush();
+  assert.match(app.nodes["desktop-status"].textContent, /刷新失败.*503/);
+  assert.equal(app.nodes["desktop-source"].disabled, false);
+});
+
+test("desktop switching preserves manual disconnect and stale audio cannot enable replacement session", async () => {
+  const app = harness();
+  const socket = app.ready();
+  desktopReady(socket, "virtual", { audio: true });
+  let resume;
+  app.AudioContext.prototype.resume = () => new Promise((resolve) => { resume = resolve; });
+  app.nodes.audio.fire("click");
+  app.nodes["desktop-source"].value = "physical";
+  app.nodes["desktop-source"].fire("change");
+  app.nodes.connection.fire("click");
+  socket.finishClose();
+  resume();
+  await flush();
+  assert.equal(app.sockets.length, 1);
+  assert.equal(app.timers.size, 0);
+  app.nodes.connection.fire("click");
+  const physical = app.sockets.at(-1);
+  physical.open();
+  desktopReady(physical, "physical", { audio: false });
+  assert.equal(app.nodes.audio.disabled, true);
+  assert.equal(physical.sent.some((command) => command.type === "audio" && command.enabled), false);
+});
 
 test("toolbar drags to all four edges, suppresses drag click and restores persisted position", () => {
   const storage = new Map();
@@ -464,6 +641,39 @@ test("H.264 waits for codec setup, acknowledges rendered frames and closes stale
   assert.equal(decoders[1].state, "closed");
 });
 
+test("pipelined H.264 shares one watchdog until all rendered frames are acknowledged", async () => {
+  const app = harness();
+  let decoder;
+  app.window.VideoDecoder = class {
+    state = "unconfigured";
+    decodeQueueSize = 0;
+    chunks = [];
+    static async isConfigSupported() { return { supported: true }; }
+    constructor(callbacks) { this.callbacks = callbacks; decoder = this; }
+    configure() { this.state = "configured"; }
+    decode(chunk) { this.chunks.push(chunk); }
+    close() { this.state = "closed"; }
+  };
+  app.window.EncodedVideoChunk = class { constructor(value) { Object.assign(this, value); } };
+  const socket = app.ready();
+  socket.json({ type: "ready", width: 1280, height: 720, audio: false, frame_ack: true, frame_ids: true, video_codecs: ["h264", "jpeg"] });
+  socket.json({ type: "video_config", codec: "avc1.42c01f", width: 1280, height: 720 });
+  await flush();
+  for (let id = 1; id <= 3; id++) {
+    socket.json({ type: "frame_id", id });
+    socket.binary(new Uint8Array([3, id === 1 ? 1 : 0, id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x65]).buffer);
+  }
+  const watchdogs = () => [...app.timers.values()].filter((timer) => timer.delay === 2000);
+  assert.equal(decoder.chunks.length, 3);
+  assert.equal(watchdogs().length, 1);
+  for (let id = 1; id <= 3; id++) {
+    decoder.callbacks.output({ displayWidth: 1280, displayHeight: 720, timestamp: id, close() {} });
+    assert.equal(socket.sent.at(-1).id, id);
+    assert.equal(watchdogs().length, id === 3 ? 0 : 1);
+  }
+  assert.equal(decoder.state, "configured");
+});
+
 test("automatic resolution follows viewport CSS pixels with debounce, even dimensions and manual opt-out", () => {
   const app = harness();
   const socket = app.ready();
@@ -502,7 +712,7 @@ function pcm(frames = 1) {
 
 test("same-origin socket, readiness gates input, evdev mappings have no XKB offset", () => {
   const app = harness();
-  assert.equal(app.sockets[0].url, "wss://desktop.test/ws");
+  assert.equal(app.sockets[0].url, "wss://desktop.test/ws?desktop=virtual");
   app.fireKey("KeyA");
   assert.deepEqual(app.sockets[0].sent, []);
   const socket = app.ready();
@@ -523,7 +733,7 @@ test("same-origin socket, readiness gates input, evdev mappings have no XKB offs
 test("nested gateway prefix is preserved for WebSocket and asset URLs", () => {
   const pathname = "/remote-desktop/test-opaque-path/";
   const app = harness(pathname);
-  assert.equal(app.sockets[0].url, "wss://desktop.test/remote-desktop/test-opaque-path/ws");
+  assert.equal(app.sockets[0].url, "wss://desktop.test/remote-desktop/test-opaque-path/ws?desktop=virtual");
   assert.match(html, /href="style\.css"/);
   assert.match(html, /src="app\.js"/);
   for (const asset of ["style.css", "app.js"]) {
@@ -531,7 +741,7 @@ test("nested gateway prefix is preserved for WebSocket and asset URLs", () => {
   }
   app.sockets[0].finishClose();
   app.tick();
-  assert.equal(app.sockets[1].url, "wss://desktop.test/remote-desktop/test-opaque-path/ws");
+  assert.equal(app.sockets[1].url, "wss://desktop.test/remote-desktop/test-opaque-path/ws?desktop=virtual");
 });
 
 test("modifiers pressed before focus are synchronized and right modifiers stay distinct", () => {

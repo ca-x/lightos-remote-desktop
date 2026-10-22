@@ -73,6 +73,93 @@ function createClient() {
   let keyboardCaptureWanted = true;
   let keyboardRequest = false;
   let keyboardToken = 0;
+  let desktopMode = "virtual";
+  let selectedOutput = null;
+  let desktopChoices = [];
+  let desktopOutputs = [];
+  let resizeAvailable = true;
+  let switchingDesktop = false;
+  let discoveryRequest = 0;
+  let refreshingDesktops = false;
+
+  function desktopLabel() {
+    return desktopMode === "physical" ? "物理桌面" : "虚拟桌面";
+  }
+
+  function desktopStatus(text) {
+    element("desktop-status").textContent = text;
+    element("desktop-status").setAttribute("title", text);
+  }
+
+  function outputSummary(output) {
+    return `${output.name} · ${output.width} × ${output.height} · 缩放 ${output.scale ?? 1}×`;
+  }
+
+  function outputTitle(output) {
+    return `${output.description ? `${output.description} · ` : ""}${outputSummary(output)} · 位置 (${output.x ?? "?"}, ${output.y ?? "?"})`;
+  }
+
+  function populateDesktops(value) {
+    desktopChoices = Array.isArray(value.desktops) ? value.desktops.filter((desktop) =>
+      desktop && ["virtual", "physical"].includes(desktop.mode) && typeof desktop.label === "string") : [];
+    const select = element("desktop-source");
+    select.replaceChildren();
+    for (const desktop of desktopChoices) {
+      const option = document.createElement("option");
+      option.value = desktop.mode;
+      option.textContent = desktop.label;
+      option.disabled = desktop.available !== true;
+      option.setAttribute("title", desktop.available === true ? desktop.label : desktop.reason || "桌面不可用");
+      select.appendChild(option);
+    }
+    select.value = desktopMode;
+    const unavailable = desktopChoices.filter((desktop) => desktop.available !== true)
+      .map((desktop) => `${desktop.label}：${desktop.reason || "不可用"}`);
+    select.setAttribute("title", ["切换桌面来源", ...unavailable].join("；"));
+    desktopOutputs = Array.isArray(value.outputs) ? value.outputs.filter((output) =>
+      output && typeof output.name === "string" && output.name && validDimensions(output.width, output.height)) : [];
+    const monitors = element("monitor-source");
+    monitors.replaceChildren();
+    for (const output of desktopOutputs) {
+      const option = document.createElement("option");
+      option.value = output.name;
+      option.textContent = `${output.name} · ${output.width} × ${output.height}`;
+      option.setAttribute("title", outputTitle(output));
+      monitors.appendChild(option);
+    }
+    monitors.value = selectedOutput || "";
+    const selected = desktopOutputs.find((output) => output.name === selectedOutput);
+    monitors.setAttribute("title", selected ? outputTitle(selected) : "选择一块物理显示器");
+    const connected = ready ? `已连接${desktopLabel()}${selected ? ` · ${outputSummary(selected)}` : selectedOutput ? ` · ${selectedOutput}` : ""}。` : "";
+    const reason = value.reason || unavailable.join("；");
+    if (connected || reason) desktopStatus([connected, reason].filter(Boolean).join("；"));
+    updateControls();
+    layoutTools();
+  }
+
+  function switchDesktop(mode, output = null) {
+    const choice = desktopChoices.find((desktop) => desktop.mode === mode);
+    if (!choice || choice.available !== true) {
+      element("desktop-source").value = desktopMode;
+      desktopStatus(choice?.reason || "桌面不可用");
+      return;
+    }
+    if (mode === desktopMode && output === selectedOutput) return;
+    release();
+    stopAudio();
+    desktopMode = mode;
+    selectedOutput = mode === "physical" ? output : null;
+    switchingDesktop = socket !== null;
+    clearTimeout(retryTimer);
+    retryTimer = null;
+    clearTimeout(connectionTimer);
+    connectionTimer = null;
+    retries = 0;
+    resetSession();
+    desktopStatus(`${wanted ? "正在连接" : "已选择"}${desktopLabel()}，${wanted ? "尚未确认" : "尚未连接"}${selectedOutput ? ` · ${selectedOutput}` : ""}。`);
+    if (socket) socket.close(1000, "Switch desktop");
+    else connect();
+  }
 
   function updateKeyboardCapture() {
     element("keyboard-capture").setAttribute("aria-pressed", String(keyboardCaptured));
@@ -224,6 +311,15 @@ function createClient() {
 
   function updateControls() {
     for (const id of controls) element(id).disabled = !ready;
+    for (const id of ["width", "height", "apply-size", "auto-resolution"]) element(id).disabled = !ready || !resizeAvailable;
+    element("resize").setAttribute("aria-disabled", String(!ready || !resizeAvailable));
+    element("resize").setAttribute("title", resizeAvailable ? "调整虚拟桌面分辨率" : "物理桌面不支持更改显示器分辨率");
+    element("desktop-controls").hidden = desktopChoices.length === 0;
+    element("desktop-source").disabled = desktopChoices.length === 0;
+    element("desktop-source").value = desktopMode;
+    element("monitor-controls").hidden = desktopMode !== "physical" || desktopChoices.length === 0;
+    element("monitor-source").disabled = !ready || switchingDesktop || desktopOutputs.length === 0;
+    element("refresh-desktops").disabled = refreshingDesktops || switchingDesktop;
     element("audio").disabled = !ready || !audioAvailable;
     const audioLabel = audioContext ? "关闭声音" : "开启声音";
     for (const attribute of ["aria-label", "title", "data-tip"]) element("audio").setAttribute(attribute, audioLabel);
@@ -281,6 +377,9 @@ function createClient() {
   }
 
   function resetSession() {
+    discoveryRequest += 1;
+    refreshingDesktops = false;
+    canvas.hidden = true;
     unlockKeyboard();
     stopMetrics();
     clearTimeout(autoResizeTimer);
@@ -307,6 +406,9 @@ function createClient() {
     element("state").textContent = "Connecting";
     const url = new URL("./ws", location.href);
     url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    url.searchParams.set("desktop", desktopMode);
+    if (desktopMode === "physical" && selectedOutput) url.searchParams.set("output", selectedOutput);
+    if (desktopChoices.length) desktopStatus(`正在连接${desktopLabel()}，尚未确认${selectedOutput ? ` · ${selectedOutput}` : ""}。`);
     let current;
     try { current = new WebSocket(url); } catch (error) {
       message(`Could not connect: ${error.message}`);
@@ -318,6 +420,7 @@ function createClient() {
       connectionTimer = null;
       if (socket !== current || ready) return;
       message("Desktop readiness timed out; reconnecting.");
+      desktopStatus(`${desktopLabel()}连接超时，可切回虚拟桌面。`);
       current.close(4000, "Readiness timeout");
       resetSession();
     }, 15000);
@@ -328,7 +431,7 @@ function createClient() {
       message("Connected; waiting for server readiness.");
     };
     current.onmessage = (event) => {
-      if (current !== socket || !wanted || destroyed) return;
+      if (current !== socket || !wanted || destroyed || switchingDesktop) return;
       if (typeof event.data === "string") {
         receiveJSON(event.data);
       } else if (ready && event.data instanceof ArrayBuffer && event.data.byteLength > 1) {
@@ -347,7 +450,8 @@ function createClient() {
       }
     };
     current.onerror = () => {
-      if (current !== socket) return;
+      if (current !== socket || switchingDesktop) return;
+      desktopStatus(`${desktopLabel()}连接失败，请检查会话是否可用，或切回虚拟桌面。`);
       message("Connection failed. Check browser authentication, server availability, or another active controller.");
       current.close();
     };
@@ -358,7 +462,11 @@ function createClient() {
       socket = null;
       resetSession();
       element("state").textContent = "Disconnected";
-      scheduleRetry();
+      if (switchingDesktop) {
+        switchingDesktop = false;
+        updateControls();
+        connect();
+      } else scheduleRetry();
     };
   }
 
@@ -374,6 +482,7 @@ function createClient() {
 
   function disconnect() {
     wanted = false;
+    switchingDesktop = false;
     clearTimeout(retryTimer);
     retryTimer = null;
     clearTimeout(connectionTimer);
@@ -402,6 +511,11 @@ function createClient() {
         element("height").value = height;
       }
       ready = true;
+      desktopMode = value.desktop === "physical" ? "physical" : "virtual";
+      selectedOutput = desktopMode === "physical" && typeof value.output === "string" ? value.output : null;
+      resizeAvailable = desktopMode !== "physical" && value.resize !== false;
+      desktopStatus(`已连接${desktopLabel()}${selectedOutput ? ` · ${selectedOutput}` : ""}。`);
+      populateDesktops(value);
       if (value.metrics === true) {
         stopMetrics();
         metricsStarted = performance.now();
@@ -439,6 +553,7 @@ function createClient() {
       }
     } else if (value.type === "error" && typeof value.message === "string") {
       message(`Server: ${value.message.slice(0, 2048)}`);
+      desktopStatus(`${desktopLabel()}：${value.message.slice(0, 2048)}`);
     }
   }
 
@@ -459,6 +574,7 @@ function createClient() {
             }
             resizeCanvas(bitmap.width, bitmap.height);
             drawing.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+            canvas.hidden = false;
             recordFrame("JPEG");
           }
         } catch {
@@ -521,9 +637,11 @@ function createClient() {
             if (!validDimensions(frame.displayWidth, frame.displayHeight)) { fallbackVideo(); return; }
             resizeCanvas(frame.displayWidth, frame.displayHeight);
             drawing.drawImage(frame, 0, 0, canvas.width, canvas.height);
+            canvas.hidden = false;
             recordFrame("H.264");
             const id = videoFrameIds.get(frame.timestamp);
             videoFrameIds.delete(frame.timestamp);
+            updateVideoWatchdog();
             if (frameAcknowledgements) acknowledgeFrame(id);
           } finally { frame.close(); }
         },
@@ -538,6 +656,18 @@ function createClient() {
     } catch { if (token === videoToken && session === generation && ready) fallbackVideo(); }
   }
 
+  function updateVideoWatchdog() {
+    clearTimeout(videoTimer);
+    videoTimer = null;
+    if (videoFrameIds.size === 0) return;
+    const token = videoToken;
+    const session = generation;
+    videoTimer = setTimeout(() => {
+      videoTimer = null;
+      if (token === videoToken && session === generation && ready && !destroyed) fallbackVideo();
+    }, 2000);
+  }
+
   function receiveVideo(data, id) {
     if (data.byteLength <= 10) { fallbackVideo(); return; }
     if (configuringVideo) {
@@ -550,7 +680,7 @@ function createClient() {
     const timestamp = view.getUint32(2, true) + view.getUint32(6, true) * 4294967296;
     try {
       videoFrameIds.set(timestamp, id);
-      videoTimer = setTimeout(() => { videoTimer = null; fallbackVideo(); }, 2000);
+      updateVideoWatchdog();
       videoDecoder.decode(new window.EncodedVideoChunk({ type: view.getUint8(1) === 1 ? "key" : "delta", timestamp, data: new Uint8Array(data, 10) }));
     } catch { fallbackVideo(); }
   }
@@ -794,6 +924,32 @@ function createClient() {
     else { wanted = true; retries = 0; updateControls(); connect(); }
   });
   listen(element("audio"), "click", () => { void toggleAudio(); });
+  listen(element("desktop-source"), "change", () => {
+    switchDesktop(element("desktop-source").value);
+  });
+  listen(element("monitor-source"), "change", () => {
+    const output = element("monitor-source").value;
+    if (desktopMode === "physical" && desktopOutputs.some((monitor) => monitor.name === output)) switchDesktop("physical", output);
+  });
+  listen(element("refresh-desktops"), "click", async () => {
+    if (refreshingDesktops || switchingDesktop || !desktopChoices.length) return;
+    const request = ++discoveryRequest;
+    refreshingDesktops = true;
+    updateControls();
+    try {
+      const response = await fetch(new URL("./desktops", location.href), { credentials: "same-origin", cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const value = await response.json();
+      if (request !== discoveryRequest || destroyed) return;
+      if (!value || !Array.isArray(value.desktops)) throw new Error("无效的桌面列表");
+      desktopStatus(ready ? `已连接${desktopLabel()}${selectedOutput ? ` · ${selectedOutput}` : ""}。` : "列表已刷新，当前连接尚未确认。");
+      populateDesktops(value);
+    } catch (error) {
+      if (request === discoveryRequest && !destroyed) desktopStatus(`刷新失败：${error.message}。仍可切回虚拟桌面。`);
+    } finally {
+      if (request === discoveryRequest) { refreshingDesktops = false; updateControls(); }
+    }
+  });
   async function displayMode(mode) {
     try {
       if (mode === "fullscreen") {
@@ -830,10 +986,10 @@ function createClient() {
   function scheduleAutoResize() {
     clearTimeout(autoResizeTimer);
     autoResizeTimer = null;
-    if (!ready || !element("auto-resolution").checked) return;
+    if (!ready || !resizeAvailable || !element("auto-resolution").checked) return;
     autoResizeTimer = setTimeout(() => {
       autoResizeTimer = null;
-      if (!ready || !element("auto-resolution").checked || document.hidden || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return;
+      if (!ready || !resizeAvailable || !element("auto-resolution").checked || document.hidden || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return;
       const width = Math.max(320, Math.min(3840, Math.floor(viewport.clientWidth / 2) * 2));
       const height = Math.max(200, Math.min(2160, Math.floor(viewport.clientHeight / 2) * 2));
       const size = `${width}x${height}`;
@@ -899,6 +1055,7 @@ function createClient() {
   });
   listen(element("resize"), "submit", (event) => {
     event.preventDefault();
+    if (!ready || !resizeAvailable) return;
     const width = Number(element("width").value);
     const height = Number(element("height").value);
     if (!Number.isInteger(width) || !Number.isInteger(height) || width < 320 || width > 3840 || height < 200 || height > 2160) {

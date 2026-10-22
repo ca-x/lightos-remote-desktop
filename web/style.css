@@ -34,6 +34,13 @@ h1 { margin: 0; font-size: 15px; font-weight: 600; }
 .primary-controls { margin-top: 12px; gap: 6px; }
 .primary-controls .icon-button { flex: 0 0 38px; min-height: 38px; }
 #display-mode { font-size: 11px; color: #97a7c0; }
+.desktop-controls { margin-top: 12px; padding-top: 12px; border-top: 1px solid #383e49; font-size: 12px; }
+.desktop-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+#refresh-desktops { min-height: 32px; padding: 4px 8px; font-size: 12px; }
+.desktop-controls select { min-height: 36px; margin: 6px 0 0; }
+#monitor-controls { margin-top: 12px; }
+#desktop-status { margin-top: 8px; font-size: 11px; }
+.desktop-controls button:active:not(:disabled) { background: #454e60; }
 #performance, #video-details { font-size: 11px; font-variant-numeric: tabular-nums; }
 p { margin: 10px 0 0; font-size: 12px; line-height: 1.6; color: #b4bdcd; overflow-wrap: anywhere; }
 #message { padding-bottom: 12px; }

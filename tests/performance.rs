@@ -1,6 +1,120 @@
 use std::time::{Duration, Instant};
 
 #[tokio::test]
+#[ignore = "requires a dedicated candidate URL with continuously changing desktop content"]
+async fn video_throughput_with_delayed_render_ack() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use futures_util::{SinkExt, StreamExt};
+    use std::collections::VecDeque;
+    use tokio_tungstenite::{
+        connect_async,
+        tungstenite::{Message, client::IntoClientRequest},
+    };
+
+    let base = std::env::var("LIGHTOS_REMOTE_DESKTOP_TEST_URL").unwrap();
+    let rest = base.strip_prefix("http://").unwrap();
+    let (address, path) = rest.split_once('/').unwrap();
+    let password = std::env::var("LIGHTOS_REMOTE_DESKTOP_AUTH_PASSWORD").unwrap();
+    let user =
+        std::env::var("LIGHTOS_REMOTE_DESKTOP_AUTH_USER").unwrap_or_else(|_| "lightos".into());
+    let mut request = format!("ws://{address}/{path}ws")
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Basic {}", STANDARD.encode(format!("{user}:{password}")))
+            .parse()
+            .unwrap(),
+    );
+    request
+        .headers_mut()
+        .insert("Origin", format!("http://{address}").parse().unwrap());
+    let (mut socket, _) = connect_async(request).await.unwrap();
+    socket.next().await.unwrap().unwrap();
+    socket
+        .send(Message::Text(
+            serde_json::json!({"type":"video_flow","enabled":true,"sequenced":true})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let use_h264 = std::env::var("LIGHTOS_REMOTE_DESKTOP_TEST_CODEC").as_deref() == Ok("h264");
+    if use_h264 {
+        socket
+            .send(Message::Text(
+                "{\"type\":\"video\",\"codec\":\"h264\"}".into(),
+            ))
+            .await
+            .unwrap();
+    }
+    let delay = Duration::from_millis(
+        std::env::var("LIGHTOS_REMOTE_DESKTOP_TEST_ACK_MS")
+            .unwrap_or_else(|_| "120".into())
+            .parse()
+            .unwrap(),
+    );
+    let started = tokio::time::Instant::now();
+    let finish = started + Duration::from_secs(4);
+    let mut pending = VecDeque::new();
+    let mut frame_id = None;
+    let mut count = 0;
+    let mut h264_packets = Vec::new();
+    loop {
+        let next_ack = pending
+            .front()
+            .map(|(deadline, _)| *deadline)
+            .unwrap_or(finish);
+        tokio::select! {
+            _ = tokio::time::sleep_until(finish) => break,
+            _ = tokio::time::sleep_until(next_ack), if !pending.is_empty() => {
+                let (_, id) = pending.pop_front().unwrap();
+                socket.send(Message::Text(serde_json::json!({"type":"frame_ack","id":id}).to_string().into())).await.unwrap();
+            }
+            message = socket.next() => match message.unwrap().unwrap() {
+                Message::Text(text) => {
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    if value["type"] == "frame_id" { frame_id = value["id"].as_u64(); }
+                }
+                Message::Binary(bytes) if matches!(bytes.first(), Some(1 | 3)) => {
+                    count += 1;
+                    if bytes[0] == 3 { h264_packets.extend_from_slice(&bytes[10..]); }
+                    if let Some(id) = frame_id.take() { pending.push_back((tokio::time::Instant::now() + delay, id)); }
+                }
+                _ => {}
+            }
+        }
+    }
+    socket.close(None).await.unwrap();
+    let fps = count as f64 / started.elapsed().as_secs_f64();
+    println!(
+        "render ACK delay={delay:?}: frames={count}, fps={fps:.2}, h264_bytes={}",
+        h264_packets.len()
+    );
+    if use_h264 {
+        assert!(!h264_packets.is_empty(), "H.264 silently fell back to JPEG");
+    }
+    if !h264_packets.is_empty() {
+        use std::io::Write;
+        let mut stream = tempfile::NamedTempFile::new().unwrap();
+        stream.write_all(&h264_packets).unwrap();
+        assert!(
+            std::process::Command::new("ffmpeg")
+                .args(["-v", "error", "-xerror", "-f", "h264", "-i"])
+                .arg(stream.path())
+                .args(["-f", "null", "-"])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    assert!(
+        fps >= 15.0,
+        "video stalled behind delayed render ACK: {fps:.2} FPS"
+    );
+}
+
+#[tokio::test]
 #[ignore = "requires a dedicated candidate URL, credentials and its XDG_RUNTIME_DIR/HYPRLAND_INSTANCE_SIGNATURE; switches its workspace"]
 async fn video_credit_does_not_hold_keyboard_input() {
     use base64::{Engine, engine::general_purpose::STANDARD};

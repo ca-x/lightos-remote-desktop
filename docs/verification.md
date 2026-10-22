@@ -19,13 +19,63 @@ passes with a real ping/pong ID check. Chrome displays H.264 and the toolbar
 metrics on a real Omarchy desktop (local RTT 0..4 ms, not a WAN benchmark).
 The binary self-installer successfully activates this instrumentation update.
 
-The reported user-visible latency remains unresolved. The current single
-render-ack window bounds video throughput by round-trip time; this is a code
-observation, not yet confirmation of the user's bottleneck. DDIA's bounded
-backpressure, monotonic timing and tail-latency principles inform diagnosis;
-they do not imply adding database/log infrastructure to the media hot path.
+### Delayed-ACK throughput regression
+
+An isolated 1280x720 Omarchy candidate displaying FFplay's 30 FPS `testsrc2`
+reproduced the stop-and-wait bottleneck. A WebSocket test delays each render
+ACK by 120 ms without blocking its reader. Four-second runs measured:
+
+| Codec | Previous single-frame gate | Bounded adaptive window |
+| --- | --- | --- |
+| JPEG, 120 ms ACK delay | 8.50 FPS | 19.74 FPS |
+| H.264, 120 ms ACK delay | 8.00 FPS | 17.74 FPS |
+| JPEG, no injected ACK delay | 29.99 FPS | 30.24 FPS |
+
+This is synthetic ACK delay on localhost, not a bandwidth-limited WAN benchmark
+or input-to-display latency measurement. The user's actual external path still
+needs validation; this establishes a reproducible throughput defect, not that
+all perceived latency is fixed.
+
+The window starts at one, then uses send-to-render-ACK elapsed time divided by
+the configured frame interval, rounded up and capped at three. Legacy clients
+remain single-frame. Only an ID in the current outstanding set can advance the
+cumulative ACK: this permits JPEG's latest-pending-frame replacement without
+accepting stale codec-generation ACKs. Codec changes and H.264 encoder recreation
+clear outstanding credit and require a first-frame ACK again. Raw frames are
+sampled only when credit is available; encoded H.264 delta frames are not dropped.
+The browser has one token/session-scoped decode watchdog for all outstanding
+frames, retained after partial output and cleared after the last output.
+
+Reproduce on a dedicated candidate with continuously changing content:
+
+```sh
+LIGHTOS_REMOTE_DESKTOP_TEST_URL=http://127.0.0.1:18769/ \
+LIGHTOS_REMOTE_DESKTOP_AUTH_PASSWORD="$CANDIDATE_PASSWORD" \
+cargo test --locked --features bundled-jpeg --test performance \
+  video_throughput_with_delayed_render_ack -- --ignored --nocapture
+```
+
+Set `LIGHTOS_REMOTE_DESKTOP_TEST_CODEC=h264` to exercise H.264; the test also
+decodes the collected Annex-B stream with FFmpeg. Set
+`LIGHTOS_REMOTE_DESKTOP_TEST_ACK_MS=0` for the no-delay control. The assertion
+requires at least 15 FPS, intended for the default 120 ms and zero-delay cases.
+DDIA's bounded backpressure, monotonic timing and tail-latency principles inform
+diagnosis, not adding database/log infrastructure to the media hot path.
 
 ## Automated checks
+
+v0.1.1 follow-up: 35 Rust unit tests pass (two environment-specific tests ignored
+by default), 37 frontend tests pass, and the CLI installer fixture, 40 installer
+behaviors, 13 compatibility behaviors, fmt, clippy and bundled release build pass.
+The explicit FFmpeg encoder regression and live clipboard/audio protocol pass.
+Two existing isolated outputs validate selection, per-output cursor centers,
+physical resize rejection and return to the retained virtual desktop. Additional
+runs cover a 90-degree rotated output, negative positions and 1.25x scaling.
+Real Chrome switches virtual to attached output, changes to a 720x1280 portrait
+output using H.264, then returns to virtual with resizing restored. At a 375x812
+viewport, the toolbar remains in bounds without horizontal overflow. This does
+not validate actual physical GPU/display hardware; this host has no physical
+Wayland login socket. The unavailable physical-source state remains intentional.
 
 Application-launch regression: production Ghostty menu activation failed with
 `Gtk: Failed to open display`, while direct Wayland execution loaded OpenGL

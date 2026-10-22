@@ -41,6 +41,18 @@
           <button id="clipboard-toggle" class="icon-button" type="button" aria-label="文字与剪贴板" title="文字与剪贴板" data-tip="文字与剪贴板"><svg class="icon" aria-hidden="true"><use href="#icon-clipboard"/></svg></button>
           <button id="settings-toggle" class="icon-button" type="button" aria-label="分辨率设置" title="分辨率设置" data-tip="分辨率设置"><svg class="icon" aria-hidden="true"><use href="#icon-settings"/></svg></button>
         </div>
+        <section id="desktop-controls" class="desktop-controls" hidden aria-label="桌面来源">
+          <div class="desktop-heading">
+            <label for="desktop-source">桌面来源</label>
+            <button id="refresh-desktops" type="button" title="刷新物理会话与显示器列表，不切换桌面" aria-label="刷新桌面与显示器列表">刷新</button>
+          </div>
+          <select id="desktop-source" title="切换虚拟或物理桌面" aria-label="切换桌面来源" aria-describedby="desktop-status" disabled></select>
+          <div id="monitor-controls" hidden>
+            <label for="monitor-source">物理显示器</label>
+            <select id="monitor-source" title="选择一块物理显示器" aria-label="选择物理显示器" aria-describedby="desktop-status" disabled></select>
+          </div>
+          <p id="desktop-status" role="status" aria-live="polite"></p>
+        </section>
         <p id="display-mode" aria-live="polite">适应窗口</p>
         <p id="performance" title="FPS 为最近一秒实际绘制帧数，静止桌面不重复发送。RTT 为同一 WebSocket 的应用层往返时间，包含排队，不等于操作到画面的端到端延迟。">-- FPS · RTT -- ms</p>
         <p id="video-details">等待画面</p>
@@ -82,7 +94,7 @@
             </div>
           </section>
         </details>
-        <p id="help">点击桌面即可控制。Super+Space 打开应用，Super+Enter 打开终端（Super 即 Windows 键）。Ctrl+Alt+Shift+Esc 打开工具栏。中文可在文字框中输入后发送，最多 16 KiB；剪贴板只在点击时读取。这是独立远程桌面。</p>
+        <p id="help">点击桌面即可控制。虚拟桌面中 Super+Space 打开应用，Super+Enter 打开终端（Super 即 Windows 键）；物理桌面遵循本机会话的快捷键。Ctrl+Alt+Shift+Esc 打开工具栏。中文可在文字框中输入后发送，最多 16 KiB；剪贴板只在点击时读取。切换来源不会关闭虚拟桌面。</p>
       </section>
     </aside>
   </main>
