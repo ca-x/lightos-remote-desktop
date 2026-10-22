@@ -51,7 +51,11 @@ hardware in NVENC, VA-API, AMF, VideoToolbox order, then OpenH264. Each backend
 probe initializes a real encoder, encodes eight changing frames across two rate
 configurations, normalizes Annex B with FFmpeg and decodes all frames. Presence
 of an encoder name, program, device or library is insufficient. VideoToolbox
-software fallback is forbidden and the option is read back.
+software fallback is forbidden and the option is read back. VA-API tries each render
+node through frame initialization, encoder opening and the complete encode/decode
+probe; an unusable earlier node does not hide a later working GPU. The validated
+node is retained for that worker and its rate restarts. A new worker revalidates
+devices rather than trusting a previous process's device state.
 
 Native probes run in separate bounded processes and are cached for the service
 lifetime. Restart the transport to reprobe after changing drivers or permissions;
@@ -61,7 +65,8 @@ also checks the actual H.264 profile. A failed or rejected backend is excluded
 for that connection, with a fresh IDR on the next backend; software H.264 is
 tried before JPEG. Reconnect starts a new connection-specific failure set. The
 settings panel displays the active backend and fallback reason without changing
-the saved user preference.
+the saved user preference. Preference changes and profile retries carry request IDs;
+old configurations and packets cannot reject the newly requested encoder.
 
 Hardware encoders apply bitrate/FPS changes by explicitly reopening the native
 encoder and emitting IDR/SPS. This differs from OpenH264's in-place native rate
@@ -72,7 +77,9 @@ before encoding. Emitted predictive packets retain their order.
 
 ## Verification limits
 
-The private libx264 test fixture exercises native color conversion, Annex B,
+The private libx264 test fixture uses in-band Annex B headers on FFmpeg 6 and 9.
+A separate real avcC parameter-set and length-prefixed packet fixture verifies
+filter conversion and successful decoding. Together these exercise native color conversion, Annex B,
 predictive frames, rate restart and decoding without advertising CPU as hardware.
 The worker integration test probes the actual runner and reports negative results
 honestly. GPU-free CI does not prove working VA-API/NVENC/AMF/VideoToolbox devices.

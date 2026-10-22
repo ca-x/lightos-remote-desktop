@@ -92,6 +92,8 @@ export function createClient(options: ClientOptions = {}) {
   let pendingMove: Pick<PointerEvent, "clientX" | "clientY"> | null = null;
   let backendPreference = readPreference(encoderBackendKey, encoderBackends, "auto");
   let backendSelection = false;
+  let videoRequestIds = false;
+  let videoRequestId = 0;
   let activeBackend: string | null = null;
   let waitingForBackend = false;
   const rejectedBackends = new Set<string>();
@@ -743,6 +745,8 @@ export function createClient(options: ClientOptions = {}) {
       sequencedFrames = value.frame_ids === true;
       serverVideoCodecs = Array.isArray(value.video_codecs) ? value.video_codecs.filter((codec: unknown) => typeof codec === "string") : [];
       backendSelection = value.backend_selection === true;
+      videoRequestIds = value.video_request_ids === true;
+      videoRequestId = 0;
       activeBackend = null; waitingForBackend = false; rejectedBackends.clear();
       configureStreamStrategy();
       cancelTimer(connectionTimer);
@@ -836,12 +840,24 @@ export function createClient(options: ClientOptions = {}) {
     if (ready && frameAcknowledgements) send({ type: "video_flow", enabled: true, sequenced: sequencedFrames, strategy: strategyPreference });
   }
 
+  function requestVideo(codec: string, rejected?: string) {
+    closeVideo();
+    activeBackend = null;
+    waitingForBackend = true;
+    videoRequestId += 1;
+    send({ type: "video", codec,
+      ...(backendSelection && codec === "h264" ? { backend: backendPreference } : {}),
+      ...(rejected ? { rejected_backend: rejected } : {}),
+      ...(videoRequestIds ? { request_id: videoRequestId } : {}),
+    });
+  }
+
   function requestPreferredVideo(initial = false) {
     const available = frameAcknowledgements && sequencedFrames && serverVideoCodecs.includes("h264") && window.VideoDecoder && window.EncodedVideoChunk;
     if (videoPreference !== "jpeg" && available) {
-      send({ type: "video", codec: "h264", ...(backendSelection ? { backend: backendPreference } : {}) });
+      requestVideo("h264");
     } else {
-      if (!initial || videoPreference !== "auto") send({ type: "video", codec: "jpeg" });
+      if (!initial || videoPreference !== "auto") requestVideo("jpeg");
       if (videoPreference === "h264") message("H.264 is unavailable; using compatible JPEG video.");
     }
   }
@@ -867,15 +883,15 @@ export function createClient(options: ClientOptions = {}) {
     closeVideo();
     if (backendSelection && activeBackend && !rejectedBackends.has(activeBackend)) {
       rejectedBackends.add(activeBackend);
-      send({ type: "video", codec: "h264", backend: backendPreference, rejected_backend: activeBackend });
-      activeBackend = null; waitingForBackend = true;
+      requestVideo("h264", activeBackend);
       return;
     }
-    send({ type: "video", codec: "jpeg" });
+    requestVideo("jpeg");
     message("H.264 is unavailable; using compatible JPEG video.");
   }
 
-  async function configureVideo(value: {codec: string; width: number; height: number; backend?: string; fallback_reason?: string}) {
+  async function configureVideo(value: {codec: string; width: number; height: number; backend?: string; fallback_reason?: string; request_id?: number}) {
+    if (videoRequestIds && value.request_id !== videoRequestId) return;
     closeVideo();
     pendingFrame = null;
     waitingForBackend = false;

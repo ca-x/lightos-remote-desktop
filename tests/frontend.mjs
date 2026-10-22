@@ -1647,3 +1647,36 @@ test("browser rejects the active hardware profile and requests another H264 back
   await flush();
   assert.equal(socket.sent.some(p=>p.type==="video"&&p.codec==="jpeg"),false);
 });
+
+for (const [control, preference] of [["encoder-backend", "software"], ["video-codec", "h264"]]) {
+  test(`changing ${control} ignores old packets and configurations until the matching response`, async () => {
+    const app = harness();
+    app.window.VideoDecoder = class {
+      static async isConfigSupported(config) { return { supported: true, config }; }
+      constructor() { this.state = "unconfigured"; this.decodeQueueSize = 0; }
+      configure() { this.state = "configured"; }
+      decode() {}
+      close() { this.state = "closed"; }
+    };
+    app.window.EncodedVideoChunk = class { constructor(value) { Object.assign(this, value); } };
+    const socket = app.sockets.at(-1); socket.open();
+    socket.json({ type: "ready", width: 1280, height: 720, frame_ack: true, frame_ids: true, video_codecs: ["h264", "jpeg"], backend_selection: true, video_request_ids: true });
+    const original = socket.sent.find(p => p.type === "video");
+    const config = { type: "video_config", codec: "avc1.42c01f", width: 1280, height: 720, backend: "openh264", request_id: original.request_id };
+    socket.json(config); await flush();
+    socket.sent.length = 0;
+    app.nodes[control].value = preference; app.nodes[control].fire("change");
+    const request = socket.sent.find(p => p.type === "video");
+    socket.binary(new Uint8Array([3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x41, 1]).buffer);
+    assert.equal(socket.sent.some(p => p.rejected_backend || p.codec === "jpeg"), false);
+    socket.json(config); // Configuration already queued before the preference changed.
+    socket.binary(new Uint8Array([3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x41, 1]).buffer);
+    await flush();
+    assert.equal(socket.sent.some(p => p.rejected_backend || p.codec === "jpeg"), false);
+    assert.ok(Number.isSafeInteger(request.request_id) && request.request_id > original.request_id);
+    socket.json({ ...config, request_id: request.request_id }); await flush();
+    socket.binary(new Uint8Array([3, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x65, 1]).buffer);
+    await flush();
+    assert.equal(socket.sent.some(p => p.rejected_backend || p.codec === "jpeg"), false);
+  });
+}

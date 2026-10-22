@@ -673,7 +673,7 @@ async fn connection(
         .map(|c| c.codec)
         .collect();
     let ready = Message::Text(
-        json!({"type":"ready","backend_selection":true,"control_release":true,"resize_scale":display_capabilities.resize_scale,"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":"embedded","audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktops":state.desktop_options(),"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
+        json!({"type":"ready","backend_selection":true,"video_request_ids":true,"control_release":true,"resize_scale":display_capabilities.resize_scale,"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":"embedded","audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktops":state.desktop_options(),"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
 
             .to_string()
             .into(),
@@ -705,6 +705,7 @@ async fn connection(
     let mut selected_backend: Option<EncoderBackend> = None;
     let mut fallback_reason: Option<String> = None;
     let mut h264 = false;
+    let mut video_request_id = None;
     let mut encoder: Option<Box<dyn VideoEncoder>> = None;
     let mut codec = None;
     let video_started = std::time::Instant::now();
@@ -754,7 +755,7 @@ async fn connection(
                                 }
                                 if let Some(configuration) = encoded.codec
                                     && codec.as_ref() != Some(&configuration) {
-                                        let message = Message::Text(json!({"type":"video_config","codec":configuration,"width":frame.width,"height":frame.height,"backend":selected_backend.map(EncoderBackend::id),"fallback_reason":fallback_reason}).to_string().into());
+                                        let message = Message::Text(json!({"type":"video_config","request_id":video_request_id,"codec":configuration,"width":frame.width,"height":frame.height,"backend":selected_backend.map(EncoderBackend::id),"fallback_reason":fallback_reason}).to_string().into());
                                         if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(message)).await, Ok(Ok(()))) { break; }
                                         codec = Some(configuration);
                                 }
@@ -775,7 +776,7 @@ async fn connection(
                                 encoder.take(); codec = None;
                                 applied_rate = None;
                                 if h264 { continue; }
-                                let message = Message::Text(json!({"type":"video_config","codec":"jpeg","backend":"turbojpeg","fallback_reason":fallback_reason}).to_string().into());
+                                let message = Message::Text(json!({"type":"video_config","request_id":video_request_id,"codec":"jpeg","backend":"turbojpeg","fallback_reason":fallback_reason}).to_string().into());
                                 if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(message)).await, Ok(Ok(()))) { break; }
                             }
                         }
@@ -849,6 +850,7 @@ async fn connection(
                             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
                                 && value.get("type").and_then(|kind| kind.as_str()) == Some("video")
                             {
+                                video_request_id = value.get("request_id").and_then(|id| id.as_u64()).filter(|id| (1..=9_007_199_254_740_991).contains(id));
                                 fallback_reason = None;
                                 if let Some(preference) = value.get("backend").and_then(|v| serde_json::from_value(v.clone()).ok()) { backend_preference = preference; }
                                 if let Some(rejected) = value.get("rejected_backend").and_then(|v| v.as_str())
@@ -872,7 +874,7 @@ async fn connection(
                                 });
                                 applied_rate = None; applied_jpeg_quality = None;
                                 if !h264 {
-                                    let message = Message::Text(json!({"type":"video_config","codec":"jpeg","backend":"turbojpeg","fallback_reason":fallback_reason}).to_string().into());
+                                    let message = Message::Text(json!({"type":"video_config","request_id":video_request_id,"codec":"jpeg","backend":"turbojpeg","fallback_reason":fallback_reason}).to_string().into());
                                     if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(message)).await, Ok(Ok(()))) { break; }
                                 }
                                 continue;

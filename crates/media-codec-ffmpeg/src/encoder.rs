@@ -7,7 +7,11 @@ use media_codec::{
     EncodedFrame, EncoderBackend, EncoderRate, EncoderSettings, default_bitrate, h264_packet_info,
     worker_protocol::{validate_pixels, validate_settings},
 };
-use std::{ffi::CString, ptr};
+use std::{
+    ffi::CString,
+    path::{Path, PathBuf},
+    ptr,
+};
 
 /// References attached to AVCodecContext/AVFrame remain owned by FFmpeg. These
 /// wrappers hold separate references and release them exactly once.
@@ -83,6 +87,7 @@ pub struct NativeEncoder {
     upload: Option<Buffer>,
     scaler: scaling::Context,
     pts: i64,
+    vaapi_device: Option<PathBuf>,
 }
 impl NativeEncoder {
     pub fn new(
@@ -101,6 +106,17 @@ impl NativeEncoder {
             EncoderBackend::VideoToolbox => "h264_videotoolbox",
             _ => bail!("software encoding is handled by the core"),
         };
+        if backend == EncoderBackend::Vaapi {
+            // Validate the complete encoder and rate-restart path per device.
+            // A render node that merely creates a frame pool is not sufficient.
+            return try_devices(vaapi_devices()?, |device| {
+                let mut candidate =
+                    Self::open_on_device(name, backend, settings, rate, Some(device))?;
+                verify(&mut candidate, settings, rate)?;
+                drop(candidate);
+                Self::open_on_device(name, backend, settings, rate, Some(device))
+            });
+        }
         Self::open(name, backend, settings, rate)
     }
     fn open(
@@ -108,6 +124,15 @@ impl NativeEncoder {
         backend: EncoderBackend,
         settings: EncoderSettings,
         rate: EncoderRate,
+    ) -> Result<Self> {
+        Self::open_on_device(name, backend, settings, rate, None)
+    }
+    fn open_on_device(
+        name: &'static str,
+        backend: EncoderBackend,
+        settings: EncoderSettings,
+        rate: EncoderRate,
+        device: Option<&Path>,
     ) -> Result<Self> {
         validate_settings(settings)?;
         rate.validate()?;
@@ -129,17 +154,17 @@ impl NativeEncoder {
         encoder.set_max_bit_rate(rate.bitrate_bps as usize);
         encoder.set_gop(rate.fps * 2);
         encoder.set_max_b_frames(0);
-        encoder.set_flags(if backend.is_hardware() {
-            codec::Flags::LOW_DELAY
-        } else {
-            codec::Flags::LOW_DELAY | codec::Flags::GLOBAL_HEADER
-        });
+        encoder.set_flags(codec::Flags::LOW_DELAY);
         // Keep VBV bounded; this is a real native bitrate, not just FPS pacing.
         unsafe {
             (*encoder.as_mut_ptr()).rc_buffer_size = rate.bitrate_bps as i32;
         }
         let upload = if backend == EncoderBackend::Vaapi {
-            Some(vaapi_frames(&mut encoder, settings)?)
+            Some(vaapi_frames(
+                &mut encoder,
+                settings,
+                device.context("missing VA-API device")?,
+            )?)
         } else {
             None
         };
@@ -178,7 +203,7 @@ impl NativeEncoder {
             _ => {
                 opts.set("preset", "ultrafast");
                 opts.set("tune", "zerolatency");
-                opts.set("x264-params", "annexb=0");
+                opts.set("x264-params", "annexb=1:repeat-headers=1");
             }
         }
         let encoder = encoder
@@ -223,6 +248,7 @@ impl NativeEncoder {
             upload,
             scaler,
             pts: 0,
+            vaapi_device: device.map(Path::to_owned),
         })
     }
     pub fn encode(&mut self, pixels: &[u8], rate: EncoderRate) -> Result<EncodedFrame> {
@@ -231,7 +257,13 @@ impl NativeEncoder {
         if self.rate != rate {
             // No common reliable live-rate API exists across these drivers.
             // Reopen explicitly; the next access unit must be an IDR with SPS.
-            *self = Self::open(self.name, self.backend, self.settings, rate)?;
+            *self = Self::open_on_device(
+                self.name,
+                self.backend,
+                self.settings,
+                rate,
+                self.vaapi_device.as_deref(),
+            )?;
         }
         let mut rgba = frame::Video::new(Pixel::RGBA, self.settings.width, self.settings.height);
         let row = self.settings.width as usize * 4;
@@ -289,58 +321,68 @@ fn check(status: i32, action: &str) -> Result<()> {
     }
     Ok(())
 }
-fn vaapi_frames(encoder: &mut encoder::video::Video, settings: EncoderSettings) -> Result<Buffer> {
+fn vaapi_devices() -> Result<Vec<PathBuf>> {
     let mut candidates: Vec<_> = std::fs::read_dir("/dev/dri")
-        .into_iter()
-        .flatten()
+        .context("read VA-API render nodes")?
         .filter_map(Result::ok)
         .filter(|e| e.file_name().to_string_lossy().starts_with("renderD"))
         .map(|e| e.path())
         .collect();
     candidates.sort();
     ensure!(!candidates.is_empty(), "no VA-API render nodes found");
+    Ok(candidates)
+}
+fn try_devices<T>(
+    candidates: Vec<PathBuf>,
+    mut attempt: impl FnMut(&Path) -> Result<T>,
+) -> Result<T> {
     let mut errors = Vec::new();
     for path in candidates {
-        let name = CString::new(path.to_string_lossy().as_bytes())?;
-        let mut device = ptr::null_mut();
-        // SAFETY: generated FFmpeg ABI, owned buffer refs, no retained CString
-        // pointer. The codec gets its own ref and releases it with its context.
-        unsafe {
-            let status = ffi::av_hwdevice_ctx_create(
+        match attempt(&path) {
+            Ok(encoder) => return Ok(encoder),
+            Err(error) => errors.push(format!("{}: {error:#}", path.display())),
+        }
+    }
+    bail!("no verified VA-API encoder: {}", errors.join("; "))
+}
+fn vaapi_frames(
+    encoder: &mut encoder::video::Video,
+    settings: EncoderSettings,
+    path: &Path,
+) -> Result<Buffer> {
+    let name = CString::new(path.to_string_lossy().as_bytes())?;
+    let mut device = ptr::null_mut();
+    // SAFETY: generated FFmpeg ABI, owned buffer refs, no retained CString
+    // pointer. The codec gets its own ref and releases it with its context.
+    unsafe {
+        check(
+            ffi::av_hwdevice_ctx_create(
                 &mut device,
                 ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
                 name.as_ptr(),
                 ptr::null_mut(),
                 0,
-            );
-            if status < 0 {
-                errors.push(format!(
-                    "{}: {}",
-                    path.display(),
-                    ffmpeg::Error::from(status)
-                ));
-                continue;
-            }
-            let device = Buffer(device);
-            let frames = Buffer(ffi::av_hwframe_ctx_alloc(device.0));
-            ensure!(!frames.0.is_null(), "allocate VA-API frame context failed");
-            let context = (*frames.0).data.cast::<ffi::AVHWFramesContext>();
-            (*context).format = ffi::AVPixelFormat::AV_PIX_FMT_VAAPI;
-            (*context).sw_format = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
-            (*context).width = settings.width as i32;
-            (*context).height = settings.height as i32;
-            (*context).initial_pool_size = 4;
-            check(
-                ffi::av_hwframe_ctx_init(frames.0),
-                "initialize VA-API frames",
-            )?;
-            let owned = ffi::av_buffer_ref(frames.0);
-            ensure!(!owned.is_null(), "reference VA-API frames failed");
-            (*encoder.as_mut_ptr()).hw_frames_ctx = owned;
-            return Ok(frames);
-        }
+            ),
+            "initialize VA-API device",
+        )?;
+        let device = Buffer(device);
+        let frames = Buffer(ffi::av_hwframe_ctx_alloc(device.0));
+        ensure!(!frames.0.is_null(), "allocate VA-API frame context failed");
+        let context = (*frames.0).data.cast::<ffi::AVHWFramesContext>();
+        (*context).format = ffi::AVPixelFormat::AV_PIX_FMT_VAAPI;
+        (*context).sw_format = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
+        (*context).width = settings.width as i32;
+        (*context).height = settings.height as i32;
+        (*context).initial_pool_size = 4;
+        check(
+            ffi::av_hwframe_ctx_init(frames.0),
+            "initialize VA-API frames",
+        )?;
+        let owned = ffi::av_buffer_ref(frames.0);
+        ensure!(!owned.is_null(), "reference VA-API frames failed");
+        (*encoder.as_mut_ptr()).hw_frames_ctx = owned;
+        Ok(frames)
     }
-    bail!("VA-API device initialization failed: {}", errors.join("; "))
 }
 pub fn probe(backend: EncoderBackend) -> Result<String> {
     let settings = EncoderSettings {
@@ -353,10 +395,14 @@ pub fn probe(backend: EncoderBackend) -> Result<String> {
         bitrate_bps: default_bitrate(settings.width, settings.height),
         fps: 30,
     };
-    verify(NativeEncoder::new(backend, settings, rate)?, settings, rate)
+    verify(
+        &mut NativeEncoder::new(backend, settings, rate)?,
+        settings,
+        rate,
+    )
 }
 fn verify(
-    mut encoder: NativeEncoder,
+    encoder: &mut NativeEncoder,
     settings: EncoderSettings,
     rate: EncoderRate,
 ) -> Result<String> {
@@ -429,6 +475,125 @@ fn verify(
 mod tests {
     use super::*;
     #[test]
+    fn vaapi_device_selection_continues_after_frame_or_encoding_failure() {
+        let paths = ["renderD128", "renderD129", "renderD130"]
+            .map(PathBuf::from)
+            .to_vec();
+        let mut attempted = Vec::new();
+        let selected = try_devices(paths.clone(), |path| {
+            attempted.push(path.to_owned());
+            match path.to_str().unwrap() {
+                "renderD128" => bail!("frame context initialization failed"),
+                "renderD129" => bail!("frame context ready but H264 encode/decode failed"),
+                _ => Ok(path.to_owned()),
+            }
+        })
+        .unwrap();
+        assert_eq!(attempted, paths);
+        assert_eq!(selected, Path::new("renderD130"));
+    }
+
+    #[test]
+    fn valid_avcc_extradata_and_length_prefixed_packet_convert_and_decode() {
+        ffmpeg::init().unwrap();
+        let settings = EncoderSettings {
+            width: 640,
+            height: 360,
+            fps: 30,
+            quality: 75,
+        };
+        let rate = EncoderRate {
+            bitrate_bps: 900_000,
+            fps: 30,
+        };
+        let mut encoder =
+            NativeEncoder::open("libx264", EncoderBackend::OpenH264, settings, rate).unwrap();
+        let pixels = [64, 128, 192, 255].repeat(640 * 360);
+        let encoded = encoder.encode(&pixels, rate).unwrap();
+        // Construct an actual AVCDecoderConfigurationRecord from the encoded
+        // parameter sets. FFmpeg 6 libx264 annexb=0 extradata is raw NAL lengths,
+        // while FFmpeg 9 packages avcC; neither fixture behavior is assumed.
+        let starts: Vec<_> = encoded
+            .data
+            .windows(3)
+            .enumerate()
+            .filter(|(_, bytes)| *bytes == [0, 0, 1])
+            .map(|(i, _)| {
+                (
+                    if i > 0 && encoded.data[i - 1] == 0 {
+                        i - 1
+                    } else {
+                        i
+                    },
+                    i + 3,
+                )
+            })
+            .collect();
+        let nals: Vec<_> = starts
+            .iter()
+            .enumerate()
+            .map(|(i, (_, start))| {
+                &encoded.data[*start
+                    ..starts
+                        .get(i + 1)
+                        .map_or(encoded.data.len(), |(offset, _)| *offset)]
+            })
+            .collect();
+        let sps = nals.iter().find(|nal| nal[0] & 31 == 7).unwrap();
+        let pps = nals.iter().find(|nal| nal[0] & 31 == 8).unwrap();
+        let mut avcc = vec![1, sps[1], sps[2], sps[3], 0xff, 0xe1];
+        avcc.extend_from_slice(&(sps.len() as u16).to_be_bytes());
+        avcc.extend_from_slice(sps);
+        avcc.push(1);
+        avcc.extend_from_slice(&(pps.len() as u16).to_be_bytes());
+        avcc.extend_from_slice(pps);
+        let mut packet = Vec::new();
+        for nal in nals.iter().filter(|nal| !matches!(nal[0] & 31, 7 | 8)) {
+            packet.extend_from_slice(&(nal.len() as u32).to_be_bytes());
+            packet.extend_from_slice(nal);
+        }
+        let mut filter = unsafe {
+            let mut context = ptr::null_mut();
+            check(
+                ffi::av_bsf_alloc(
+                    ffi::av_bsf_get_by_name(c"h264_mp4toannexb".as_ptr()),
+                    &mut context,
+                ),
+                "allocate fixture filter",
+            )
+            .unwrap();
+            let filter = Bitstream(context);
+            check(
+                ffi::avcodec_parameters_from_context((*context).par_in, encoder.encoder.as_ptr()),
+                "copy fixture parameters",
+            )
+            .unwrap();
+            let parameters = &mut *(*context).par_in;
+            assert!(parameters.extradata.is_null());
+            parameters.extradata =
+                ffi::av_mallocz(avcc.len() + ffi::AV_INPUT_BUFFER_PADDING_SIZE as usize).cast();
+            assert!(!parameters.extradata.is_null());
+            ptr::copy_nonoverlapping(avcc.as_ptr(), parameters.extradata, avcc.len());
+            parameters.extradata_size = avcc.len() as i32;
+            check(ffi::av_bsf_init(context), "initialize valid avcC fixture").unwrap();
+            filter
+        };
+        let converted = filter.convert(&mut Packet::copy(&packet)).unwrap();
+        let (key, profile) = h264_packet_info(&converted);
+        assert!(key && profile.is_some(), "filter must insert avcC SPS/PPS");
+        let mut decoder = codec::context::Context::new_with_codec(
+            ffmpeg::decoder::find(codec::Id::H264).unwrap(),
+        )
+        .decoder()
+        .video()
+        .unwrap();
+        decoder.send_packet(&Packet::copy(&converted)).unwrap();
+        let mut picture = frame::Video::empty();
+        decoder.receive_frame(&mut picture).unwrap();
+        assert_eq!((picture.width(), picture.height()), (640, 360));
+    }
+
+    #[test]
     fn native_rgba_conversion_preserves_red_green_and_blue_channels() {
         ffmpeg::init().unwrap();
         let settings = EncoderSettings {
@@ -494,10 +659,10 @@ mod tests {
             fps: 30,
         };
         // Private fixture exercises FFmpeg without advertising CPU as hardware.
-        let encoder =
+        let mut encoder =
             NativeEncoder::open("libx264", EncoderBackend::OpenH264, settings, rate).unwrap();
         assert!(
-            verify(encoder, settings, rate)
+            verify(&mut encoder, settings, rate)
                 .unwrap()
                 .starts_with("avc1.")
         );
