@@ -5,7 +5,8 @@ import vm from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
 
 const source = stripTypeScriptTypes(readFileSync(new URL("../web/src/client.ts", import.meta.url), "utf8"))
-  .replace(/^export /gm, "") + "\nconst client = createClient(clientOptions);";
+  .replace(/^import .* from .*;$/gm, "")
+  .replace(/^export /gm, "") + '\nconst audioWorkerUrl = "./audio-worker.js"; const audioWorkletUrl = "./audio-worklet.js"; const client = createClient(clientOptions);';
 const html = readFileSync(new URL("../web/src/App.tsx", import.meta.url), "utf8");
 const builtHtml = readFileSync(new URL("../web/dist/index.html", import.meta.url), "utf8");
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -1089,6 +1090,175 @@ test("PCM reads unaligned little-endian stereo and bounds scheduled audio", asyn
   assert.equal(context.state, "closed");
   assert.ok(context.sources.every((item) => item.stopped && item.disconnected));
   assert.deepEqual(socket.sent.at(-1), { type: "audio", enabled: false });
+});
+
+test("dedicated audio preserves gateway prefix and never enables audio on the video socket", async () => {
+  const app = harness("/gateway/desktop/");
+  const video = app.ready();
+  video.json({ type: "ready", width: 1280, height: 720, audio: true, audio_session: 17 });
+  app.nodes.audio.fire("click");
+  await flush();
+  assert.equal(app.sockets.length, 2);
+  const audio = app.sockets[1];
+  assert.equal(audio.url, "wss://desktop.test/gateway/desktop/audio?session=17");
+  assert.equal(video.sent.some((command) => command.type === "audio"), false);
+  audio.open();
+  audio.json({ type: "audio_ready" });
+  audio.binary(pcm());
+  assert.equal(app.contexts[0].buffers.length, 1);
+  video.binary(pcm());
+  assert.equal(app.contexts[0].buffers.length, 1);
+  app.nodes.audio.fire("click");
+  assert.equal(audio.readyState, 2);
+  assert.equal(video.readyState, 1);
+  assert.equal(app.contexts[0].state, "closed");
+});
+
+function enableModernAudio(app) {
+  app.AudioContext.prototype.audioWorklet = { async addModule(url) { app.moduleUrl = url; } };
+  app.run(`
+    globalThis.audioWorkers = [];
+    globalThis.audioNodes = [];
+    globalThis.MessageChannel = class { port1 = {}; port2 = {}; };
+    globalThis.AudioWorkletNode = class {
+      port = { postMessage() {}, close() { this.closed = true; } };
+      constructor() { audioNodes.push(this); }
+      connect() {}
+      disconnect() { this.disconnected = true; }
+    };
+    globalThis.Worker = class {
+      messages = [];
+      constructor(url) { this.url = String(url); audioWorkers.push(this); }
+      postMessage(data, transfers) { this.messages.push({ data, transfers }); }
+      terminate() { this.terminated = true; }
+    };
+  `);
+}
+
+test("modern audio negotiates Opus and transfers packets without creating main-thread playback nodes", async () => {
+  const app = harness("/gateway/desktop/");
+  enableModernAudio(app);
+  const video = app.ready();
+  video.json({ type: "ready", width: 1280, height: 720, audio: true, audio_session: 29, audio_codecs: ["opus", "pcm"] });
+  app.nodes.audio.fire("click");
+  await flush();
+  assert.equal(app.moduleUrl, "https://desktop.test/gateway/desktop/audio-worklet.js");
+  const worker = app.run("audioWorkers[0]");
+  assert.equal(worker.url, "https://desktop.test/gateway/desktop/audio-worker.js");
+  assert.equal(worker.messages[0].data.allowOpus, true);
+  worker.onmessage({ data: { type: "ready", codec: "opus" } });
+  await flush();
+  const audio = app.sockets[1];
+  assert.equal(audio.url, "wss://desktop.test/gateway/desktop/audio?session=29&codec=opus");
+  audio.open();
+  audio.json({ type: "audio_ready", codec: "opus" });
+  const packet = new Uint8Array(12); packet[0] = 4;
+  audio.binary(packet.buffer);
+  assert.equal(worker.messages.at(-1).data.buffer, packet.buffer);
+  assert.equal(worker.messages.at(-1).transfers[0], packet.buffer);
+  for (let count = 0; count < 50; count += 1) audio.binary(new Uint8Array([4, 0, 0, 0, 0, 0, 0, 0, 0, 0]).buffer);
+  assert.equal(worker.messages.filter(message => message.data.type === "packet").length, 6);
+  worker.onmessage({ data: { type: "consumed" } });
+  audio.binary(new Uint8Array([4, 0, 0, 0, 0, 0, 0, 0, 0, 0]).buffer);
+  assert.equal(worker.messages.filter(message => message.data.type === "packet").length, 7);
+  assert.equal(app.contexts[0].sources.length, 0);
+  assert.equal(app.contexts[0].buffers.length, 0);
+  app.nodes.audio.fire("click");
+  assert.equal(worker.terminated, true);
+  assert.equal(app.run("audioNodes[0].disconnected"), true);
+  assert.equal(app.run("audioNodes[0].port.closed"), true);
+  assert.equal(video.readyState, 1);
+});
+
+test("modern PCM compatibility, decoder failure and late worker errors do not disconnect video", async () => {
+  const app = harness();
+  enableModernAudio(app);
+  const video = app.ready();
+  video.json({ type: "ready", width: 1280, height: 720, audio: true, audio_session: 31 });
+  app.nodes.audio.fire("click");
+  await flush();
+  const worker = app.run("audioWorkers[0]");
+  assert.equal(worker.messages[0].data.allowOpus, false);
+  worker.onmessage({ data: { type: "ready", codec: "pcm" } });
+  await flush();
+  const audio = app.sockets[1];
+  audio.open(); audio.json({ type: "audio_ready" }); audio.binary(pcm());
+  assert.equal(worker.messages.at(-1).data.type, "packet");
+  worker.onmessage({ data: { type: "error" } });
+  assert.equal(worker.terminated, true);
+  assert.equal(audio.readyState, 2);
+  assert.equal(video.readyState, 1);
+  app.nodes.audio.fire("click");
+  await flush();
+  worker.onerror();
+  assert.equal(app.contexts[1].state, "running");
+  app.run("client.destroy()");
+  assert.equal(app.run("audioWorkers[1].terminated"), true);
+  assert.equal(app.timers.size, 0);
+});
+
+test("modern audio initialization timeout releases workers and preserves the controller", async () => {
+  const app = harness();
+  enableModernAudio(app);
+  const video = app.ready();
+  app.nodes.audio.fire("click");
+  await flush();
+  app.tick();
+  await flush();
+  assert.equal(app.run("audioWorkers[0].terminated"), true);
+  assert.equal(app.contexts[0].state, "closed");
+  assert.equal(video.readyState, 1);
+});
+
+test("audio failure is isolated and stale audio events cannot stop its replacement", async () => {
+  const app = harness();
+  const video = app.ready();
+  video.json({ type: "ready", width: 1280, height: 720, audio: true, audio_session: 19 });
+  app.nodes.audio.fire("click");
+  await flush();
+  const first = app.sockets[1];
+  first.finishClose();
+  assert.equal(app.contexts[0].state, "closed");
+  assert.equal(video.readyState, 1);
+  app.nodes.audio.fire("click");
+  await flush();
+  const second = app.sockets[2];
+  second.open();
+  second.json({ type: "audio_ready" });
+  first.finishClose();
+  assert.equal(app.contexts[1].state, "running");
+  video.finishClose();
+  assert.equal(second.readyState, 2);
+  assert.equal(app.contexts[1].state, "closed");
+});
+
+test("dedicated audio handshake timeout cleans up without reconnecting video", async () => {
+  const app = harness();
+  const video = app.ready();
+  video.json({ type: "ready", width: 1280, height: 720, audio: true, audio_session: 21 });
+  app.nodes.audio.fire("click");
+  await flush();
+  app.tick();
+  assert.equal(app.sockets[1].readyState, 2);
+  assert.equal(video.readyState, 1);
+  assert.equal(app.contexts[0].state, "closed");
+});
+
+test("dedicated audio closes on page hiding and controller teardown without stale recapture", async () => {
+  const app = harness();
+  const video = app.ready();
+  video.json({ type: "ready", width: 1280, height: 720, audio: true, audio_session: 23 });
+  app.nodes.audio.fire("click");
+  await flush();
+  const audio = app.sockets[1];
+  app.document.hidden = true;
+  app.document.fire("visibilitychange");
+  assert.equal(audio.readyState, 2);
+  audio.json({ type: "audio_ready" });
+  assert.equal(app.nodes.audio.attributes["aria-pressed"], "false");
+  assert.equal(video.readyState, 1);
+  app.run("client.destroy()");
+  assert.equal(app.timers.size, 0);
 });
 
 test("late audio permission cannot enable audio on a replacement socket", async () => {

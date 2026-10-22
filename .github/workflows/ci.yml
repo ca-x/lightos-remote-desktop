@@ -69,8 +69,16 @@ jobs:
           cp "$openh264_license" "dist/$package/licenses/openh264.txt"
           cp "$openh264_wrapper_notice" "dist/$package/licenses/openh264-rust-README.md"
           cp docs/licenses/openh264-rust.txt "dist/$package/licenses/openh264-rust.txt"
+          opus_license=$(find "$registry" -path '*/opusic-sys-0.7.5/opus/COPYING' -print -quit)
+          opus_binding_license=$(find "$registry" -path '*/opusic-sys-0.7.5/LICENSE' -print -quit)
+          opus_wrapper_license=$(find "$registry" -path '*/opus-0.4.0/LICENSE-MIT' -print -quit)
+          test -s "$opus_license" && test -s "$opus_binding_license" && test -s "$opus_wrapper_license"
+          cp "$opus_license" "dist/$package/licenses/opus.txt"
+          cp "$opus_binding_license" "dist/$package/licenses/opusic-sys.txt"
+          cp "$opus_wrapper_license" "dist/$package/licenses/opus-rust.txt"
           ldd "dist/$package/lightos-remote-desktop" | tee "dist/$package/dependencies.txt"
           if grep -q 'libturbojpeg\|not found' "dist/$package/dependencies.txt"; then exit 1; fi
+          if readelf -d "dist/$package/lightos-remote-desktop" | grep -q 'NEEDED.*libopus'; then exit 1; fi
           "dist/$package/lightos-remote-desktop" --help
           tar -C dist -czf "dist/$package.tar.gz" "$package"
           (cd dist && sha256sum "$package.tar.gz" > "$package.tar.gz.sha256")

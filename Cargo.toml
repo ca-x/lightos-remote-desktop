@@ -1,6 +1,6 @@
 [package]
 name = "lightos-remote-desktop"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 rust-version = "1.88"
 description = "A native Rust browser remote desktop for LightOS"
@@ -20,6 +20,7 @@ libc = "0.2"
 libwayshot = { version = "0.9", default-features = false }
 libpulse-binding = "2.30.1"
 openh264 = { version = "0.9.9", default-features = false, features = ["source"] }
+opus = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 subtle = "2"

@@ -5,7 +5,7 @@
   "engines": { "node": "^24.15.0 || >=26.0.0" },
   "scripts": {
     "build": "tsc --noEmit && vite build && node scripts/frontend-assets.mjs",
-    "test": "node --test tests/frontend.mjs tests/preferences.mjs && vitest run",
+    "test": "node --test tests/frontend.mjs tests/preferences.mjs tests/audio-worklet.mjs tests/audio-worker.mjs && vitest run",
     "dev": "vite --host 127.0.0.1"
   },
   "dependencies": {

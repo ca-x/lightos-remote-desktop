@@ -31,6 +31,9 @@ const zh: Record<keyof typeof en, string> = {
 };
 
 const clientPairs: [string, string][] = [
+  ["Encode", "编码"], ["Socket send", "连接发送"], ["Decode / draw", "解码 / 绘制"],
+  ["Audio", "音频"], ["Buffer", "缓冲"], ["Underruns", "欠载次数"], ["Dropped samples", "丢弃采样数"],
+  ["Audio unavailable: Audio connection stopped; click to retry.", "音频不可用：音频连接已断开，点击声音按钮重试。"],
   ["Connecting", "正在连接"], ["Waiting for desktop", "等待桌面就绪"], ["Disconnected", "已断开"], ["Connected", "已连接"],
   ["Waiting for video", "等待画面"], ["Release keyboard capture", "释放键盘捕获"], ["Capture keyboard in fullscreen", "全屏捕获键盘"],
   ["Fit window", "适应窗口"], ["Actual size · 1:1 pixels", "原始大小 · 按设定分辨率 1:1 显示"], ["Fullscreen · Ctrl+Alt+Shift+Esc releases capture", "全屏 · Ctrl+Alt+Shift+Esc 释放键盘"],

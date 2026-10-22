@@ -1,4 +1,6 @@
 import type { ClientOptions, DesktopChoice, DesktopOutput, Elements } from "./types";
+import audioWorkerUrl from "./audio-worker.js?url";
+import audioWorkletUrl from "./audio-worklet.js?url";
 
 export const KEY_CODES: Readonly<Record<string, number>> = Object.freeze({
   Escape: 1, Digit1: 2, Digit2: 3, Digit3: 4, Digit4: 5, Digit5: 6,
@@ -65,6 +67,16 @@ export function createClient(options: ClientOptions = {}) {
   let audioAvailable = false;
   let audioContext: AudioContext | null = null;
   let audioEnabled = false;
+  let audioSession: number | null = null;
+  let audioSocket: WebSocket | null = null;
+  let audioConnectionTimer: Timer | null = null;
+  let audioWorker: Worker | null = null;
+  let audioNode: AudioWorkletNode | null = null;
+  let cancelAudioPreparation: (() => void) | null = null;
+  let opusAvailable = false;
+  let audioCodec = "pcm";
+  let audioPlayback: { bufferMs: number; underruns: number; dropped: number } | null = null;
+  let pendingAudioPackets = 0;
   let nextAudioTime = 0;
   let composing = false;
   let clipboardPending = false;
@@ -82,6 +94,7 @@ export function createClient(options: ClientOptions = {}) {
   let sequencedFrames = false;
   let pendingFrameId: number | null = null;
   const videoFrameIds = new Map<number, number | null>();
+  const videoDecodeStarted = new Map<number, number>();
   let autoResizeTimer: Timer | null = null;
   let lastRequestedSize: string | null = null;
   let keyboardCaptured = false;
@@ -260,9 +273,15 @@ export function createClient(options: ClientOptions = {}) {
   let pendingPing: {id: number; started: number} | null = null;
   let latestRtt: number | null = null;
   const rttSamples: number[] = [];
+  const renderSamples: number[] = [];
+  let pipelineMetrics: Record<string, { count: number; p50_ms: number | null; p95_ms: number | null }> = {};
 
-  function recordFrame(codec: string) {
+  function recordFrame(codec: string, started?: number) {
     renderedFrames += 1;
+    if (started !== undefined) {
+      renderSamples.push(Math.max(0, performance.now() - started));
+      if (renderSamples.length > 120) renderSamples.shift();
+    }
     setText("video-details", `${codec} · ${canvas.width} × ${canvas.height}`);
   }
 
@@ -272,6 +291,8 @@ export function createClient(options: ClientOptions = {}) {
     pendingPing = null;
     latestRtt = null;
     rttSamples.length = 0;
+    renderSamples.length = 0;
+    pipelineMetrics = {};
     renderedFrames = 0;
     setText("performance", "-- FPS · RTT -- ms");
     setText("video-details", "等待画面");
@@ -287,6 +308,20 @@ export function createClient(options: ClientOptions = {}) {
     const sorted = [...rttSamples].sort((first, second) => first - second);
     const p95 = sorted.length ? Math.round(sorted[Math.ceil(sorted.length * 0.95) - 1]) : "--";
     const rtt = latestRtt === null ? "--" : Math.round(latestRtt);
+    const sortedRender = [...renderSamples].sort((first, second) => first - second);
+    const renderP95 = sortedRender.length ? sortedRender[Math.ceil(sortedRender.length * 0.95) - 1].toFixed(1) : "--";
+    const serverP95 = (stage: string) => {
+      const value = pipelineMetrics[stage]?.p95_ms;
+      return typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : "--";
+    };
+    const details = [
+      `${translate("Encode")} P95 ${serverP95("encode")} ms`,
+      `${translate("Socket send")} P95 ${serverP95("send")} ms`,
+      `ACK P95 ${serverP95("ack")} ms`,
+      `${translate("Decode / draw")} P95 ${renderP95} ms`,
+    ];
+    if (audioEnabled) details.push(`${translate("Audio")} ${audioCodec}${audioPlayback ? ` · ${translate("Buffer")} ${Math.round(audioPlayback.bufferMs)} ms · ${translate("Underruns")} ${audioPlayback.underruns} · ${translate("Dropped samples")} ${audioPlayback.dropped}` : ""}`);
+    element("performance").setAttribute("title", details.join("\n"));
     setText("performance", `${fps.toFixed(1)} FPS · RTT ${rtt} ms · P95 ${p95} ms`);
     if (pendingPing && now - pendingPing.started >= 5000) {
       pendingPing = null;
@@ -386,8 +421,27 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   function stopAudio(notify = true) {
-    if (notify && audioEnabled) send({ type: "audio", enabled: false });
+    if (notify && audioEnabled && audioSession === null) send({ type: "audio", enabled: false });
+    cancelTimer(audioConnectionTimer);
+    audioConnectionTimer = null;
+    const previousSocket = audioSocket;
+    audioSocket = null;
+    if (previousSocket) previousSocket.close(1000, "Audio stopped");
     audioEnabled = false;
+    cancelAudioPreparation?.();
+    cancelAudioPreparation = null;
+    audioWorker?.terminate();
+    audioWorker = null;
+    if (audioNode) {
+      audioNode.onprocessorerror = null;
+      audioNode.port.onmessage = null;
+      audioNode.port.close();
+      audioNode.disconnect();
+      audioNode = null;
+    }
+    audioPlayback = null;
+    pendingAudioPackets = 0;
+    audioCodec = "pcm";
     for (const source of sources) {
       source.onended = null;
       try { source.stop(); } catch {}
@@ -415,6 +469,7 @@ export function createClient(options: ClientOptions = {}) {
     pendingFrame = null;
     clipboardPending = false;
     audioAvailable = false;
+    audioSession = null;
     frameAcknowledgements = false;
     sequencedFrames = false;
     pendingFrameId = null;
@@ -466,7 +521,7 @@ export function createClient(options: ClientOptions = {}) {
           pendingFrameId = null;
           void decodeFrames();
         } else if (kind === 2) {
-          receiveAudio(event.data);
+          if (audioSession === null) receiveAudio(event.data);
         } else if (kind === 3 && event.data.byteLength <= 16777216) {
           const id = pendingFrameId;
           pendingFrameId = null;
@@ -557,6 +612,8 @@ export function createClient(options: ClientOptions = {}) {
       connectionTimer = null;
       retries = 0;
       audioAvailable = value.audio === true;
+      audioSession = Number.isSafeInteger(value.audio_session) && value.audio_session > 0 ? value.audio_session : null;
+      opusAvailable = Array.isArray(value.audio_codecs) && value.audio_codecs.includes("opus");
       if (!audioAvailable) stopAudio(false);
       setText("state", "Connected");
       message(audioAvailable ? `Desktop ready. Audio is ${audioEnabled ? "on" : "off until enabled"}.` : "Desktop ready. Server audio is unavailable.");
@@ -566,6 +623,7 @@ export function createClient(options: ClientOptions = {}) {
     } else if (value.type === "pong" && pendingPing && value.id === pendingPing.id) {
       latestRtt = Math.max(0, performance.now() - pendingPing.started);
       rttSamples.push(latestRtt);
+      if (value.video_metrics && typeof value.video_metrics === "object") pipelineMetrics = value.video_metrics;
       if (rttSamples.length > 30) rttSamples.shift();
       pendingPing = null;
     } else if (value.type === "frame_id" && Number.isSafeInteger(value.id) && value.id > 0) {
@@ -593,6 +651,7 @@ export function createClient(options: ClientOptions = {}) {
         const frame = pendingFrame;
         pendingFrame = null;
         let bitmap;
+        const started = performance.now();
         try {
           bitmap = await createImageBitmap(new Blob([frame.data], { type: "image/jpeg" }));
           if (frame.generation === generation && frame.videoToken === videoToken && ready && !destroyed) {
@@ -603,7 +662,7 @@ export function createClient(options: ClientOptions = {}) {
             resizeCanvas(bitmap.width, bitmap.height);
             drawing?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
             canvas.hidden = false;
-            recordFrame("JPEG");
+            recordFrame("JPEG", started);
           }
         } catch {
           if (frame.generation === generation && ready) message("Could not decode a desktop JPEG frame.");
@@ -622,6 +681,7 @@ export function createClient(options: ClientOptions = {}) {
     configuringVideo = false;
     pendingVideo = null;
     videoFrameIds.clear();
+    videoDecodeStarted.clear();
     const previous = videoDecoder;
     videoDecoder = null;
     if (previous && previous.state !== "closed") previous.close();
@@ -666,7 +726,8 @@ export function createClient(options: ClientOptions = {}) {
             resizeCanvas(frame.displayWidth, frame.displayHeight);
             drawing?.drawImage(frame, 0, 0, canvas.width, canvas.height);
             canvas.hidden = false;
-            recordFrame("H.264");
+            recordFrame("H.264", videoDecodeStarted.get(frame.timestamp));
+            videoDecodeStarted.delete(frame.timestamp);
             const id = videoFrameIds.get(frame.timestamp);
             videoFrameIds.delete(frame.timestamp);
             updateVideoWatchdog();
@@ -708,6 +769,7 @@ export function createClient(options: ClientOptions = {}) {
     const timestamp = view.getUint32(2, true) + view.getUint32(6, true) * 4294967296;
     try {
       videoFrameIds.set(timestamp, id);
+      videoDecodeStarted.set(timestamp, performance.now());
       updateVideoWatchdog();
       videoDecoder.decode(new window.EncodedVideoChunk({ type: view.getUint8(1) === 1 ? "key" : "delta", timestamp, data: new Uint8Array(data, 10) }));
     } catch { fallbackVideo(); }
@@ -715,6 +777,12 @@ export function createClient(options: ClientOptions = {}) {
 
   function receiveAudio(data: ArrayBuffer) {
     if (!audioEnabled || !audioContext || audioContext.state !== "running" || document.hidden) return;
+    if (audioWorker) {
+      if (pendingAudioPackets >= 6) return;
+      pendingAudioPackets += 1;
+      audioWorker.postMessage({ type: "packet", buffer: data }, [data]);
+      return;
+    }
     if (sources.size >= 64) return;
     const bytes = data.byteLength - 1;
     if (bytes % 8 !== 0 || bytes === 0 || bytes > 96000) return;
@@ -739,6 +807,53 @@ export function createClient(options: ClientOptions = {}) {
     nextAudioTime = start + buffer.duration;
   }
 
+  function prepareAudio(context: AudioContext, session: number): Promise<string> {
+    if (!context.audioWorklet || typeof Worker === "undefined" || typeof AudioWorkletNode === "undefined") return Promise.resolve("pcm");
+    return new Promise((resolve, reject) => {
+      let initialized = false;
+      const active = () => session === generation && audioContext === context && ready && !document.hidden;
+      const finish = (error?: Error, codec = "pcm") => {
+        cancelTimer(audioConnectionTimer);
+        audioConnectionTimer = null;
+        cancelAudioPreparation = null;
+        if (error) reject(error);
+        else { initialized = true; resolve(codec); }
+      };
+      cancelAudioPreparation = () => finish(new Error("Audio initialization cancelled"));
+      const failed = () => {
+        if (!active()) return;
+        if (!initialized) finish(new Error("Audio playback initialization failed"));
+        else {
+          stopAudio();
+          message("Audio unavailable: Audio connection stopped; click to retry.");
+        }
+      };
+      audioConnectionTimer = setTimeout(failed, 5000);
+      void context.audioWorklet.addModule(new URL(audioWorkletUrl, location.href).href).then(() => {
+        if (!active() || !cancelAudioPreparation) return;
+        const node = new AudioWorkletNode(context, "remote-audio", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
+        audioNode = node;
+        node.connect(context.destination);
+        node.onprocessorerror = failed;
+        node.port.onmessage = ({ data }) => {
+          if (active() && audioNode === node && Number.isFinite(data?.bufferMs)) audioPlayback = data;
+        };
+        const worker = new Worker(new URL(audioWorkerUrl, location.href), { type: "module" });
+        audioWorker = worker;
+        const channel = new MessageChannel();
+        node.port.postMessage({ port: channel.port1 }, [channel.port1]);
+        worker.onmessage = ({ data }) => {
+          if (!active() || audioWorker !== worker) return;
+          if (data?.type === "ready" && !initialized) finish(undefined, data.codec === "opus" ? "opus" : "pcm");
+          else if (data?.type === "consumed") pendingAudioPackets = Math.max(0, pendingAudioPackets - 1);
+          else if (data?.type === "error") failed();
+        };
+        worker.onerror = failed;
+        worker.postMessage({ type: "init", port: channel.port2, allowOpus: opusAvailable && audioSession !== null }, [channel.port2]);
+      }).catch(failed);
+    });
+  }
+
   async function toggleAudio() {
     if (audioContext) { stopAudio(); return; }
     if (!ready || !audioAvailable) return;
@@ -750,16 +865,56 @@ export function createClient(options: ClientOptions = {}) {
       audioContext = context;
       updateControls();
       await context.resume();
+      if (session === generation && audioContext === context && ready && !document.hidden) {
+        audioCodec = await prepareAudio(context, session);
+      }
       if (session !== generation || audioContext !== context || !ready || document.hidden) {
         if (audioContext === context) stopAudio();
         return;
       }
-      audioEnabled = send({ type: "audio", enabled: true });
-      if (!audioEnabled) stopAudio(false);
+      if (audioSession === null) {
+        audioEnabled = send({ type: "audio", enabled: true });
+        if (!audioEnabled) stopAudio(false);
+      } else {
+        const url = new URL("./audio", location.href);
+        url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+        url.searchParams.set("session", String(audioSession));
+        if (audioCodec === "opus") url.searchParams.set("codec", "opus");
+        const current = new WebSocket(url);
+        audioSocket = current;
+        current.binaryType = "arraybuffer";
+        const active = () => current === audioSocket && session === generation && audioContext === context && ready;
+        const failed = () => {
+          if (!active()) return;
+          stopAudio(false);
+          message("Audio unavailable: Audio connection stopped; click to retry.");
+        };
+        audioConnectionTimer = setTimeout(failed, 5000);
+        current.onmessage = (event) => {
+          if (!active()) return;
+          if (typeof event.data === "string") {
+            let value;
+            try { value = JSON.parse(event.data); } catch { failed(); return; }
+            if (value.type === "audio_ready") {
+              if (value.codec && value.codec !== audioCodec) { failed(); return; }
+              cancelTimer(audioConnectionTimer);
+              audioConnectionTimer = null;
+              audioEnabled = true;
+              updateControls();
+            } else if (value.type === "error") failed();
+          } else if (event.data instanceof ArrayBuffer && [2, 4].includes(new Uint8Array(event.data)[0])) {
+            receiveAudio(event.data);
+          }
+        };
+        current.onerror = failed;
+        current.onclose = failed;
+      }
       updateControls();
     } catch (error) {
-      if (audioContext === context) stopAudio(false);
-      message(`Audio unavailable: ${errorMessage(error)}`);
+      if (audioContext === context) {
+        stopAudio(false);
+        message(`Audio unavailable: ${errorMessage(error)}`);
+      }
     }
   }
 

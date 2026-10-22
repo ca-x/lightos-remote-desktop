@@ -32,7 +32,8 @@ use tokio::{
 };
 
 use crate::{
-    audio::AudioStream,
+    audio::{AudioFormat, AudioStream},
+    audio_channel::{self, AudioHub},
     config::Config,
     session::Session,
     video::H264Encoder,
@@ -52,12 +53,20 @@ struct DesktopRequest {
     output: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct AudioRequest {
+    session: u64,
+    #[serde(default)]
+    codec: AudioFormat,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
     pub backend: Arc<Backend>,
     pub session: Arc<Mutex<Session>>,
     controller: Arc<AtomicBool>,
+    audio_hub: Arc<AudioHub>,
     desktop: DesktopMode,
     output: Option<String>,
     outputs: Vec<DisplayOutput>,
@@ -76,6 +85,7 @@ impl AppState {
             backend: Arc::new(backend),
             session: Arc::new(Mutex::new(session)),
             controller: Arc::new(AtomicBool::new(false)),
+            audio_hub: Arc::new(AudioHub::default()),
             desktop,
             output: None,
             outputs: Vec::new(),
@@ -121,6 +131,7 @@ impl AppState {
         Ok(Self {
             config: self.config,
             controller: self.controller,
+            audio_hub: self.audio_hub,
             backend: Arc::new(backend),
             session: Arc::new(Mutex::new(session)),
             desktop: mode,
@@ -156,6 +167,29 @@ pub fn router(state: AppState) -> Router {
             }),
         )
         .route("/ws", get(upgrade))
+        .route(
+            "/audio-worker.js",
+            get(|headers: HeaderMap| async move {
+                asset(
+                    &headers,
+                    include_str!("../web/dist/audio-worker.js"),
+                    include_bytes!("../web/dist/audio-worker.js.gz"),
+                    "text/javascript; charset=utf-8",
+                )
+            }),
+        )
+        .route(
+            "/audio-worklet.js",
+            get(|headers: HeaderMap| async move {
+                asset(
+                    &headers,
+                    include_str!("../web/dist/audio-worklet.js"),
+                    include_bytes!("../web/dist/audio-worklet.js.gz"),
+                    "text/javascript; charset=utf-8",
+                )
+            }),
+        )
+        .route("/audio", get(upgrade_audio))
         .route("/desktops", get(desktops));
     mount_desktop(desktop, &state.config.subfolder)
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate))
@@ -292,7 +326,7 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
         ("referrer-policy", "no-referrer"),
         (
             "content-security-policy",
-            "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
+            "default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
         ),
     ] {
         response.headers_mut().insert(
@@ -359,6 +393,7 @@ struct ControllerLease {
 
 impl Drop for ControllerLease {
     fn drop(&mut self) {
+        self.state.audio_hub.stop();
         if self.state.transient_backend
             || self
                 .state
@@ -414,6 +449,37 @@ async fn upgrade(
         })
 }
 
+async fn upgrade_audio(
+    State(state): State<AppState>,
+    Query(request): Query<AudioRequest>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    if !origin_allowed(&headers) {
+        return (StatusCode::FORBIDDEN, "Same-origin WebSocket required").into_response();
+    }
+    let Some(lease) = state.audio_hub.attach(request.session) else {
+        return (
+            StatusCode::CONFLICT,
+            "Audio session unavailable or already connected",
+        )
+            .into_response();
+    };
+    let session = state.session.lock().unwrap();
+    let source = session.audio_source.clone();
+    let server = session.pulse_server.clone();
+    drop(session);
+    let Some(source) = source.filter(|_| state.config.audio) else {
+        return (StatusCode::CONFLICT, "Audio unavailable").into_response();
+    };
+    upgrade
+        .max_message_size(1024)
+        .max_frame_size(1024)
+        .on_upgrade(move |socket| {
+            audio_channel::connection(socket, lease, server, source, request.codec)
+        })
+}
+
 async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease) {
     let (mut writer, reader) = socket.split();
     let (control_tx, mut controls) = mpsc::channel(16);
@@ -441,8 +507,9 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
         .ok()
         .and_then(|session| session.audio_source.clone());
     let audio_available = state.config.audio && audio_source.is_some();
+    let audio_session = audio_available.then(|| state.audio_hub.start());
     let ready = Message::Text(
-        json!({"type":"ready","version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"audio":audio_available,"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":["h264","jpeg"],"desktop":state.desktop,"desktops":state.desktop_options(),"resize":state.desktop == DesktopMode::Virtual,"outputs":state.outputs,"output":state.output})
+        json!({"type":"ready","version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":["h264","jpeg"],"desktop":state.desktop,"desktops":state.desktop_options(),"resize":state.desktop == DesktopMode::Virtual,"outputs":state.outputs,"output":state.output})
             .to_string()
             .into(),
     );
@@ -461,6 +528,8 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
     let mut codec = None;
     let video_started = std::time::Instant::now();
     let mut frame_id = 0_u64;
+    let mut encode_samples = LatencySamples::default();
+    let mut send_samples = LatencySamples::default();
     let transmit = async {
         loop {
             let outgoing = tokio::select! {
@@ -470,6 +539,7 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
                     let frame = frames.borrow_and_update().clone();
                     let Some(frame) = frame else { break; };
                     pacing_tx.send_modify(|flow| flow.begin_frame((frame.width, frame.height)));
+                    let encode_started = Instant::now();
                     let mut packet = None;
                     if h264 {
                         let result = async {
@@ -523,6 +593,7 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
                         let metadata = Message::Text(json!({"type":"frame_id","id":frame_id}).to_string().into());
                         if !matches!(timeout(Duration::from_secs(3), writer.send(metadata)).await, Ok(Ok(()))) { break; }
                     }
+                    encode_samples.record(encode_started.elapsed());
                     Some(Message::Binary(packet.into()))
                 }
                 changed = pacing.changed() => {
@@ -545,6 +616,18 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
                     match incoming {
                         Some(text) => {
                             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
+                                && value.get("type").and_then(|kind| kind.as_str()) == Some("ping")
+                                && let Some(id) = value.get("id").and_then(|id| id.as_u64())
+                            {
+                                let flow = pacing.borrow();
+                                let message = Message::Text(json!({"type":"pong","id":id,"video_metrics":{
+                                    "ack":flow.ack_samples.summary(),"encode":encode_samples.summary(),"send":send_samples.summary(),
+                                    "in_flight":flow.pending.len(),"window":flow.window
+                                }}).to_string().into());
+                                drop(flow);
+                                Some(message)
+                            } else {
+                            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
                                 && value.get("type").and_then(|kind| kind.as_str()) == Some("video")
                             {
                                 h264 = value.get("codec").and_then(|codec| codec.as_str()) == Some("h264") && pacing.borrow().sequenced;
@@ -560,18 +643,24 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
                                 Ok(response) => response,
                                 Err(error) => Some(error_message(&error.to_string())),
                             }
+                            }
                         }
                         _ => break,
                     }
                 }
             };
-            if let Some(message) = outgoing
-                && !matches!(
+            if let Some(message) = outgoing {
+                let video_packet = matches!(&message, Message::Binary(bytes) if matches!(bytes.first(), Some(1 | 3)));
+                let started = Instant::now();
+                if !matches!(
                     timeout(Duration::from_secs(3), writer.send(message)).await,
                     Ok(Ok(()))
-                )
-            {
-                break;
+                ) {
+                    break;
+                }
+                if video_packet {
+                    send_samples.record(started.elapsed());
+                }
             }
         }
     };
@@ -584,6 +673,34 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
     .await;
 }
 
+#[derive(Clone, Default)]
+struct LatencySamples {
+    samples: VecDeque<u32>,
+}
+
+impl LatencySamples {
+    fn record(&mut self, elapsed: Duration) {
+        if self.samples.len() == 120 {
+            self.samples.pop_front();
+        }
+        self.samples
+            .push_back(elapsed.as_micros().min(u32::MAX as u128) as u32);
+    }
+
+    fn summary(&self) -> serde_json::Value {
+        let mut samples: Vec<_> = self.samples.iter().copied().collect();
+        samples.sort_unstable();
+        let percentile = |percent: usize| {
+            if samples.is_empty() {
+                None
+            } else {
+                Some(samples[(samples.len() * percent).div_ceil(100) - 1] as f64 / 1000.0)
+            }
+        };
+        json!({"count":samples.len(),"p50_ms":percentile(50),"p95_ms":percentile(95)})
+    }
+}
+
 #[derive(Clone)]
 struct VideoFlow {
     enabled: bool,
@@ -592,6 +709,7 @@ struct VideoFlow {
     window: usize,
     frame_interval: Duration,
     dimensions: Option<(u32, u32)>,
+    ack_samples: LatencySamples,
 }
 
 impl Default for VideoFlow {
@@ -603,6 +721,7 @@ impl Default for VideoFlow {
             window: 1,
             frame_interval: Duration::from_secs_f64(1.0 / 30.0),
             dimensions: None,
+            ack_samples: LatencySamples::default(),
         }
     }
 }
@@ -641,6 +760,7 @@ impl VideoFlow {
         };
         if let Some(index) = index {
             let elapsed = self.pending[index].1.elapsed();
+            self.ack_samples.record(elapsed);
             self.pending.drain(..=index);
             self.window = if self.sequenced {
                 elapsed
@@ -950,6 +1070,28 @@ mod tests {
         assert!(flow.waiting());
         flow.acknowledge(Some(5));
         assert!(!flow.waiting());
+    }
+
+    #[test]
+    fn diagnostic_percentiles_are_bounded_and_stale_acks_are_not_samples() {
+        let mut samples = LatencySamples::default();
+        assert_eq!(samples.summary()["p95_ms"], serde_json::Value::Null);
+        for value in 1..=200 {
+            samples.record(Duration::from_millis(value));
+        }
+        assert_eq!(samples.summary()["count"], 120);
+        assert_eq!(samples.summary()["p50_ms"], 140.0);
+        assert_eq!(samples.summary()["p95_ms"], 194.0);
+        let mut flow = VideoFlow {
+            enabled: true,
+            sequenced: true,
+            ..VideoFlow::default()
+        };
+        flow.sent(1);
+        flow.acknowledge(Some(999));
+        assert_eq!(flow.ack_samples.summary()["count"], 0);
+        flow.acknowledge(Some(1));
+        assert_eq!(flow.ack_samples.summary()["count"], 1);
     }
 
     #[test]

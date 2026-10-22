@@ -21,6 +21,14 @@ use tokio::sync::Notify;
 const PACKET_BYTES: usize = 3840;
 type Packet = Arc<[u8]>;
 
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioFormat {
+    #[default]
+    Pcm,
+    Opus,
+}
+
 #[derive(Default)]
 struct PacketQueue {
     state: Mutex<QueueState>,
@@ -58,6 +66,14 @@ pub struct AudioStream {
 
 impl AudioStream {
     pub fn new(server: Option<String>, source: String) -> Result<Self> {
+        Self::with_format(server, source, AudioFormat::Pcm)
+    }
+
+    pub fn with_format(
+        server: Option<String>,
+        source: String,
+        format: AudioFormat,
+    ) -> Result<Self> {
         ensure!(
             !source.is_empty() && !source.contains('\0'),
             "invalid Pulse source"
@@ -70,10 +86,13 @@ impl AudioStream {
         let output = packets.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
+        let packetizer = Packetizer::with_format(format)?;
         let worker = std::thread::Builder::new()
             .name("pulse-capture".into())
             .spawn(move || {
-                if let Err(error) = capture(server.as_deref(), &source, &stopping, &output) {
+                if let Err(error) =
+                    capture(server.as_deref(), &source, &stopping, &output, packetizer)
+                {
                     tracing::warn!(%error, "native audio capture stopped");
                 }
                 output.close();
@@ -120,34 +139,79 @@ impl Drop for AudioStream {
 
 struct Packetizer {
     pending: Vec<u8>,
+    encoder: Option<opus::Encoder>,
+    samples: Vec<f32>,
+    encoded: Vec<u8>,
 }
 
 impl Packetizer {
-    fn new() -> Self {
-        Self {
-            pending: Vec::with_capacity(PACKET_BYTES),
-        }
+    fn with_format(format: AudioFormat) -> Result<Self> {
+        let encoder = if format == AudioFormat::Opus {
+            let mut encoder =
+                opus::Encoder::new(48_000, opus::Channels::Stereo, opus::Application::Audio)?;
+            encoder.set_bitrate(opus::Bitrate::Bits(128_000))?;
+            encoder.set_vbr(false)?;
+            encoder.set_complexity(5)?;
+            Some(encoder)
+        } else {
+            None
+        };
+        Ok(Self {
+            pending: Vec::with_capacity(PACKET_BYTES * 2),
+            encoder,
+            samples: vec![0.0; 1920],
+            encoded: vec![0; 1275],
+        })
     }
 
-    fn push(&mut self, mut data: &[u8], packets: &PacketQueue) {
+    #[cfg(test)]
+    fn new() -> Self {
+        Self::with_format(AudioFormat::Pcm).unwrap()
+    }
+
+    fn push(&mut self, mut data: &[u8], packets: &PacketQueue) -> Result<()> {
+        let packet_bytes = if self.encoder.is_some() {
+            PACKET_BYTES * 2
+        } else {
+            PACKET_BYTES
+        };
         while !data.is_empty() {
-            let length = (PACKET_BYTES - self.pending.len()).min(data.len());
+            let length = (packet_bytes - self.pending.len()).min(data.len());
             self.pending.extend_from_slice(&data[..length]);
             data = &data[length..];
-            if self.pending.len() == PACKET_BYTES {
-                let ready = std::mem::replace(&mut self.pending, Vec::with_capacity(PACKET_BYTES));
-                packets.push(ready.into());
+            if self.pending.len() == packet_bytes {
+                if let Some(encoder) = self.encoder.as_mut() {
+                    for (sample, bytes) in
+                        self.samples.iter_mut().zip(self.pending.as_chunks::<4>().0)
+                    {
+                        let value = f32::from_le_bytes(*bytes);
+                        *sample = if value.is_finite() {
+                            value.clamp(-1.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                    }
+                    let length = encoder.encode_float(&self.samples, &mut self.encoded)?;
+                    packets.push(Arc::from(&self.encoded[..length]));
+                    self.pending.clear();
+                } else {
+                    let ready =
+                        std::mem::replace(&mut self.pending, Vec::with_capacity(PACKET_BYTES));
+                    packets.push(ready.into());
+                }
             }
         }
+        Ok(())
     }
 
-    fn silence(&mut self, mut length: usize, packets: &PacketQueue) {
+    fn silence(&mut self, mut length: usize, packets: &PacketQueue) -> Result<()> {
         let silence = [0; PACKET_BYTES];
         while length > 0 {
             let count = length.min(silence.len());
-            self.push(&silence[..count], packets);
+            self.push(&silence[..count], packets)?;
             length -= count;
         }
+        Ok(())
     }
 }
 
@@ -163,6 +227,7 @@ fn capture(
     source: &str,
     stop: &AtomicBool,
     packets: &PacketQueue,
+    mut packetizer: Packetizer,
 ) -> Result<()> {
     let mut mainloop = Mainloop::new().context("create Pulse mainloop")?;
     let mut context =
@@ -204,7 +269,6 @@ fn capture(
                 .connect_record(Some(source), Some(&attr), StreamFlags::ADJUST_LATENCY)
                 .context("record Pulse monitor")?;
             let deadline = Instant::now() + Duration::from_secs(5);
-            let mut packetizer = Packetizer::new();
             while !stop.load(Ordering::Acquire) {
                 step(&mut mainloop)?;
                 ensure!(
@@ -221,11 +285,11 @@ fn capture(
                                 PeekResult::Empty => break,
                                 PeekResult::Data(data) => {
                                     ensure!(data.len() <= 1024 * 1024, "Pulse fragment too large");
-                                    packetizer.push(data, packets);
+                                    packetizer.push(data, packets)?;
                                 }
                                 PeekResult::Hole(length) => {
                                     ensure!(length <= 1024 * 1024, "Pulse hole too large");
-                                    packetizer.silence(length, packets);
+                                    packetizer.silence(length, packets)?;
                                 }
                             }
                             stream.discard().context("discard Pulse fragment")?;
@@ -250,12 +314,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn opus_encodes_twenty_milliseconds_at_bounded_bitrate_and_preserves_stereo() {
+        let sender = PacketQueue::default();
+        let mut packetizer = Packetizer::with_format(AudioFormat::Opus).unwrap();
+        let mut decoder = opus::Decoder::new(48_000, opus::Channels::Stereo).unwrap();
+        let samples: Vec<u8> = (0..960)
+            .flat_map(|index| {
+                let sample = (index as f32 * std::f32::consts::TAU * 440.0 / 48_000.0).sin() * 0.25;
+                [sample, -sample].into_iter().flat_map(f32::to_le_bytes)
+            })
+            .collect();
+        for chunk in samples.chunks(13) {
+            packetizer.push(chunk, &sender).unwrap();
+        }
+        let state = sender.state.lock().unwrap();
+        assert_eq!(state.packets.len(), 1);
+        let packet = state.packets.front().unwrap();
+        assert_eq!(packet.len(), 320);
+        let mut decoded = vec![0.0; 1920];
+        assert_eq!(
+            decoder.decode_float(packet, &mut decoded, false).unwrap(),
+            960
+        );
+        assert!(decoded.iter().all(|sample| sample.is_finite()));
+        assert!(decoded.iter().any(|sample| sample.abs() > 0.01));
+        let difference: f32 = decoded
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|channels| (channels[0] + channels[1]).abs())
+            .sum();
+        assert!(difference / 960.0 < 0.02);
+    }
+
+    #[test]
     fn packetizer_preserves_alignment_and_fills_holes() {
         let sender = PacketQueue::default();
         let mut packetizer = Packetizer::new();
-        packetizer.push(&[7; 3], &sender);
-        packetizer.push(&[8; 5], &sender);
-        packetizer.silence(PACKET_BYTES - 8, &sender);
+        packetizer.push(&[7; 3], &sender).unwrap();
+        packetizer.push(&[8; 5], &sender).unwrap();
+        packetizer.silence(PACKET_BYTES - 8, &sender).unwrap();
         let state = sender.state.lock().unwrap();
         let packet = state.packets.front().unwrap();
         assert_eq!(packet.len(), PACKET_BYTES);
@@ -280,7 +378,7 @@ mod tests {
         );
         let mut packetizer = Packetizer::new();
         for byte in 0..10 {
-            packetizer.push(&[byte; PACKET_BYTES], &sender);
+            packetizer.push(&[byte; PACKET_BYTES], &sender).unwrap();
         }
         for byte in 6..10 {
             assert_eq!(stream.read(&mut buffer).await.unwrap(), PACKET_BYTES);
@@ -301,7 +399,7 @@ mod tests {
         let mut packetizer = Packetizer::new();
         let mut data = vec![1; PACKET_BYTES];
         data.extend_from_slice(&[2; PACKET_BYTES]);
-        packetizer.push(&data, &sender);
+        packetizer.push(&data, &sender).unwrap();
         let mut buffer = [0; PACKET_BYTES];
         for byte in 1..=2 {
             assert_eq!(stream.read(&mut buffer).await.unwrap(), PACKET_BYTES);

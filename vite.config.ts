@@ -7,6 +7,7 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     cssCodeSplit: false,
+    assetsInlineLimit: 0,
     target: "es2022",
     rolldownOptions: {
       onwarn(warning, warn) {

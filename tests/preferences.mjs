@@ -52,7 +52,7 @@ test("system theme responds to OS state; explicit themes do not", () => {
 });
 
 test("precompressed embedded assets exactly match the production frontend", () => {
-  for (const name of ["app.js", "style.css"]) {
+  for (const name of ["app.js", "style.css", "audio-worker.js", "audio-worklet.js"]) {
     const raw = readFileSync(new URL(`../web/dist/${name}`, import.meta.url));
     const compressed = readFileSync(new URL(`../web/dist/${name}.gz`, import.meta.url));
     assert.deepEqual(gunzipSync(compressed), raw);

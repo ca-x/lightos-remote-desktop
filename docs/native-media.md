@@ -53,6 +53,16 @@ Pulse holes with silence. A four-packet (40 ms) queue preserves normal batched
 fragments and replaces the oldest packets only when that bound is exceeded.
 Physical-session audio remains unsupported.
 
+The current frontend uses a session-bound, independently authenticated audio
+WebSocket. Its async sender and blocking-pool initialization are separate from
+the video transmit loop. Legacy clients retain the original multiplexed path.
+See `audio-channel.md` for cancellation, connection limits and bandwidth scope.
+
+Audio now negotiates source-built libopus (20 ms / 128 kbit/s stereo) when the
+browser's Worker supports WebCodecs audio decoding. Decoded audio is transferred
+directly to a bounded AudioWorklet ring. PCM and the legacy main-thread player
+remain compatibility paths. See `audio-channel.md` for protocol and diagnostics.
+
 ## Dependencies and scope
 
 Builds require a native C/C++ toolchain, NASM and libpulse development headers.

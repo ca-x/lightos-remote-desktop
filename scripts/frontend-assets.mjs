@@ -3,12 +3,12 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 
-const entryFiles = new Set(["index.html", "app.js", "style.css"]);
+const entryFiles = new Set(["index.html", "app.js", "style.css", "audio-worker.js", "audio-worklet.js"]);
 for (const name of readdirSync("web/dist")) {
   if (!entryFiles.has(name)) throw new Error(`Unmapped frontend resource: ${name}`);
 }
 
-for (const name of ["app.js", "style.css"]) {
+for (const name of ["app.js", "style.css", "audio-worker.js", "audio-worklet.js"]) {
   writeFileSync(`web/dist/${name}.gz`, gzipSync(readFileSync(`web/dist/${name}`), { level: 9 }));
 }
 

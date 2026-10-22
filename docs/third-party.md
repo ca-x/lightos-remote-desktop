@@ -33,6 +33,12 @@ Native audio uses libpulse-binding (MIT/Apache-2.0) and dynamically linked
 libpulse; system libpulse and its transitive dependencies retain their licenses.
 FFmpeg is only an optional development/test decoder, not a runtime dependency.
 
+Native Opus uses the `opus` 0.4.0 wrapper (MIT/Apache-2.0) and `opusic-sys` 0.7.5
+(BSD-3-Clause), with its bundled libopus source statically built. CI includes the
+wrapper's MIT notice, binding LICENSE and upstream Opus COPYING in each archive.
+The application codec does not add a dynamic libopus dependency; existing system
+Pulse/libsndfile libraries may themselves depend on a system libopus.
+
 The embedded frontend uses React/React DOM, Headless UI, Lucide React, i18next
 and react-i18next, with exact resolutions in package-lock.json. Vite/TypeScript
 are build-time tools, not target-machine services. The frontend build collects

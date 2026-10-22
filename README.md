@@ -32,6 +32,8 @@ does not embed CPython or invoke the original Selkies Python launcher.
   process-group cleanup. No UWSM source modification.
 - Dynamic resolution, text clipboard and optional private PipeWire/Pulse sink
   with browser audio playback.
+- Independent audio WebSocket and sender, so video encoding and render ACKs do
+  not hold audio delivery. See `docs/audio-channel.md` for lifecycle and limits.
 - Applications launched from the desktop receive its actual Xwayland display;
   D-Bus activation is initialized from the compositor's final environment on
   the private bus only, without importing it into the host user systemd manager.
@@ -119,15 +121,19 @@ change remote resolution. Clipboard and resolution fields are tucked away.
 
 Use a current stable Rust toolchain. Native linking requires Wayland,
 libxkbcommon, libpulse and libturbojpeg 3+, plus a C/C++ toolchain and NASM for
-source-built OpenH264. Alternatively build with `--features bundled-jpeg`
+source-built OpenH264 and libopus. Alternatively build with `--features bundled-jpeg`
 (requires CMake and NASM), as CI does, to statically bundle libjpeg-turbo.
 runtime also needs Cage, Hyprland, D-Bus, hyprctl and wl-clipboard. Audio requires
 libpulse, pactl, pipewire, pipewire-pulse and WirePlumber 0.5+. A private audio graph is
 created per desktop; no host PulseAudio cookies or default sink are changed.
 The WirePlumber profile disables physical audio/Bluetooth/video monitors.
-Video encoding and PCM capture no longer spawn an FFmpeg executable. Audio uses
-a cancellable native Pulse stream; its bounded 40 ms queue discards old audio under
-backpressure. See `docs/native-media.md` for implementation and release limits.
+Video encoding and audio capture/encoding do not spawn FFmpeg. Audio uses a
+cancellable native Pulse stream and negotiates 128 kbit/s Opus with compatible
+browsers, decoded in a Worker and played by an AudioWorklet. PCM remains a
+compatibility path. The native four-packet queue bounds backlog to 40 ms for PCM
+or 80 ms for Opus; browser transfer and playback queues are also bounded. Hover
+FPS/RTT for video-stage P95 timings and audio-buffer diagnostics. See
+`docs/audio-channel.md` for protocol, fallbacks and measurement limits.
 The current standalone
 desktop backend requires access to `/dev/dri/renderD128` for GLES rendering.
 
