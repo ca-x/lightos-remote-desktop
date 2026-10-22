@@ -3,6 +3,51 @@
 Date: 2026-10-22 (machine local date). This records a verified initial native
 implementation, not complete Selkies or Omarchy feature parity.
 
+## Desktop-switch close-handshake regression (2026-10-22)
+
+The actual authenticated HTTPS gateway reproduced the reported delay: the old
+socket's `close()` was called at browser monotonic time 26324 ms, but the next
+physical WebSocket was not constructed until 86334 ms (60010 ms later). Its ready
+message arrived at 86478 ms and first canvas draw at 86620 ms. The server-side TCP
+socket was already in FIN-WAIT-2 during the wait. The close-acknowledgement test
+against the installed pre-fix binary failed with `ResetWithoutClosingHandshake`.
+
+The fix explicitly flushes both media sockets' Close responses, cancels abandoned
+initialization, moves worker cleanup off the async executor, and bounds browser
+close waits and failed retries. The frontend has regressions for stalled closing,
+late callbacks, manual recovery, initialization timeout and retained error reasons.
+
+The separate release candidate passed ten real Chrome switches using the toolbar
+and the actual HDMI-A-1 physical display. Physical first-draw times were 287.0 to
+459.2 ms; virtual first-draw times were 179.7 to 601.1 ms. Close acknowledgements
+arrived within 17.3 to 120.8 ms, all with code 1000. These are localhost browser
+measurements, not a guarantee for external networks. The live desktop protocol and
+independent PCM channel tests also passed on the isolated candidate.
+
+Validation: 74 Node frontend/media/preference tests and 3 React tests passed;
+55 Rust unit tests and the installer fixture passed, as did clippy, formatting,
+the explicit ten-second compositor timeout, and specification validation.
+The bundled-JPEG release build uses the existing local NASM build tool.
+`spec/desktop/switching/AC.md` records the confirmed recovery contract; its scenarios
+remain `Profile: draft` because this project has no Project AC Executor mapping.
+
+The candidate also passed a real WebSocket cancellation test against an isolated
+compositor and a deliberately unresponsive physical-discovery socket: cancellation
+receives its Close acknowledgement within one second, concurrent controllers are
+rejected, and virtual control becomes available after bounded cleanup.
+
+After installing release SHA-256
+`4e635649a9aacf0ae4c13e62d3db251cc39706a564dbad3f71975f4110f284c0`,
+the actual authenticated HTTPS entry passed ten alternating toolbar switches.
+Physical first-draw times were 2246.4 to 2476.7 ms; virtual first-draw times were
+2073.5 to 2169.1 ms. All closes returned code 1000. The remaining approximately
+2003 to 2027 ms was spent completing the old transport's close through the gateway;
+server logs show the Close response and controller release finishing before this
+wait. This external path does not meet the candidate's localhost one-second target;
+it removes the reproduced 60-second stall while retaining a separately measured
+gateway close delay. The installed service passed the installer's health/stability
+gate with zero automatic restarts; its rollback transaction was preserved.
+
 ## Cursor, keyboard and toolbar regression checks
 
 The interaction fixes were checked locally on 2026-10-22 with two isolated

@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -40,7 +40,9 @@ use crate::{
     wayland::{Backend, DisplayOutput, InputCommand, display_outputs},
 };
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+static NEXT_CONNECTION: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum DesktopMode {
     Virtual,
@@ -108,14 +110,28 @@ impl AppState {
         ])
     }
 
-    fn select_desktop(self, request: DesktopRequest) -> anyhow::Result<Self> {
+    fn select_desktop(
+        self,
+        request: DesktopRequest,
+        cancelled: Arc<AtomicBool>,
+        connection_id: u64,
+    ) -> anyhow::Result<Self> {
+        use anyhow::Context;
+
+        let started = Instant::now();
         let mode = request.desktop.unwrap_or(self.desktop);
         if mode == self.desktop && request.output.is_none() {
             return Ok(self);
         }
         anyhow::ensure!(mode == DesktopMode::Physical, "虚拟桌面不可用");
         let socket = self.physical_socket()?;
-        let outputs = display_outputs(&socket)?;
+        let outputs = display_outputs(&socket).context("物理显示器枚举失败")?;
+        tracing::info!(
+            connection_id,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "physical outputs enumerated"
+        );
+        anyhow::ensure!(!cancelled.load(Ordering::Acquire), "桌面连接已取消");
         let selected = match request.output {
             Some(name) => outputs.iter().find(|output| output.name == name),
             None => outputs.first(),
@@ -126,8 +142,20 @@ impl AppState {
         let mut config = (*self.config).clone();
         config.wayland_socket = Some(socket.clone());
         let session = Session::start(&config)?;
-        let backend =
-            Backend::start_with_output(socket, config.fps, config.quality, Some(selected.clone()))?;
+        let backend = Backend::start_with_output_cancellable(
+            socket,
+            config.fps,
+            config.quality,
+            Some(selected.clone()),
+            cancelled.clone(),
+        )
+        .context("物理桌面采集或输入初始化失败")?;
+        anyhow::ensure!(!cancelled.load(Ordering::Acquire), "桌面连接已取消");
+        tracing::info!(
+            connection_id,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "physical capture and input ready"
+        );
         Ok(Self {
             config: self.config,
             controller: self.controller,
@@ -391,6 +419,14 @@ struct ControllerLease {
     state: AppState,
 }
 
+impl ControllerLease {
+    async fn release(self) {
+        // Worker joins must not block the async socket executor. The lease's
+        // Drop keeps the controller gate until its input workers have stopped.
+        let _ = tokio::task::spawn_blocking(move || drop(self)).await;
+    }
+}
+
 impl Drop for ControllerLease {
     fn drop(&mut self) {
         self.state.audio_hub.stop();
@@ -427,26 +463,69 @@ async fn upgrade(
     let mut lease = ControllerLease {
         state: state.clone(),
     };
+    let connection_id = NEXT_CONNECTION.fetch_add(1, Ordering::Relaxed);
+    let mode = request.desktop.unwrap_or(state.desktop);
+    let started = Instant::now();
+    tracing::info!(connection_id, desktop = ?mode, "desktop connection accepted");
     upgrade
         .max_message_size(128 * 1024)
         .max_frame_size(128 * 1024)
         .on_upgrade(move |mut socket| async move {
-            match tokio::task::spawn_blocking(move || state.select_desktop(request)).await {
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let initialize_cancelled = cancelled.clone();
+            let mut initialize = tokio::task::spawn_blocking(move || {
+                state.select_desktop(request, initialize_cancelled, connection_id)
+            });
+            let result = tokio::select! {
+                biased;
+                result = &mut initialize => Some(result),
+                _ = startup_disconnect(&mut socket) => None,
+            };
+            let Some(result) = result else {
+                cancelled.store(true, Ordering::Release);
+                let _ = timeout(Duration::from_secs(1), socket.close()).await;
+                let result = initialize.await;
+                let _ = tokio::task::spawn_blocking(move || drop(result)).await;
+                lease.release().await;
+                tracing::info!(connection_id, elapsed_ms = started.elapsed().as_millis() as u64, "desktop initialization cancelled; controller released");
+                return;
+            };
+            match result {
                 Ok(Ok(selected)) => {
                     lease.state = selected.clone();
-                    connection(socket, selected, lease).await;
+                    connection(socket, selected, connection_id, started).await;
                 }
                 result => {
                     let error = match result {
-                        Ok(Err(error)) => error.to_string(),
+                        Ok(Err(error)) => format!("{error:#}"),
                         _ => "桌面连接失败".to_owned(),
                     };
+                    tracing::warn!(connection_id, %error, elapsed_ms = started.elapsed().as_millis() as u64, "desktop initialization failed");
                     let _ =
                         timeout(Duration::from_secs(3), socket.send(error_message(&error))).await;
                     let _ = timeout(Duration::from_secs(1), socket.close()).await;
                 }
             }
+            lease.release().await;
+            tracing::info!(connection_id, "desktop controller released");
         })
+}
+
+async fn startup_disconnect(socket: &mut WebSocket) {
+    loop {
+        match socket.next().await {
+            Some(Ok(Message::Ping(_) | Message::Pong(_))) => {
+                if !matches!(
+                    timeout(Duration::from_secs(1), socket.flush()).await,
+                    Ok(Ok(()))
+                ) {
+                    return;
+                }
+            }
+            Some(Ok(Message::Text(_) | Message::Binary(_))) => {}
+            _ => return,
+        }
+    }
 }
 
 async fn upgrade_audio(
@@ -480,7 +559,12 @@ async fn upgrade_audio(
         })
 }
 
-async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease) {
+async fn connection(
+    socket: WebSocket,
+    state: AppState,
+    connection_id: u64,
+    connection_started: Instant,
+) {
     let (mut writer, reader) = socket.split();
     let (control_tx, mut controls) = mpsc::channel(16);
     let (pacing_tx, mut pacing) = watch::channel(VideoFlow {
@@ -519,6 +603,11 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
     ) {
         return;
     }
+    tracing::info!(
+        connection_id,
+        elapsed_ms = connection_started.elapsed().as_millis() as u64,
+        "desktop ready sent"
+    );
     let mut audio = None;
     let mut audio_buffer = vec![0_u8; 3840];
     let mut first_frame = true;
@@ -528,6 +617,7 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
     let mut codec = None;
     let video_started = std::time::Instant::now();
     let mut frame_id = 0_u64;
+    let mut first_video_sent = false;
     let mut encode_samples = LatencySamples::default();
     let mut send_samples = LatencySamples::default();
     let transmit = async {
@@ -660,6 +750,14 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
                 }
                 if video_packet {
                     send_samples.record(started.elapsed());
+                    if !first_video_sent {
+                        first_video_sent = true;
+                        tracing::info!(
+                            connection_id,
+                            elapsed_ms = connection_started.elapsed().as_millis() as u64,
+                            "first desktop frame sent"
+                        );
+                    }
                 }
             }
         }
@@ -671,6 +769,14 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
         state.backend.input.send(InputCommand::Release),
     )
     .await;
+    // Reading a Close queues tungstenite's reply. Dropping the split socket
+    // without flushing it leaves WebSocket proxies waiting for their timeout.
+    let close = timeout(Duration::from_secs(1), writer.close()).await;
+    tracing::info!(
+        connection_id,
+        flushed = matches!(close, Ok(Ok(()))),
+        "desktop close handshake"
+    );
 }
 
 #[derive(Clone, Default)]

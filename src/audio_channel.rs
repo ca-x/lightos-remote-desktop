@@ -145,6 +145,7 @@ pub async fn connection(
         _ = receive => {},
         _ = transmit => {},
     }
+    let _ = timeout(Duration::from_millis(500), writer.close()).await;
 }
 
 #[cfg(test)]

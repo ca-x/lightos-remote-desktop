@@ -248,14 +248,30 @@ impl Backend {
         quality: u8,
         output: Option<String>,
     ) -> Result<Self> {
+        Self::start_with_output_cancellable(
+            socket,
+            fps,
+            quality,
+            output,
+            Arc::new(AtomicBool::new(false)),
+        )
+    }
+
+    pub fn start_with_output_cancellable(
+        socket: PathBuf,
+        fps: u32,
+        quality: u8,
+        output: Option<String>,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Self> {
         ensure!((1..=60).contains(&fps), "FPS must be between 1 and 60");
         ensure!(
             (1..=100).contains(&quality),
             "JPEG quality must be between 1 and 100"
         );
         let deadline = Instant::now() + START_TIMEOUT;
-        let capture_stream = connect(&socket, deadline, None)?;
-        let input_stream = connect(&socket, deadline, None)?;
+        let capture_stream = connect(&socket, deadline, Some(&cancelled))?;
+        let input_stream = connect(&socket, deadline, Some(&cancelled))?;
         let input_socket = input_stream.try_clone()?;
         let (frames_tx, frames) = watch::channel(None);
         let shared = Arc::new(Shared {
@@ -318,13 +334,28 @@ impl Backend {
                 shared.finish();
             })?;
         backend.workers.get_mut().unwrap().push(capture_worker);
-        for _ in 0..2 {
-            match ready_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-                Ok(Ok(())) => {}
+        let mut pending = 2;
+        while pending > 0 {
+            ensure!(
+                !cancelled.load(Ordering::Acquire),
+                "Wayland startup cancelled"
+            );
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            ensure!(
+                !remaining.is_zero(),
+                "Wayland startup did not become ready: timed out"
+            );
+            match ready_rx.recv_timeout(remaining.min(Duration::from_millis(50))) {
+                Ok(Ok(())) => pending -= 1,
                 Ok(Err(error)) => bail!(error),
+                Err(sync_mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(error) => bail!("Wayland startup did not become ready: {error}"),
             }
         }
+        ensure!(
+            !cancelled.load(Ordering::Acquire),
+            "Wayland startup cancelled"
+        );
         ensure!(
             !backend.shared.stopped.load(Ordering::Acquire) && backend.frames.borrow().is_some(),
             "Wayland workers stopped during startup"
@@ -1256,6 +1287,31 @@ mod tests {
             drop((first, second));
         });
         assert!(Backend::start(socket, 30, 80).is_err());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn cancelled_startup_interrupts_an_unresponsive_compositor() {
+        use std::io::Read;
+
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("wayland-cancel");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel = cancelled.clone();
+        let server = thread::spawn(move || {
+            let mut first = listener.accept().unwrap().0;
+            let mut second = listener.accept().unwrap().0;
+            cancel.store(true, Ordering::Release);
+            first.read_to_end(&mut Vec::new()).unwrap();
+            second.read_to_end(&mut Vec::new()).unwrap();
+        });
+        let started = Instant::now();
+        let error = Backend::start_with_output_cancellable(socket, 30, 80, None, cancelled)
+            .err()
+            .expect("startup must be cancelled");
+        assert!(error.to_string().contains("cancelled"), "{error:#}");
+        assert!(started.elapsed() < Duration::from_secs(2));
         server.join().unwrap();
     }
 

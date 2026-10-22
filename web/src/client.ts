@@ -61,7 +61,9 @@ export function createClient(options: ClientOptions = {}) {
   let generation = 0;
   let retryTimer: Timer | null = null;
   let connectionTimer: Timer | null = null;
+  let closeTimer: Timer | null = null;
   let retries = 0;
+  let connectionFailure = "";
   let pendingFrame: { data: ArrayBuffer; generation: number; videoToken: number; id: number | null } | null = null;
   let decoding = false;
   let audioAvailable = false;
@@ -178,6 +180,8 @@ export function createClient(options: ClientOptions = {}) {
     if (mode === desktopMode && output === selectedOutput) return;
     release();
     stopAudio();
+    if (connectionFailure) wanted = true;
+    connectionFailure = "";
     desktopMode = mode;
     selectedOutput = mode === "physical" ? output : null;
     switchingDesktop = socket !== null;
@@ -188,7 +192,8 @@ export function createClient(options: ClientOptions = {}) {
     retries = 0;
     resetSession();
     desktopStatus(`${wanted ? "正在连接" : "已选择"}${desktopLabel()}，${wanted ? "尚未确认" : "尚未连接"}${selectedOutput ? ` · ${selectedOutput}` : ""}。`);
-    if (socket) socket.close(1000, "Switch desktop");
+    setText("state", wanted ? "Connecting" : "Disconnected");
+    if (socket) closeSocket(socket, 1000, "Switch desktop");
     else connect();
   }
 
@@ -491,6 +496,30 @@ export function createClient(options: ClientOptions = {}) {
     updateControls();
   }
 
+  function closeSocket(current: WebSocket, code = 1000, reason = "") {
+    // A Close frame can be lost by a proxy. Stop waiting, but require an
+    // explicit user action before opening another transport. The server still
+    // owns the single-controller gate if the abandoned transport is alive.
+    if (wanted && current === socket && closeTimer === null) {
+      closeTimer = setTimeout(() => {
+        closeTimer = null;
+        if (current !== socket) return;
+        cancelTimer(connectionTimer);
+        connectionTimer = null;
+        current.onopen = current.onmessage = current.onerror = current.onclose = null;
+        socket = null;
+        switchingDesktop = false;
+        wanted = false;
+        connectionFailure = "Previous connection did not close within 3 seconds. Reconnect or select another desktop.";
+        resetSession();
+        setText("state", "Disconnected");
+        desktopStatus(connectionFailure);
+        message(connectionFailure);
+      }, 3000);
+    }
+    current.close(code, reason);
+  }
+
   function connect() {
     if (!wanted || destroyed || socket || retryTimer !== null) return;
     setText("state", "Connecting");
@@ -501,7 +530,8 @@ export function createClient(options: ClientOptions = {}) {
     if (desktopChoices.length) desktopStatus(`正在连接${desktopLabel()}，尚未确认${selectedOutput ? ` · ${selectedOutput}` : ""}。`);
     let current;
     try { current = new WebSocket(url); } catch (error) {
-      message(`Could not connect: ${errorMessage(error)}`);
+      connectionFailure = `Could not connect: ${errorMessage(error)}`;
+      message(connectionFailure);
       scheduleRetry();
       return;
     }
@@ -509,9 +539,10 @@ export function createClient(options: ClientOptions = {}) {
     connectionTimer = setTimeout(() => {
       connectionTimer = null;
       if (socket !== current || ready) return;
-      message("Desktop readiness timed out; reconnecting.");
+      connectionFailure = "Desktop readiness timed out; reconnecting.";
+      message(connectionFailure);
       desktopStatus(`${desktopLabel()}连接超时，可切回虚拟桌面。`);
-      current.close(4000, "Readiness timeout");
+      closeSocket(current, 4000, "Readiness timeout");
       resetSession();
     }, 15000);
     current.binaryType = "arraybuffer";
@@ -542,13 +573,16 @@ export function createClient(options: ClientOptions = {}) {
     current.onerror = () => {
       if (current !== socket || switchingDesktop) return;
       desktopStatus(`${desktopLabel()}连接失败，请检查会话是否可用，或切回虚拟桌面。`);
-      message("Connection failed. Check browser authentication, server availability, or another active controller.");
-      current.close();
+      connectionFailure ||= "Connection failed. Check browser authentication, server availability, or another active controller.";
+      message(connectionFailure);
+      closeSocket(current);
     };
     current.onclose = () => {
       if (current !== socket) return;
       cancelTimer(connectionTimer);
       connectionTimer = null;
+      cancelTimer(closeTimer);
+      closeTimer = null;
       socket = null;
       resetSession();
       setText("state", "Disconnected");
@@ -562,7 +596,15 @@ export function createClient(options: ClientOptions = {}) {
 
   function scheduleRetry() {
     if (!wanted || destroyed || retryTimer !== null) return;
-    const delay = Math.min(10000, 500 * 2 ** Math.min(retries++, 5));
+    if (retries >= 2) {
+      wanted = false;
+      connectionFailure ||= "Desktop connection failed.";
+      desktopStatus(connectionFailure);
+      message(`Automatic reconnect stopped after two retries. ${connectionFailure}`);
+      updateControls();
+      return;
+    }
+    const delay = 500 * 2 ** retries++;
     setText("state", `Reconnecting in ${delay / 1000}s`);
     retryTimer = setTimeout(() => {
       retryTimer = null;
@@ -573,6 +615,9 @@ export function createClient(options: ClientOptions = {}) {
   function disconnect() {
     wanted = false;
     switchingDesktop = false;
+    connectionFailure = "";
+    cancelTimer(closeTimer);
+    closeTimer = null;
     cancelTimer(retryTimer);
     retryTimer = null;
     cancelTimer(connectionTimer);
@@ -602,6 +647,7 @@ export function createClient(options: ClientOptions = {}) {
         element("height").value = String(height);
       }
       ready = true;
+      connectionFailure = "";
       if (typeof value.version === "string" && value.version.length <= 64 && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/.test(value.version)) {
         setText("software-version", `v${value.version}`);
       }
@@ -649,6 +695,7 @@ export function createClient(options: ClientOptions = {}) {
         message("Remote clipboard loaded into the text box.");
       }
     } else if (value.type === "error" && typeof value.message === "string") {
+      if (!ready) connectionFailure = `Server: ${value.message.slice(0, 2048)}`;
       message(`Server: ${value.message.slice(0, 2048)}`);
       desktopStatus(`${desktopLabel()}：${value.message.slice(0, 2048)}`);
     }
@@ -1125,7 +1172,11 @@ export function createClient(options: ClientOptions = {}) {
   });
   listen(element("connection"), "click", () => {
     if (wanted) disconnect();
-    else { wanted = true; retries = 0; updateControls(); connect(); }
+    else {
+      wanted = true; retries = 0; connectionFailure = ""; updateControls();
+      if (socket) closeSocket(socket, 1000, "Reconnect");
+      else connect();
+    }
   });
   listen(element("audio"), "click", () => { void toggleAudio(); });
   listen(element("desktop-source"), "change", () => {

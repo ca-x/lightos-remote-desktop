@@ -270,6 +270,67 @@ test("desktop switch releases input, ignores old readiness and connects only aft
   assert.equal(app.nodes["clipboard-get"].disabled, false);
 });
 
+test("stalled close reports failure within three seconds and ignores late callbacks", () => {
+  const app = harness();
+  const old = app.ready();
+  desktopReady(old);
+  app.nodes["desktop-source"].value = "physical";
+  app.nodes["desktop-source"].fire("change");
+  assert.equal(app.sockets.length, 1);
+  assert.equal(app.tick(), 3000);
+  assert.match(app.nodes["desktop-status"].textContent, /did not close within 3 seconds/);
+  assert.equal(app.nodes["send-text"].disabled, true);
+  assert.equal(app.timers.size, 0);
+  app.nodes.connection.fire("click");
+  assert.equal(app.sockets.length, 2);
+  const current = app.sockets.at(-1);
+  current.open();
+  desktopReady(current, "physical");
+  old.finishClose();
+  old.json({type:"ready",width:800,height:600,desktop:"virtual"});
+  assert.match(app.nodes["desktop-status"].textContent, /已连接.*物理桌面/);
+  assert.equal(app.sockets.length, 2);
+});
+
+test("a source selection recovers from a stalled close without reusing old input", () => {
+  const app = harness();
+  desktopReady(app.ready());
+  app.nodes["desktop-source"].value = "physical";
+  app.nodes["desktop-source"].fire("change");
+  app.tick();
+  app.nodes["desktop-source"].value = "virtual";
+  app.nodes["desktop-source"].fire("change");
+  assert.equal(app.sockets.length, 2);
+  assert.equal(new URL(app.sockets.at(-1).url).searchParams.get("desktop"), "virtual");
+  assert.equal(app.nodes["send-text"].disabled, true);
+});
+
+test("readiness timeout followed by a stalled close remains bounded", () => {
+  const app = harness();
+  app.sockets[0].open();
+  assert.equal(app.tick(), 15000);
+  assert.equal(app.tick(), 3000);
+  assert.equal(app.sockets.length, 1);
+  assert.equal(app.timers.size, 0);
+  assert.match(app.nodes.message.textContent, /did not close/);
+  app.nodes.connection.fire("click");
+  assert.equal(app.sockets.length, 2);
+});
+
+test("initialization failures preserve the server reason after automatic retries stop", () => {
+  const app = harness();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const socket = app.sockets.at(-1);
+    socket.open();
+    socket.json({type:"error",message:"capture permission denied"});
+    socket.finishClose();
+    if (attempt < 2) app.tick();
+  }
+  assert.equal(app.timers.size, 0);
+  assert.match(app.nodes["desktop-status"].textContent, /capture permission denied/);
+  assert.match(app.nodes.message.textContent, /stopped after two retries/);
+});
+
 test("physical desktop cannot resize, monitor switches are encoded and virtual restores resize", async () => {
   const app = harness();
   const socket = app.ready();
@@ -1008,7 +1069,7 @@ test("missing ready message times out without opening a concurrent socket", () =
   assert.equal(app.tick(), 15000);
   assert.equal(app.sockets[0].readyState, 2);
   assert.equal(app.sockets.length, 1);
-  assert.equal(app.timers.size, 0);
+  assert.equal(app.timers.size, 1);
   app.sockets[0].finishClose();
   assert.equal(app.tick(), 500);
   assert.equal(app.sockets.length, 2);
@@ -1076,20 +1137,24 @@ test("resolution is explicit and validated", () => {
   assert.equal(app.nodes.message.textContent, "Server: resize unsupported");
 });
 
-test("reconnect has bounded backoff and never overlaps a closing socket", () => {
+test("reconnect stops after two failures and manual retry starts a new attempt", () => {
   const app = harness();
   app.nodes.connection.fire("click");
   app.nodes.connection.fire("click");
   assert.equal(app.sockets.length, 1);
   app.sockets[0].finishClose();
   const delays = [];
-  for (let index = 0; index < 9; index += 1) {
+  for (let index = 0; index < 2; index += 1) {
     delays.push(app.tick());
     app.sockets.at(-1).finishClose();
   }
-  assert.deepEqual(delays, [500, 1000, 2000, 4000, 8000, 10000, 10000, 10000, 10000]);
-  app.nodes.connection.fire("click");
+  assert.deepEqual(delays, [500, 1000]);
   assert.equal(app.timers.size, 0);
+  assert.match(app.nodes.message.textContent, /stopped after two retries/);
+  assert.match(app.nodes["desktop-status"].textContent, /failed/);
+  app.nodes.connection.fire("click");
+  assert.equal(app.sockets.length, 4);
+  assert.equal(app.timers.size, 1);
 });
 
 test("JPEG decode is single-flight with one latest pending frame; stale results are closed", async () => {

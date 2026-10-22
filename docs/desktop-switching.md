@@ -6,6 +6,23 @@ input and reconnects to the authenticated, same-origin WebSocket with
 `?desktop=virtual` or `?desktop=physical`. Only one controller is allowed across
 both targets. The virtual session remains alive while viewing the physical one.
 
+Both media sockets finish the WebSocket close handshake before dropping their
+transport. A TCP disconnect without the Close acknowledgement can leave a
+gateway holding the browser in CLOSING for 60 seconds, before the next desktop
+request is even sent. The client waits at most three seconds for closing and
+then shows a recoverable failure. It does not automatically open a replacement
+transport after this timeout; an explicit reconnect or another source selection
+can recover, with the server still enforcing one controller. Late callbacks from
+the abandoned socket cannot affect the replacement connection.
+
+Failed connections automatically retry twice (after 500 ms and 1 s), then retain
+the failure reason for manual recovery. Successful readiness resets the retry
+budget. Disconnecting during physical initialization cancels that initialization;
+the controller remains reserved until its workers are reclaimed. Worker cleanup
+runs outside the async socket executor. Connection IDs and elapsed stage timings
+are logged for accepted connections, physical discovery/readiness, the first sent
+frame, closing and controller release; credentials and pixel contents are omitted.
+
 Physical mode attaches to an existing same-user Wayland compositor. Discovery
 uses sockets in `/run/user/<uid>`; `--physical-wayland-socket` can explicitly
 identify a nonstandard socket. The browser never supplies a filesystem path.

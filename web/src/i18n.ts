@@ -46,6 +46,8 @@ const clientPairs: [string, string][] = [
   ["Keyboard capture denied. Check browser permissions or use the shortcut sender below.", "键盘捕获被拒绝，请检查浏览器权限或使用下方通用发送器。"],
   ["Connection is too slow; reconnecting to release input safely.", "连接过慢，正在重新连接以安全释放输入。"],
   ["Desktop readiness timed out; reconnecting.", "桌面就绪超时，正在重新连接。"],
+  ["Previous connection did not close within 3 seconds. Reconnect or select another desktop.", "旧连接在 3 秒内未完成关闭，请重新连接或选择其他桌面。"],
+  ["Desktop connection failed.", "桌面连接失败。"],
   ["Connected; waiting for server readiness.", "连接已建立，等待服务就绪。"],
   ["Connection failed. Check browser authentication, server availability, or another active controller.", "连接失败，请检查浏览器身份验证、服务状态或是否有其他控制端。"],
   ["Invalid server JSON.", "服务返回了无效的 JSON。"], ["Server supplied an invalid desktop size.", "服务返回了无效的桌面尺寸。"],
@@ -72,6 +74,7 @@ export function translateClient(text: string): string {
     if (text.startsWith(prefix)) return (chinese ? chinesePrefix : prefix) + text.slice(prefix.length);
   }
   if (chinese) return text
+    .replace(/^Automatic reconnect stopped after two retries\. /, "自动重连已尝试两次并停止。")
     .replace(/^Reconnecting in (.+)s$/, "$1 秒后重连")
     .replace(/^Could not connect: /, "无法连接：")
     .replace(/^Audio unavailable: /, "音频不可用：")
