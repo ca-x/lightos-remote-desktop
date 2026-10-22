@@ -125,11 +125,38 @@ if ((rollback)); then
 else
     [[ -f $binary && -x $binary ]] || fail "prebuilt executable required: $binary"
     [[ -f $session_template && -f $session_override_template ]] || fail 'missing session service templates'
-    # Staging and fixtures never call systemd. Activation resolves the effective User below.
-    runtime_user=$(awk '/^\[/{section=$0} section=="[Service]" && /^User=/{sub(/^User=/, ""); user=$0} END{print user}' "$unit")
-    [[ $runtime_user =~ ^[a-zA-Z_][a-zA-Z0-9_-]*[$]?$ && $runtime_user != root ]] || fail 'a named non-root User is required in the existing service'
-    session_contents=$(<"$session_template")
-    session_contents=${session_contents//@USER@/$runtime_user}
+    # Read only the attachment setting, never source/evaluate an environment file.
+    attached=0
+    environment_sources=()
+    for source_file in "$environment" "$native_environment"; do
+        [[ ! -f $source_file ]] || environment_sources+=("$source_file")
+    done
+    if ((${#environment_sources[@]})); then
+        attached=$(awk '
+            /^[[:space:]]*LIGHTOS_REMOTE_DESKTOP_WAYLAND_SOCKET[[:space:]]*=/ {
+                value=$0; sub(/^[^=]*=[[:space:]]*/, "", value); sub(/[[:space:]]*$/, "", value)
+                present=(value != "" && value != "\"\"" && value != "\047\047")
+            }
+            END { print present ? 1 : 0 }
+        ' "${environment_sources[@]}")
+    fi
+    if ((!activate && !attached)); then
+        # Staging never contacts systemd. Include local drop-ins in lexical order.
+        user_sources=("$unit")
+        for source_file in "$unit.d"/*.conf; do
+            [[ ! -f $source_file ]] || user_sources+=("$source_file")
+        done
+        runtime_user=$(awk '
+            /^[[:space:]]*\[/ { section=$0; gsub(/[[:space:]]/, "", section) }
+            section=="[Service]" && /^[[:space:]]*User[[:space:]]*=/ {
+                user=$0; sub(/^[^=]*=[[:space:]]*/, "", user); sub(/[[:space:]]*$/, "", user)
+            }
+            END { print user }
+        ' "${user_sources[@]}")
+        [[ $runtime_user =~ ^([a-zA-Z_][a-zA-Z0-9_-]*[$]?|[1-9][0-9]*)$ && $runtime_user != root ]] || fail 'a non-root User is required in the existing service or its drop-ins'
+        session_contents=$(<"$session_template")
+        session_contents=${session_contents//@USER@/$runtime_user}
+    fi
     [[ -f $template ]] || fail 'missing systemd override template'
     digest=$(sha256sum -- "$binary"); digest=${digest%% *}
     release=$base/releases/$digest
@@ -190,13 +217,20 @@ fi
 
 if ((activate)); then
     runtime_user=$(activation_systemctl show --property=User --value "$service")
-    [[ -n $runtime_user && $runtime_user != root && $runtime_user != 0 ]] || fail 'service must have a non-root User'
+    [[ $runtime_user =~ ^([a-zA-Z_][a-zA-Z0-9_-]*[$]?|[1-9][0-9]*)$ && $runtime_user != root ]] || fail 'service must have a non-root User'
     session_contents=$(<"$session_template")
     session_contents=${session_contents//@USER@/$runtime_user}
     activation_doctor
 fi
 
-if [[ -L $base/current && $(readlink -- "$base/current") == "releases/$digest" ]] && cmp -s -- "$template" "$override" && cmp -s -- "$session_override_template" "$session_override" && cmp -s <(printf '%s\n' "$session_contents") "$session_unit"; then
+session_files_match() {
+    if ((attached)); then
+        [[ ! -e $session_override && ! -e $session_unit ]]
+    else
+        cmp -s -- "$session_override_template" "$session_override" && cmp -s <(printf '%s\n' "$session_contents") "$session_unit"
+    fi
+}
+if [[ -L $base/current && $(readlink -- "$base/current") == "releases/$digest" ]] && cmp -s -- "$template" "$override" && session_files_match; then
     if ((activate)); then
         [[ -f $state/latest && ! -L $state/latest ]] || fail 'missing activation rollback snapshot'
         read -r identifier < "$state/latest"
@@ -239,13 +273,17 @@ mv -Tf -- "$temporary" "$base/current"
 temporary=$(mktemp "${override%/*}/.override.XXXXXX")
 install -m 0644 -- "$template" "$temporary"
 mv -Tf -- "$temporary" "$override"
-temporary=$(mktemp "${session_unit%/*}/.session.XXXXXX")
-printf '%s\n' "$session_contents" > "$temporary"
-chmod 0644 "$temporary"
-mv -Tf -- "$temporary" "$session_unit"
-temporary=$(mktemp "${session_override%/*}/.session-override.XXXXXX")
-install -m 0644 -- "$session_override_template" "$temporary"
-mv -Tf -- "$temporary" "$session_override"
+if ((attached)); then
+    rm -f -- "$session_override" "$session_unit"
+else
+    temporary=$(mktemp "${session_unit%/*}/.session.XXXXXX")
+    printf '%s\n' "$session_contents" > "$temporary"
+    chmod 0644 "$temporary"
+    mv -Tf -- "$temporary" "$session_unit"
+    temporary=$(mktemp "${session_override%/*}/.session-override.XXXXXX")
+    install -m 0644 -- "$session_override_template" "$temporary"
+    mv -Tf -- "$temporary" "$session_override"
+fi
 if ((activate)); then
     if activation_systemctl is-active --quiet "$service"; then was_active=1; fi
     activation_attempted=1

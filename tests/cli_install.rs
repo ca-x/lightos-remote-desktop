@@ -58,3 +58,71 @@ fn embedded_installer_stages_itself_preserves_python_and_rolls_back_without_sour
     );
     assert_eq!(fs::read_to_string(environment).unwrap(), original_env);
 }
+
+#[test]
+fn attached_installation_does_not_require_or_start_a_virtual_desktop() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let unit = root.join("etc/systemd/system/lightos-remote-desktop.service");
+    fs::create_dir_all(unit.parent().unwrap()).unwrap();
+    fs::write(
+        &unit,
+        "[Service]\nUser=desktop\nExecStart=/original/python\n",
+    )
+    .unwrap();
+    let environment = root.join("etc/lightos/remote-desktop.env");
+    fs::create_dir_all(environment.parent().unwrap()).unwrap();
+    fs::write(
+        &environment,
+        "LIGHTOS_REMOTE_DESKTOP_WAYLAND_SOCKET=/run/user/1000/wayland-0\n",
+    )
+    .unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_lightos-remote-desktop"))
+        .args(["install-service", "--stage-only", "--test-root"])
+        .arg(root)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        !root
+            .join("etc/systemd/system/lightos-remote-desktop.service.d/95-session.conf")
+            .exists()
+    );
+    assert!(
+        !root
+            .join("etc/systemd/system/lightos-remote-desktop-session.service")
+            .exists()
+    );
+}
+
+#[test]
+fn staged_session_owner_respects_user_dropin_and_numeric_uid() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let unit = root.join("etc/systemd/system/lightos-remote-desktop.service");
+    fs::create_dir_all(root.join("etc/systemd/system/lightos-remote-desktop.service.d")).unwrap();
+    fs::write(unit, "[Service]\nExecStart=/original/python\n").unwrap();
+    fs::write(
+        root.join("etc/systemd/system/lightos-remote-desktop.service.d/10-user.conf"),
+        "[Service]\nUser=2000\n",
+    )
+    .unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_lightos-remote-desktop"))
+        .args(["install-service", "--stage-only", "--test-root"])
+        .arg(root)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let owner =
+        fs::read_to_string(root.join("etc/systemd/system/lightos-remote-desktop-session.service"))
+            .unwrap();
+    assert!(owner.lines().any(|line| line == "User=2000"));
+}

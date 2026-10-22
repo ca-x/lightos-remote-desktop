@@ -681,7 +681,10 @@ mod tests {
             .env("WAYLAND_DISPLAY", "wayland-7")
             .env("XDG_RUNTIME_DIR", directory.path())
             .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/private/test/bus")
-            .env("HYPRLAND_INSTANCE_SIGNATURE", "private-desktop");
+            .env("HYPRLAND_INSTANCE_SIGNATURE", "private-desktop")
+            .env("XDG_STATE_HOME", "/private/test/state")
+            .env("OMARCHY_PATH", "/private/test/omarchy")
+            .env("PIPEWIRE_RUNTIME_DIR", "/private/test/pipewire");
         assert!(command.status().unwrap().success());
         assert_eq!(fs::read_to_string(&display).unwrap(), ":93\n");
         let updated = fs::read_to_string(&arguments).unwrap();
@@ -689,6 +692,9 @@ mod tests {
         assert!(updated.contains("WAYLAND_DISPLAY=wayland-7\n"));
         assert!(updated.contains("DBUS_SESSION_BUS_ADDRESS=unix:path=/private/test/bus\n"));
         assert!(!updated.contains("--systemd"));
+        assert!(updated.contains("XDG_STATE_HOME=/private/test/state\n"));
+        assert!(updated.contains("OMARCHY_PATH=/private/test/omarchy\n"));
+        assert!(updated.contains("PIPEWIRE_RUNTIME_DIR=/private/test/pipewire\n"));
         command.env_remove("DISPLAY");
         assert!(command.status().unwrap().success());
         assert_eq!(fs::read_to_string(&display).unwrap(), "\n");

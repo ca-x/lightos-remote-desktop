@@ -225,6 +225,9 @@ fn transport_restart_preserves_native_desktop_and_gui_process() {
             "transport generation {generation} stopped; native desktop signature {signature} and GUI PID {app} survived"
         );
     }
+    assert!(ipc(runtime.path(), signature, "reload").starts_with("ok"));
+    assert_eq!(ipc(runtime.path(), signature, "configerrors").trim(), "");
+    assert_eq!(client_pid(), Some(app));
     let bindings: Value = serde_json::from_str(&ipc(runtime.path(), signature, "j/binds")).unwrap();
     assert!(
         bindings.as_array().unwrap().len() > 30,
