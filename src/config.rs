@@ -54,7 +54,14 @@ mod tests {
 use std::{net::IpAddr, path::PathBuf};
 
 use anyhow::{Result, bail, ensure};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum DesktopShell {
+    Auto,
+    Minimal,
+    Omarchy,
+}
 
 #[derive(Clone, Parser)]
 pub struct Config {
@@ -93,6 +100,13 @@ pub struct Config {
     pub wayland_socket: Option<PathBuf>,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_DESKTOP_CONFIG")]
     pub desktop_config: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "LIGHTOS_REMOTE_DESKTOP_SHELL",
+        value_enum,
+        default_value = "auto"
+    )]
+    pub desktop_shell: DesktopShell,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_CAGE_BIN", default_value = "cage")]
     pub cage: PathBuf,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_AQUAMARINE_DIR")]
@@ -102,6 +116,28 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn omarchy_path(&self) -> Result<Option<PathBuf>> {
+        if self.desktop_shell == DesktopShell::Minimal
+            || self.desktop_config.is_some()
+            || self.wayland_socket.is_some()
+        {
+            return Ok(None);
+        }
+        let path = std::env::var_os("OMARCHY_PATH")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/usr/share/omarchy"));
+        if path.join("shell/shell.qml").is_file() {
+            Ok(Some(path))
+        } else {
+            ensure!(
+                self.desktop_shell != DesktopShell::Omarchy,
+                "Omarchy shell is not installed"
+            );
+            Ok(None)
+        }
+    }
+
     pub fn dimensions(&self) -> Result<(u32, u32)> {
         let Some(screen) = &self.screen else {
             return Ok((self.width, self.height));

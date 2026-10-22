@@ -88,7 +88,7 @@ Backend::stop(): signals its owned thread; never modifies global environment.
 
 ## Progress
 
-- Local repository initialized. No remote created: API credentials return 401.
+- Private source repository created and pushed after the user's renewed API login.
 - Administrator access was provided separately; compatibility library provisioned
   privately without editing the system library or original authentication file.
 - Candidate real HTTP/WebSocket tests cover JPEG decoding, auth/origin,
@@ -97,3 +97,6 @@ Backend::stop(): signals its owned thread; never modifies global environment.
   post-resize stability passed, including a separate 61-second FD/RSS sample.
 - Live system cutover completed after browser checks and independent review.
   Installed protocol tests passed with private audio; see verification.md.
+- Default shell auto-detection now starts the installed Omarchy wallpaper,
+  bar and menu rather than a terminal-only desktop. Remote application launch
+  uses private PATH adapters; host UWSM/environment import is not required.

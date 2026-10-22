@@ -65,11 +65,21 @@ For an already-running compositor, use `--wayland-socket /absolute/socket`.
 It must expose the required capture, seat and virtual-input protocols. Attach
 mode does not own that desktop and cannot resize it.
 
-An explicit `--desktop-config FILE` selects your Hyprland config. The default
-is a small isolated desktop, not a full Omarchy installation: foot opens on
-startup, Super+Return opens another terminal, Super+Q closes a window, and
-Super+F toggles fullscreen. This is not a mirror of the physical display. Applications and
-desktop settings are not automatically migrated from the previous environment.
+The default `--desktop-shell auto` starts the installed Omarchy Shell when
+available, including the user's wallpaper, top bar and application menu.
+Super+Space opens applications, Super+Escape opens the root menu, Super+Return
+opens a terminal, and Super+1 through Super+5 switch workspaces. No terminal
+covers the wallpaper on startup. This is a separate desktop, not a mirror of
+the physical display. Theme and application data still belong to the same user.
+
+Use `--desktop-shell minimal` for the terminal-only fallback, or
+`--desktop-shell omarchy` to require Omarchy. An explicit `--desktop-config FILE`
+or attached Wayland socket bypasses automatic shell startup. Remote app launch
+uses private session-local adapters, not UWSM or the host user systemd manager;
+only the `uwsm-app -- command [args...]` form is supported. We do not run
+Omarchy's host-session autostart, hardware provisioning or import the remote
+environment into the host session. Host network/polkit/power integrations are
+not guaranteed in this seatless session.
 
 ### Aquamarine compatibility
 

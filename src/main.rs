@@ -52,6 +52,16 @@ async fn main() -> Result<()> {
 
 fn doctor(config: &Config) -> Result<()> {
     config.validate()?;
+    if config.omarchy_path()?.is_some() {
+        ensure!(
+            executable_exists(Path::new("quickshell")),
+            "missing executable: quickshell"
+        );
+        ensure!(
+            executable_exists(Path::new("gtk-launch")),
+            "missing executable: gtk-launch"
+        );
+    }
     if config.wayland_socket.is_none() {
         for command in [
             config.cage.as_path(),

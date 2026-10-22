@@ -1,7 +1,7 @@
 use std::{
     fs::{self, File, OpenOptions},
     os::unix::{
-        fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+        fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
         process::CommandExt,
     },
     path::{Path, PathBuf},
@@ -110,6 +110,10 @@ impl Session {
                 .setup_audio()
                 .context("starting private desktop audio")?;
         }
+        let omarchy = config.omarchy_path()?;
+        if omarchy.is_some() {
+            session.prepare_application_launchers()?;
+        }
         let desktop_config = if let Some(path) = &config.desktop_config {
             ensure!(path.is_file(), "desktop configuration is missing");
             fs::canonicalize(path)?
@@ -118,10 +122,7 @@ impl Session {
             let (width, height) = config.dimensions()?;
             fs::write(
                 &path,
-                include_str!("../config/hyprland.conf").replace(
-                    "1280x720@30",
-                    &format!("{}x{}@{}", width, height, config.fps),
-                ),
+                desktop_configuration(width, height, config.fps, omarchy.is_some()),
             )?;
             path
         };
@@ -164,6 +165,9 @@ impl Session {
             .env("XDG_CURRENT_DESKTOP", "Hyprland")
             .env("XDG_SESSION_TYPE", "wayland");
         session.audio_environment(&mut command);
+        if let Some(path) = &omarchy {
+            session.omarchy_environment(&mut command, path)?;
+        }
         if let Some(source) = &session.audio_source {
             command.env("PULSE_SINK", source.trim_end_matches(".monitor"));
         }
@@ -178,8 +182,68 @@ impl Session {
             .filter_map(Result::ok)
             .find(|entry| entry.path().join(".socket.sock").exists())
             .map(|entry| entry.file_name().to_string_lossy().into_owned());
+        if let Some(path) = &omarchy {
+            let mut shell = Command::new("quickshell");
+            shell
+                .arg("--no-duplicate")
+                .arg("--path")
+                .arg(path.join("shell"));
+            shell
+                .env("XDG_RUNTIME_DIR", &session.runtime)
+                .env(
+                    "WAYLAND_DISPLAY",
+                    session
+                        .socket
+                        .file_name()
+                        .context("desktop socket has no name")?,
+                )
+                .env(
+                    "DBUS_SESSION_BUS_ADDRESS",
+                    format!("unix:path={}", bus_path.display()),
+                )
+                .env_remove("DISPLAY")
+                .env("XDG_CURRENT_DESKTOP", "Hyprland")
+                .env("QT_QPA_PLATFORM", "wayland")
+                .env("QS_DISABLE_FILE_WATCHER", "1")
+                .env("QS_NO_RELOAD_POPUP", "1");
+            if let Some(signature) = &session.signature {
+                shell.env("HYPRLAND_INSTANCE_SIGNATURE", signature);
+            }
+            session.audio_environment(&mut shell);
+            session.omarchy_environment(&mut shell, path)?;
+            session.spawn(shell, "omarchy-shell.log")?;
+        }
         tracing::info!(socket = %session.socket.display(), "native desktop session ready");
         Ok(session)
+    }
+
+    fn prepare_application_launchers(&self) -> Result<()> {
+        let directory = self.runtime.join("bin");
+        fs::create_dir_all(&directory)?;
+        for (name, source) in [
+            ("uwsm-app", include_str!("../scripts/session-uwsm-app.sh")),
+            (
+                "omarchy-launch-browser",
+                include_str!("../scripts/session-browser.sh"),
+            ),
+            ("omarchy-launch-terminal", "#!/bin/sh\nexec foot \"$@\"\n"),
+        ] {
+            let path = directory.join(name);
+            fs::write(&path, source)?;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
+    }
+
+    fn omarchy_environment(&self, command: &mut Command, path: &Path) -> Result<()> {
+        let mut paths = vec![self.runtime.join("bin"), path.join("bin")];
+        if let Some(inherited) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&inherited));
+        }
+        command
+            .env("OMARCHY_PATH", path)
+            .env("PATH", std::env::join_paths(paths)?);
+        Ok(())
     }
 
     fn spawn(&mut self, mut command: Command, log: &str) -> Result<()> {
@@ -340,6 +404,16 @@ impl Session {
     }
 }
 
+fn desktop_configuration(width: u32, height: u32, fps: u32, omarchy: bool) -> String {
+    let mut configuration = include_str!("../config/hyprland.conf")
+        .replace("1280x720@30", &format!("{width}x{height}@{fps}"));
+    if omarchy {
+        configuration = configuration.replace("exec-once = $terminal\n", "");
+        configuration.push_str(include_str!("../config/omarchy.conf"));
+    }
+    configuration
+}
+
 fn desktop_socket(runtime: &Path) -> Option<PathBuf> {
     let signature = fs::read_dir(runtime.join("hypr"))
         .ok()?
@@ -424,6 +498,44 @@ mod tests {
         let config = include_str!("../config/hyprland.conf");
         assert!(config.lines().any(|line| line == "$terminal = foot"));
         assert!(config.lines().any(|line| line == "exec-once = $terminal"));
+    }
+
+    #[test]
+    fn omarchy_desktop_exposes_launcher_without_covering_wallpaper() {
+        let config = desktop_configuration(1600, 900, 25, true);
+        assert!(config.contains("1600x900@25"));
+        assert!(config.contains("omarchy-menu toggle apps"));
+        assert!(config.contains("workspace, 5"));
+        assert!(!config.contains("exec-once = $terminal"));
+        assert!(!config.contains("import-environment"));
+    }
+
+    #[test]
+    fn minimal_desktop_retains_terminal_without_omarchy_dependencies() {
+        let config = desktop_configuration(1280, 720, 20, false);
+        assert!(config.contains("exec-once = $terminal"));
+        assert!(!config.contains("omarchy-menu"));
+    }
+
+    #[test]
+    fn session_app_launcher_preserves_arguments_and_rejects_unsupported_options() {
+        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/session-uwsm-app.sh");
+        let output = Command::new("sh")
+            .args([script, "--", "printf", "%s", "text with spaces; $(false)"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"text with spaces; $(false)");
+        for arguments in [vec![script], vec![script, "--"], vec![script, "--bad"]] {
+            assert!(
+                !Command::new("sh")
+                    .args(arguments)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        }
     }
 
     #[test]

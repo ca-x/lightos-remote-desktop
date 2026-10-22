@@ -19,6 +19,12 @@ tools. Use `doctor` for configuration/dependency checks, then test an actual
 session separately. The installer copies only the selected application
 executable, never system dependencies or extracted smoke-test trees.
 
+With the default `LIGHTOS_REMOTE_DESKTOP_SHELL=auto`, an
+installed Omarchy Shell also requires `quickshell`, `gtk-launch` and `foot`.
+It restores the user's wallpaper, bar and app menu without running the host
+Omarchy provisioning or importing remote variables into the host user manager.
+Use `LIGHTOS_REMOTE_DESKTOP_SHELL=minimal` for the terminal-only fallback.
+
 Audio requires the system `pipewire`, `pipewire-pulse`, `wireplumber`, `ffmpeg`
 and `pactl` tools. The selected design uses an owned per-desktop PipeWire graph,
 private Pulse-compatible server and WirePlumber `lightos` profile with hardware

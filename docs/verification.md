@@ -5,7 +5,7 @@ implementation, not complete Selkies or Omarchy feature parity.
 
 ## Automated checks
 
-- Rust unit suite: 21 passed; one ten-second timeout test is explicitly ignored
+- Rust unit suite: 24 passed; one ten-second timeout test is explicitly ignored
   by default and was also run separately, passing in approximately 10.1 seconds.
 - Frontend: 16 dependency-free Node tests passed.
 - Migration installer: 40 behaviors passed with isolated filesystems and mocked
@@ -60,7 +60,7 @@ was not performed on the production service.
 - `/healthz`: native=true, ready=true; systemd active/running and NRestarts=0 at
   verification. Health PID matched MainPID.
 - Running binary SHA256:
-  `b58876b5a1ebd1568d0296cb0376f806d81fe370f36f13170a8621a1387cf0e2`.
+  `96072eb730d01cd3a3fd24a8cb7c6e4b4c774a104e445db8b24af0564d74e60d`.
   It matched the local release artifact.
 - Managed override: `/etc/systemd/system/lightos-remote-desktop.service.d/90-native.conf`.
 - Private Aquamarine library provisioned with license/receipt; system library
@@ -86,9 +86,26 @@ The initial default config started only the compositor, with no shell or
 application. The user reported an apparently blank desktop; `hyprctl clients`
 confirmed no windows and `configerrors` was empty. Launching foot produced a
 mapped 1238x678 window and a captured, visible terminal. The default config now
-starts foot once; Super+Return opens additional terminals. A regression test
-failed before this change and passed afterward. This isolated desktop does not
-mirror the physical desktop and still does not provision the full Omarchy shell.
+starts foot once in minimal mode; Super+Return opens additional terminals. A
+regression test failed before this change and passed afterward. This alone did
+not satisfy the user's desktop expectation: the Omarchy shell was still absent.
+
+The default auto profile now detects the installed Omarchy Shell and starts it
+as an owned, monitored child on the private D-Bus and Wayland socket. Wallpaper,
+bar and application menu were captured and visually inspected on a separate
+candidate. The shell and its IPC callers must use the same basename spelling
+of WAYLAND_DISPLAY; using an absolute socket path for the shell broke menu IPC
+despite successful rendering. That mismatch was reproduced and fixed.
+
+Candidate checks confirmed background/bar/menu layer namespaces, successful
+shell IPC ping, a mapped terminal launched through the session-local
+`uwsm-app -- gtk-launch foot` adapter, no compositor config errors, and passing
+live protocol checks including real frames, audio, clipboard and resize
+(approximately 15.8 seconds). Private adapters avoid importing the remote
+environment into the host systemd manager. They deliberately do not implement
+every UWSM option or Omarchy hardware/power/session service. The remote desktop
+shares the user's existing wallpaper/theme and app data; it is not a separate
+security boundary or a mirror of the physical display.
 
 ## Source repository
 
