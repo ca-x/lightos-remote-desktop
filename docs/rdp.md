@@ -63,7 +63,8 @@ must be explicitly configured and still requires TLS and credentials. TLS/key
 errors and occupied ports fail startup; the server never silently falls back to
 plaintext. A stalled authentication/activation attempt closes after 15 seconds
 without reserving the browser controller. Input-route failure closes control and
-runs the existing held-input release barrier. HTTP shutdown stops RDP as well.
+runs the existing held-input release barrier. HTTP shutdown closes RDP and releases its input before stopping the capture/input
+workers and waiting for HTTP connections to drain.
 
 ## Connect
 

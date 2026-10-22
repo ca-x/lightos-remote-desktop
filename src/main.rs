@@ -242,12 +242,17 @@ async fn serve(config: Config) -> Result<()> {
                 }
             }
         }
+        monitor.shutdown_mcp();
+        #[cfg(feature = "rdp")]
+        if let Some(rdp) = rdp
+            && let Err(error) = rdp.stop().await
+        {
+            tracing::error!(%error, "RDP transport did not stop cleanly");
+            monitor_failed.store(true, std::sync::atomic::Ordering::Release);
+        }
         monitor.backend.stop();
     }).await;
-    #[cfg(feature = "rdp")]
-    if let Some(rdp) = rdp {
-        rdp.stop().await?;
-    }
+    state.shutdown_mcp();
     state.backend.stop();
     result?;
     ensure!(

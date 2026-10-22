@@ -58,6 +58,7 @@ struct State {
     enabled: bool,
     tokens: Vec<ActiveToken>,
     error: bool,
+    stopping: bool,
 }
 
 #[derive(Clone)]
@@ -110,14 +111,24 @@ impl TokenStore {
                     })
                     .collect(),
                 error,
+                stopping: false,
             }),
+        }
+    }
+
+    /// Cancel this transport's sessions and input without changing saved settings.
+    pub(crate) fn shutdown(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.stopping = true;
+        for token in &state.tokens {
+            token.cancellation.cancel();
         }
     }
 
     pub(super) fn status(&self) -> Result<Status> {
         let state = self.state.lock().unwrap();
         ensure!(
-            !state.error,
+            !state.error && !state.stopping,
             "MCP settings unavailable; check the private settings file"
         );
         Ok(Status {
@@ -132,7 +143,7 @@ impl TokenStore {
 
     fn save(&self, state: &State, settings: &Settings) -> Result<()> {
         ensure!(
-            !state.error,
+            !state.error && !state.stopping,
             "MCP settings unavailable; check the private settings file"
         );
         write(
@@ -249,7 +260,7 @@ impl TokenStore {
         }
         let hash: [u8; 32] = Sha256::digest(bearer.as_bytes()).into();
         let state = self.state.lock().unwrap();
-        if state.error || !state.enabled {
+        if state.error || state.stopping || !state.enabled {
             return None;
         }
         state
@@ -265,13 +276,14 @@ impl TokenStore {
 
     pub(super) fn enabled(&self) -> bool {
         let state = self.state.lock().unwrap();
-        state.enabled && !state.error
+        state.enabled && !state.error && !state.stopping
     }
 
     pub(super) fn authorized(&self, principal: &Principal, scope: Scope) -> bool {
         let state = self.state.lock().unwrap();
         state.enabled
             && !state.error
+            && !state.stopping
             && !principal.cancellation.is_cancelled()
             && (scope == Scope::Observe || principal.scope == Scope::Control)
             && state
@@ -429,6 +441,37 @@ mod tests {
                 .authenticate(&created.token)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn shutdown_cancels_active_tokens_without_changing_saved_settings() {
+        let directory = tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
+        let path = directory.path().join("mcp.json");
+        let store = TokenStore::open(Some(path.clone()));
+        let created = store.create("Survives restart", Scope::Control).unwrap();
+        store.set_enabled(true).unwrap();
+        let principal = store.authenticate(&created.token).unwrap();
+        let before = fs::read(&path).unwrap();
+        store.shutdown();
+        store.shutdown();
+        assert!(principal.cancellation.is_cancelled());
+        assert!(!store.enabled());
+        assert!(store.authenticate(&created.token).is_none());
+        assert!(!store.authorized(&principal, Scope::Observe));
+        assert!(store.status().is_err());
+        assert!(store.set_enabled(true).is_err());
+        assert!(store.set_enabled(false).is_err());
+        assert!(store.create("During shutdown", Scope::Observe).is_err());
+        assert!(store.revoke(&created.info.id).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let reopened = TokenStore::open(Some(path));
+        let current = reopened.authenticate(&created.token).unwrap();
+        assert!(reopened.enabled());
+        assert!(!current.cancellation.is_cancelled());
+        assert!(reopened.authorized(&current, Scope::Control));
     }
 
     #[test]

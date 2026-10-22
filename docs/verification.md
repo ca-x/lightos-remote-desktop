@@ -1,5 +1,43 @@
 # Verification on LightOS
 
+## v0.1.10 integration candidate: 2026-10-23
+
+The hardware-encoding, MCP and RDP branches were integrated against stable
+v0.1.9 (`ffd5eb7`). Default and bundled-JPEG workspace runs each passed 146 tests;
+the all-feature run passed 161, including native FFmpeg conversion/encoding tests.
+All-feature Clippy with warnings denied and formatting passed. The unchanged
+production frontend build passed 88 Node and 19 Vitest tests. The installer and
+compatibility fixtures passed 43 and 13 cases; the locked protocol notice collector
+retained notices for 304 runtime crates.
+
+A combined real HTTP/WebSocket/MCP test with the RDP adapter verified exclusive
+control, observation during another controller's lease and release after request
+cancellation. Explicit native checks verified the installed Omarchy Lua entry,
+two transport generations retaining one Ghostty/compositor, and Unicode worker
+cancellation with keymap restoration. Real FreeRDP TCP/TLS verified bitmap
+channels, input, geometry changes, reconnect and authentication/certificate denials.
+
+Final integration review reproduced a shutdown delay with an authenticated MCP
+GET SSE stream. Its regression failed before lifecycle cancellation and passed
+afterward. A separate release-binary test held MCP SSE and a pending RDP handshake,
+sent SIGTERM and observed a clean exit in under one second, a closed RDP socket,
+and the same live persistent owner. The saved MCP file stayed byte-identical and
+the same token initialized a new session after the transport restarted.
+
+The release core does not directly link FFmpeg, TurboJPEG or libopus. An optional
+worker built against this host's FFmpeg 9 was checked separately: actual probes
+reported no usable hardware backend and safely selected OpenH264. A simulated
+driver disappearance after a successful probe also recovered to OpenH264, with
+JPEG decoding and a stable desktop owner. This is failure-path evidence, not a
+positive GPU encode or performance benchmark. Real browser checks of the release
+candidate verified MCP enable/create/once-only display/Done/revoke/disable, no
+token in local/session storage, JPEG to automatic H.264 switching, quality-first
+selection and a 390x844 layout without horizontal overflow.
+
+These checks use isolated desktops; they do not establish real GNOME/KDE/X11
+sessions, other OS capture/input, GPU availability, Cua driver compatibility or
+NLA/CredSSP. The published RDP feature is disabled at runtime by default, as is MCP.
+
 ## Runtime platform extraction — 2026-10-22
 
 Baseline origin/main `050fbe1` preserves mobile/IME controls and high-density

@@ -128,6 +128,11 @@ impl AppState {
         }
     }
 
+    /// Cancel agent sessions and queued input before HTTP drains its connections.
+    pub fn shutdown_mcp(&self) {
+        self.mcp.shutdown();
+    }
+
     #[cfg(feature = "rdp")]
     pub(crate) fn claim_rdp_control(&self) -> anyhow::Result<ControllerLease> {
         anyhow::ensure!(

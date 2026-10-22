@@ -1159,3 +1159,92 @@ async fn sdk_sessions_are_bounded_and_foreign_delete_cannot_close_them() {
         StatusCode::OK
     );
 }
+
+#[tokio::test]
+async fn live_mcp_sse_does_not_block_transport_shutdown() {
+    let directory = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let store = Arc::new(TokenStore::open(Some(directory.path().join("mcp.json"))));
+    let created = store.create("Shutdown probe", Scope::Observe).unwrap();
+    store.set_enabled(true).unwrap();
+    let (_frames, receiver) = watch::channel(Some(Arc::new(Frame::test_frame(64, 48))));
+    let (input, _commands) = mpsc::channel::<InputCommand>(128);
+    let desktop = Desktop {
+        frames: receiver,
+        input,
+        controller: Arc::new(AtomicBool::new(false)),
+        owned: true,
+        text_probe: None,
+        release_input: Arc::new(|| true),
+    };
+    let app = transport_with_desktop(store.clone(), desktop);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let (stop, shutdown) = tokio::sync::oneshot::channel::<()>();
+    let shutdown_store = store.clone();
+    let mut server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown.await;
+                shutdown_store.shutdown();
+            })
+            .await
+            .unwrap();
+    });
+    let client = Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .unwrap();
+    let init=client.post(&url).bearer_auth(&created.token).header("Accept","application/json, text/event-stream")
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"Shutdown probe","version":"1"}}})).send().await.unwrap();
+    assert_eq!(init.status(), StatusCode::OK);
+    let session = init.headers()["mcp-session-id"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let _ = init.text().await.unwrap();
+    let notified = client
+        .post(&url)
+        .bearer_auth(&created.token)
+        .header("Accept", "application/json, text/event-stream")
+        .header("MCP-Protocol-Version", "2025-11-25")
+        .header("Mcp-Session-Id", &session)
+        .json(&json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(notified.status().is_success());
+    let _ = notified.text().await.unwrap();
+    let stream = client
+        .get(&url)
+        .bearer_auth(&created.token)
+        .header("Accept", "text/event-stream")
+        .header("MCP-Protocol-Version", "2025-11-25")
+        .header("Mcp-Session-Id", &session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stream.status(), StatusCode::OK);
+    stop.send(()).unwrap();
+    let finished = match tokio::time::timeout(Duration::from_secs(2), &mut server).await {
+        Ok(result) => {
+            result.unwrap();
+            true
+        }
+        Err(_) => false,
+    };
+    drop(stream);
+    if !finished {
+        tokio::time::timeout(Duration::from_secs(2), &mut server)
+            .await
+            .expect("must complete once the SSE client disconnects")
+            .unwrap();
+    }
+    assert!(
+        finished,
+        "authenticated idle MCP GET SSE must close during transport shutdown"
+    );
+}

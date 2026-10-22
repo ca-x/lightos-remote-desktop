@@ -58,6 +58,9 @@ requires new initialization. There are at most eight sessions per token; DELETE
 with the session ID closes one, and idle sessions expire after five minutes.
 GET supports the SDK session stream. Protocol revisions requiring stateless
 operation are not advertised; clients use the version returned by initialize.
+Service shutdown closes active sessions and cancels queued input before waiting
+for HTTP connections to drain. The saved enable setting and token hashes remain
+unchanged; clients initialize a new session after the transport restarts.
 
 ## Tools
 
