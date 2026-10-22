@@ -1,0 +1,571 @@
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+
+use axum::{
+    Router,
+    body::Body,
+    extract::{
+        OriginalUri, State, WebSocketUpgrade,
+        ws::{Message, WebSocket},
+    },
+    http::{HeaderMap, Request, StatusCode, header},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::get,
+};
+use base64::{Engine, engine::general_purpose::STANDARD};
+use futures_util::{SinkExt, StreamExt};
+use serde_json::json;
+use subtle::ConstantTimeEq;
+use tokio::{io::AsyncReadExt, process::Command, time::timeout};
+
+use crate::{
+    config::Config,
+    session::Session,
+    wayland::{Backend, InputCommand},
+};
+
+#[derive(Clone)]
+pub struct AppState {
+    pub config: Arc<Config>,
+    pub backend: Arc<Backend>,
+    pub session: Arc<Mutex<Session>>,
+    controller: Arc<AtomicBool>,
+}
+
+impl AppState {
+    pub fn new(config: Config, backend: Backend, session: Session) -> Self {
+        Self {
+            config: Arc::new(config),
+            backend: Arc::new(backend),
+            session: Arc::new(Mutex::new(session)),
+            controller: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+pub fn router(state: AppState) -> Router {
+    let desktop = Router::new()
+        .route(
+            "/app.js",
+            get(|| async {
+                asset(
+                    include_str!("../web/app.js"),
+                    "text/javascript; charset=utf-8",
+                )
+            }),
+        )
+        .route(
+            "/style.css",
+            get(|| async { asset(include_str!("../web/style.css"), "text/css; charset=utf-8") }),
+        )
+        .route("/ws", get(upgrade));
+    mount_desktop(desktop, &state.config.subfolder)
+        .route_layer(middleware::from_fn_with_state(state.clone(), authenticate))
+        .route("/healthz", get(health))
+        .layer(middleware::from_fn(security_headers))
+        .with_state(state)
+}
+
+fn mount_desktop<State: Clone + Send + Sync + 'static>(
+    desktop: Router<State>,
+    prefix: &str,
+) -> Router<State> {
+    let prefix = prefix.trim_matches('/');
+    if prefix.is_empty() {
+        return desktop.route("/", get(index));
+    }
+    let prefix = format!("/{prefix}");
+    Router::new()
+        .nest(&prefix, desktop)
+        .route(&prefix, get(index))
+        .route(&format!("{prefix}/"), get(index))
+}
+
+fn asset(content: &'static str, mime: &'static str) -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, mime)], content)
+}
+
+async fn index(OriginalUri(uri): OriginalUri) -> Response {
+    if !uri.path().ends_with('/') {
+        return axum::response::Redirect::temporary(&format!("{}/", uri.path())).into_response();
+    }
+    asset(
+        include_str!("../web/index.html"),
+        "text/html; charset=utf-8",
+    )
+    .into_response()
+}
+
+pub fn credentials_match(headers: &HeaderMap, username: &str, password: &str) -> bool {
+    let Some(encoded) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Basic "))
+        .filter(|value| value.len() <= 8192)
+    else {
+        return false;
+    };
+    let Ok(decoded) = STANDARD.decode(encoded) else {
+        return false;
+    };
+    let Some(separator) = decoded.iter().position(|byte| *byte == b':') else {
+        return false;
+    };
+    let user_ok = decoded[..separator].ct_eq(username.as_bytes());
+    let password_ok = decoded[separator + 1..].ct_eq(password.as_bytes());
+    bool::from(user_ok & password_ok)
+}
+
+async fn authenticate(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    if !credentials_match(
+        request.headers(),
+        &state.config.username,
+        &state.config.password,
+    ) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(
+                header::WWW_AUTHENTICATE,
+                "Basic realm=\"LightOS remote desktop\", charset=\"UTF-8\"",
+            )],
+            "Authentication required",
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
+async fn security_headers(request: Request<Body>, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    for (name, value) in [
+        ("cache-control", "no-store"),
+        ("x-content-type-options", "nosniff"),
+        ("x-frame-options", "SAMEORIGIN"),
+        ("referrer-policy", "no-referrer"),
+        (
+            "content-security-policy",
+            "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
+        ),
+    ] {
+        response.headers_mut().insert(
+            axum::http::HeaderName::from_static(name),
+            axum::http::HeaderValue::from_static(value),
+        );
+    }
+    response
+}
+
+async fn health(State(state): State<AppState>) -> impl IntoResponse {
+    let ready = state.backend.frame_is_fresh(Duration::from_secs(5))
+        && state
+            .session
+            .lock()
+            .is_ok_and(|mut session| session.healthy());
+    (
+        if ready {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        axum::Json(
+            json!({"native":true,"ready":ready,"pid":std::process::id(),"transport":"jpeg-websocket"}),
+        ),
+    )
+}
+
+pub fn origin_allowed(headers: &HeaderMap) -> bool {
+    let Some(host) = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    let Some(origin) = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    (origin == format!("https://{host}") || origin == format!("http://{host}"))
+        && !headers
+            .get("sec-fetch-site")
+            .is_some_and(|value| value == "cross-site")
+}
+
+struct ControllerLease {
+    state: AppState,
+}
+
+impl Drop for ControllerLease {
+    fn drop(&mut self) {
+        if self
+            .state
+            .backend
+            .input
+            .try_send(InputCommand::Release)
+            .is_err()
+        {
+            self.state.backend.stop();
+        }
+        self.state.controller.store(false, Ordering::Release);
+    }
+}
+
+async fn upgrade(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    if !origin_allowed(&headers) {
+        return (StatusCode::FORBIDDEN, "Same-origin WebSocket required").into_response();
+    }
+    if state
+        .controller
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return (StatusCode::CONFLICT, "A controller is already connected").into_response();
+    }
+    let lease = ControllerLease {
+        state: state.clone(),
+    };
+    upgrade
+        .max_message_size(128 * 1024)
+        .max_frame_size(128 * 1024)
+        .on_upgrade(move |socket| connection(socket, state, lease))
+}
+
+async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease) {
+    let (mut writer, mut reader) = socket.split();
+    let mut frames = state.backend.frames.clone();
+    let dimensions = frames
+        .borrow()
+        .as_ref()
+        .map(|frame| (frame.width, frame.height));
+    let Some((width, height)) = dimensions else {
+        return;
+    };
+    let audio_source = state
+        .session
+        .lock()
+        .ok()
+        .and_then(|session| session.audio_source.clone());
+    let audio_available = state.config.audio && audio_source.is_some();
+    let ready = Message::Text(
+        json!({"type":"ready","width":width,"height":height,"audio":audio_available})
+            .to_string()
+            .into(),
+    );
+    if !matches!(
+        timeout(Duration::from_secs(3), writer.send(ready)).await,
+        Ok(Ok(()))
+    ) {
+        return;
+    }
+    let mut audio = None;
+    let mut audio_buffer = vec![0_u8; 3840];
+    let mut first_frame = true;
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
+    let mut last_input = tokio::time::Instant::now();
+    loop {
+        let outgoing = tokio::select! {
+            changed = async { if !first_frame { frames.changed().await } else { Ok(()) } } => {
+                first_frame = false;
+                if changed.is_err() { break; }
+                let frame = frames.borrow_and_update().clone();
+                let Some(frame) = frame else { break; };
+                let mut packet = Vec::with_capacity(frame.jpeg.len() + 1);
+                packet.push(1);
+                packet.extend_from_slice(&frame.jpeg);
+                Some(Message::Binary(packet.into()))
+            }
+            packet = read_audio(&mut audio, &mut audio_buffer) => {
+                match packet {
+                    Ok(length) if length > 0 => {
+                        let mut bytes = vec![2]; bytes.extend_from_slice(&audio_buffer[..length]);
+                        Some(Message::Binary(bytes.into()))
+                    }
+                    _ => { audio.take(); Some(error_message("Audio stream stopped")) }
+                }
+            }
+            _ = heartbeat.tick() => {
+                if last_input.elapsed() > Duration::from_secs(60) { break; }
+                Some(Message::Ping(bytes::Bytes::new()))
+            }
+            incoming = reader.next() => {
+                match incoming {
+                    Some(Ok(Message::Pong(_))) | Some(Ok(Message::Ping(_))) => { last_input = tokio::time::Instant::now(); None }
+                    Some(Ok(Message::Text(text))) => {
+                        last_input = tokio::time::Instant::now();
+                        match handle_command(&state, &text, &mut audio, audio_source.as_deref()).await {
+                            Ok(response) => response,
+                            Err(error) => Some(error_message(&error.to_string())),
+                        }
+                    }
+                    _ => break,
+                }
+            }
+        };
+        if let Some(message) = outgoing
+            && !matches!(
+                timeout(Duration::from_secs(3), writer.send(message)).await,
+                Ok(Ok(()))
+            )
+        {
+            break;
+        }
+    }
+    audio.take();
+    let _ = timeout(
+        Duration::from_secs(1),
+        state.backend.input.send(InputCommand::Release),
+    )
+    .await;
+}
+
+struct AudioStream {
+    child: tokio::process::Child,
+    stdout: tokio::process::ChildStdout,
+    remainder: Vec<u8>,
+}
+
+async fn read_audio(audio: &mut Option<AudioStream>, buffer: &mut [u8]) -> std::io::Result<usize> {
+    match audio {
+        Some(stream) => loop {
+            let prefix = stream.remainder.len();
+            buffer[..prefix].copy_from_slice(&stream.remainder);
+            let received = stream.stdout.read(&mut buffer[prefix..]).await?;
+            if received == 0 {
+                return Ok(0);
+            }
+            let length = received + prefix;
+            let aligned = length - length % 8;
+            stream.remainder.clear();
+            stream.remainder.extend_from_slice(&buffer[aligned..length]);
+            if aligned > 0 {
+                return Ok(aligned);
+            }
+        },
+        None => std::future::pending().await,
+    }
+}
+
+impl Drop for AudioStream {
+    fn drop(&mut self) {
+        let _ = self.child.start_kill();
+    }
+}
+
+async fn handle_command(
+    state: &AppState,
+    text: &str,
+    audio: &mut Option<AudioStream>,
+    source: Option<&str>,
+) -> anyhow::Result<Option<Message>> {
+    anyhow::ensure!(text.len() <= 96 * 1024, "control message too large");
+    let value: serde_json::Value = serde_json::from_str(text)?;
+    let kind = value
+        .get("type")
+        .and_then(|kind| kind.as_str())
+        .unwrap_or_default();
+    match kind {
+        "clipboard_get" => {
+            let mut command = helper(state, "wl-paste");
+            command.args(["--no-newline", "--type", "text"]);
+            command.stdout(std::process::Stdio::piped());
+            let mut child = command.spawn()?;
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("clipboard pipe unavailable"))?;
+            let mut output = Vec::new();
+            timeout(
+                Duration::from_secs(2),
+                stdout.take(64 * 1024 + 1).read_to_end(&mut output),
+            )
+            .await??;
+            anyhow::ensure!(output.len() <= 64 * 1024, "clipboard too large");
+            anyhow::ensure!(
+                timeout(Duration::from_secs(2), child.wait())
+                    .await??
+                    .success(),
+                "clipboard unavailable"
+            );
+            return Ok(Some(Message::Text(
+                json!({"type":"clipboard","text":String::from_utf8_lossy(&output)})
+                    .to_string()
+                    .into(),
+            )));
+        }
+        "clipboard_set" => {
+            let content = value
+                .get("text")
+                .and_then(|text| text.as_str())
+                .unwrap_or_default();
+            anyhow::ensure!(content.len() <= 64 * 1024, "clipboard too large");
+            let mut command = helper(state, "wl-copy");
+            command.args(["--type", "text/plain;charset=utf-8", "--", content]);
+            let status = timeout(Duration::from_secs(2), command.status()).await??;
+            anyhow::ensure!(status.success(), "clipboard write failed");
+        }
+        "resize" => {
+            anyhow::ensure!(
+                state.session.lock().unwrap().signature.is_some(),
+                "resize requires an owned desktop session"
+            );
+            let width = value
+                .get("width")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let height = value
+                .get("height")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            anyhow::ensure!(
+                (320..=3840).contains(&width) && (200..=2160).contains(&height),
+                "invalid dimensions"
+            );
+            let mut command = helper(state, "hyprctl");
+            command.args([
+                "keyword",
+                "monitor",
+                &format!(",{width}x{height}@{},auto,1", state.config.fps),
+            ]);
+            let output = timeout(Duration::from_secs(2), command.output()).await??;
+            anyhow::ensure!(output.status.success(), "desktop resize failed");
+        }
+        "audio" => {
+            audio.take();
+            if value.get("enabled").and_then(|value| value.as_bool()) == Some(true) {
+                anyhow::ensure!(state.config.audio, "audio disabled");
+                let source = source.ok_or_else(|| anyhow::anyhow!("audio unavailable"))?;
+                let mut command = helper(state, "ffmpeg");
+                command.args([
+                    "-nostdin",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "pulse",
+                    "-i",
+                    source,
+                    "-f",
+                    "f32le",
+                    "-ac",
+                    "2",
+                    "-ar",
+                    "48000",
+                    "pipe:1",
+                ]);
+                command.stdout(std::process::Stdio::piped());
+                let mut child = command.spawn()?;
+                let stdout = child
+                    .stdout
+                    .take()
+                    .ok_or_else(|| anyhow::anyhow!("audio pipe unavailable"))?;
+                *audio = Some(AudioStream {
+                    child,
+                    stdout,
+                    remainder: Vec::new(),
+                });
+            }
+        }
+        _ => {
+            let input: InputCommand = serde_json::from_value(value)?;
+            input.validate()?;
+            timeout(Duration::from_millis(500), state.backend.input.send(input)).await??;
+        }
+    }
+    Ok(None)
+}
+
+fn helper(state: &AppState, name: &str) -> Command {
+    let session = state.session.lock().unwrap();
+    let mut command = Command::new(name);
+    command
+        .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
+        .env("XDG_RUNTIME_DIR", &session.runtime)
+        .env("WAYLAND_DISPLAY", &session.socket)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    if let Some(signature) = &session.signature {
+        command.env("HYPRLAND_INSTANCE_SIGNATURE", signature);
+    }
+    session.audio_environment(command.as_std_mut());
+    command
+}
+
+fn error_message(message: &str) -> Message {
+    Message::Text(json!({"type":"error","message":message}).to_string().into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn prefixed_index_redirects_without_overlapping_routes() {
+        let router = mount_desktop(Router::<()>::new(), "/native/test");
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/native/test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(response.headers()[header::LOCATION], "/native/test/");
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/native/test/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn credentials_are_exact_and_allow_colons_in_passwords() {
+        let mut headers = HeaderMap::new();
+        assert!(!credentials_match(&headers, "user", "secret:one"));
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Basic {}", STANDARD.encode("user:secret:one"))
+                .parse()
+                .unwrap(),
+        );
+        assert!(credentials_match(&headers, "user", "secret:one"));
+        assert!(!credentials_match(&headers, "other", "secret:one"));
+        assert!(!credentials_match(&headers, "user", "wrong"));
+    }
+
+    #[test]
+    fn websocket_rejects_foreign_or_missing_origins() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "desktop.example".parse().unwrap());
+        assert!(!origin_allowed(&headers));
+        headers.insert(header::ORIGIN, "https://attacker.example".parse().unwrap());
+        assert!(!origin_allowed(&headers));
+        headers.insert(header::ORIGIN, "https://desktop.example".parse().unwrap());
+        assert!(origin_allowed(&headers));
+        headers.insert("sec-fetch-site", "cross-site".parse().unwrap());
+        assert!(!origin_allowed(&headers));
+    }
+}

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Remote desktop</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>Remote desktop</h1>
+    <div class="toolbar" aria-label="Desktop controls">
+      <span id="state" role="status" aria-live="polite">Disconnected</span>
+      <button id="connection" type="button">Disconnect</button>
+      <button id="audio" type="button" aria-pressed="false" disabled>Enable audio</button>
+      <button id="fullscreen" type="button">Fullscreen</button>
+      <label><input id="fit" type="checkbox" checked> Fit to window</label>
+      <form id="resize" class="toolbar" aria-label="Remote desktop resolution">
+        <label>Width <input id="width" type="number" min="320" max="3840" step="1" value="1280" required></label>
+        <label>Height <input id="height" type="number" min="200" max="2160" step="1" value="720" required></label>
+        <button id="apply-size" type="submit" disabled>Resize desktop</button>
+      </form>
+    </div>
+    <p id="message" role="status" aria-live="polite">Connecting. Authentication uses your browser’s sign-in dialog.</p>
+  </header>
+  <main id="viewport" class="fit" aria-label="Remote desktop viewport">
+    <canvas id="desktop" width="1280" height="720" tabindex="0" aria-label="Remote desktop. Focus here to send keyboard and pointer input." aria-describedby="help"></canvas>
+  </main>
+  <section class="text-controls" aria-label="Text and clipboard">
+    <label for="text">Text / clipboard</label>
+    <textarea id="text" rows="2" spellcheck="false" autocomplete="off" aria-describedby="help"></textarea>
+    <div class="toolbar">
+      <button id="send-text" type="button" disabled>Send text</button>
+      <button id="clipboard-get" type="button" disabled>Read remote clipboard</button>
+      <button id="clipboard-set" type="button" disabled>Set remote clipboard</button>
+      <button id="paste-local" type="button" disabled>Paste local clipboard as text</button>
+    </div>
+    <p id="help">This is a separate desktop, not a mirror of your physical display. A terminal opens on startup; click the desktop and press Super+Return to open another (Super is the Windows key). Ctrl+Alt+Shift+Escape returns focus to the toolbar. Use this text box for IME / Unicode input, then Send text (16 KiB maximum). Paste here if browser clipboard access is unavailable. Clipboard text is never read automatically. Resize is explicit (320–3840 × 200–2160).</p>
+  </section>
+</body>
+</html>
