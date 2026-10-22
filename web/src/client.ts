@@ -86,6 +86,7 @@ export function createClient(options: ClientOptions = {}) {
   let frameAcknowledgements = false;
   let windowMode = "fit";
   let fullscreenAutoResolution: boolean | null = null;
+  let desktopFullscreen = false;
   let videoDecoder: VideoDecoder | null = null;
   let videoToken = 0;
   let configuringVideo = false;
@@ -196,6 +197,11 @@ export function createClient(options: ClientOptions = {}) {
     setText("keyboard-capture", keyboardCaptured ? "释放键盘捕获" : "全屏捕获键盘");
   }
 
+  function isDesktopFullscreen() {
+    const fullscreen = document.fullscreenElement;
+    return fullscreen === viewport || fullscreen === canvas || fullscreen?.contains(canvas) === true;
+  }
+
   function unlockKeyboard() {
     keyboardToken += 1;
     try { navigator.keyboard?.unlock(); } catch {}
@@ -205,7 +211,7 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   async function captureKeyboard() {
-    if (!ready || destroyed || keyboardRequest || keyboardCaptured || !keyboardCaptureWanted || document.hidden || !document.hasFocus() || document.fullscreenElement !== viewport || document.activeElement !== canvas) return;
+    if (!ready || destroyed || keyboardRequest || keyboardCaptured || !keyboardCaptureWanted || document.hidden || !document.hasFocus() || !isDesktopFullscreen() || document.activeElement !== canvas) return;
     if (!navigator.keyboard?.lock) {
       setText("keyboard-state", "浏览器不支持键盘捕获。系统截走的组合键可用下方通用发送器发送。");
       return;
@@ -214,15 +220,18 @@ export function createClient(options: ClientOptions = {}) {
     keyboardRequest = true;
     try {
       await navigator.keyboard.lock();
-      if (token !== keyboardToken || !ready || destroyed || document.hidden || !document.hasFocus() || document.fullscreenElement !== viewport || document.activeElement !== canvas) {
+      if (token !== keyboardToken || !ready || destroyed || document.hidden || !document.hasFocus() || !isDesktopFullscreen() || document.activeElement !== canvas) {
         navigator.keyboard.unlock();
         return;
       }
       keyboardCaptured = true;
       updateKeyboardCapture();
       setText("keyboard-state", "已请求捕获所有可用按键。部分系统快捷键仍可能被本机拦截。Ctrl+Alt+Shift+Esc 释放捕获并打开工具栏。");
-    } catch {
-      if (token === keyboardToken) setText("keyboard-state", "键盘捕获被拒绝，请检查浏览器权限或使用下方通用发送器。");
+    } catch (error) {
+      if (token === keyboardToken) {
+        setText("keyboard-state", "键盘捕获被拒绝，请检查浏览器权限或使用下方通用发送器。");
+        message(`Keyboard capture unavailable: ${errorMessage(error)}`);
+      }
     } finally {
       keyboardRequest = false;
       if (token !== keyboardToken) void captureKeyboard();
@@ -232,7 +241,7 @@ export function createClient(options: ClientOptions = {}) {
   const tools = element("tools");
   const toolPositionKey = "lightos-desktop-toolbar-position";
   let toolPosition = { edge: "right", ratio: 0.5 };
-  let toolDrag: { id: number; startX: number; startY: number; offsetX: number; offsetY: number; moved: boolean } | null = null;
+  let toolDrag: { id: number; startX: number; startY: number; offsetX: number; offsetY: number; x: number; y: number; moved: boolean } | null = null;
   let suppressToolClick = false;
   try {
     const saved = JSON.parse(localStorage.getItem(toolPositionKey) ?? "null");
@@ -241,7 +250,7 @@ export function createClient(options: ClientOptions = {}) {
     }
   } catch {}
 
-  function layoutTools(point: {x: number; y: number} | null = null) {
+  function layoutTools(point: {x: number; y: number} | null = toolDrag?.moved ? toolDrag : null) {
     const width = window.innerWidth || 1280;
     const height = window.innerHeight || 720;
     const maxX = Math.max(12, width - 52);
@@ -459,6 +468,7 @@ export function createClient(options: ClientOptions = {}) {
     discoveryRequest += 1;
     refreshingDesktops = false;
     canvas.hidden = true;
+    canvas.style.setProperty("cursor", "default");
     unlockKeyboard();
     stopMetrics();
     cancelTimer(autoResizeTimer);
@@ -586,6 +596,7 @@ export function createClient(options: ClientOptions = {}) {
         return;
       }
       resizeCanvas(width, height);
+      canvas.style.setProperty("cursor", value.cursor === "embedded" ? "none" : "default");
       if (document.activeElement !== element("width") && document.activeElement !== element("height")) {
         element("width").value = String(width);
         element("height").value = String(height);
@@ -974,15 +985,20 @@ export function createClient(options: ClientOptions = {}) {
     suppressToolClick = false;
     const bounds = toolHandle.getBoundingClientRect();
     toolDrag = { id: event.pointerId, startX: event.clientX, startY: event.clientY,
-      offsetX: event.clientX - bounds.left, offsetY: event.clientY - bounds.top, moved: false };
+      offsetX: event.clientX - bounds.left, offsetY: event.clientY - bounds.top,
+      x: bounds.left, y: bounds.top, moved: false };
     toolHandle.setPointerCapture(event.pointerId);
   });
   listen(toolHandle, "pointermove", (event) => {
     if (!toolDrag || toolDrag.id !== event.pointerId) return;
     if (!toolDrag.moved && Math.hypot(event.clientX - toolDrag.startX, event.clientY - toolDrag.startY) < 6) return;
-    toolDrag.moved = true;
-    setToolsOpen(false);
-    layoutTools({ x: event.clientX - toolDrag.offsetX, y: event.clientY - toolDrag.offsetY });
+    toolDrag.x = event.clientX - toolDrag.offsetX;
+    toolDrag.y = event.clientY - toolDrag.offsetY;
+    if (!toolDrag.moved) {
+      toolDrag.moved = true;
+      setToolsOpen(false);
+    }
+    layoutTools();
   });
   function finishToolDrag(event: PointerEvent) {
     if (!toolDrag || toolDrag.id !== event.pointerId) return;
@@ -1030,6 +1046,7 @@ export function createClient(options: ClientOptions = {}) {
     event.preventDefault();
     setToolsOpen(false);
     canvas.focus({ preventScroll: true });
+    void captureKeyboard();
     syncModifiers(event);
     canvas.setPointerCapture(event.pointerId);
     capturedPointers.add(event.pointerId);
@@ -1073,7 +1090,9 @@ export function createClient(options: ClientOptions = {}) {
       return;
     }
     syncModifiers(event);
-    if (event.code === "KeyV" && (event.ctrlKey || event.metaKey)) return;
+    // Outside capture, keep the browser paste event for local text transfer.
+    // During capture, the chord belongs to the remote desktop and its clipboard.
+    if (!keyboardCaptured && event.code === "KeyV" && (event.ctrlKey || event.metaKey)) return;
     const code = Object.hasOwn(KEY_CODES, event.code) ? KEY_CODES[event.code] : undefined;
     if (code === undefined) return;
     event.preventDefault();
@@ -1159,7 +1178,7 @@ export function createClient(options: ClientOptions = {}) {
     }
   }
   function updateDisplayMode() {
-    const mode = document.fullscreenElement ? "fullscreen" : windowMode;
+    const mode = isDesktopFullscreen() ? "fullscreen" : windowMode;
     element("mode-fit").setAttribute("aria-pressed", String(mode === "fit"));
     element("mode-actual").setAttribute("aria-pressed", String(mode === "actual"));
     element("fullscreen").setAttribute("aria-pressed", String(mode === "fullscreen"));
@@ -1191,10 +1210,13 @@ export function createClient(options: ClientOptions = {}) {
   listen(window, "resize", scheduleAutoResize);
   listen(element("auto-resolution"), "change", scheduleAutoResize);
   listen(element("fullscreen"), "click", async () => {
-    await displayMode(document.fullscreenElement ? windowMode : "fullscreen");
+    await displayMode(isDesktopFullscreen() ? windowMode : "fullscreen");
   });
   listen(document, "fullscreenchange", () => {
-    if (document.fullscreenElement === viewport) {
+    const fullscreen = isDesktopFullscreen();
+    const entering = fullscreen && !desktopFullscreen;
+    desktopFullscreen = fullscreen;
+    if (fullscreen) {
       if (fullscreenAutoResolution === null) {
         fullscreenAutoResolution = element("auto-resolution").checked;
         if (resizeAvailable) element("auto-resolution").checked = true;
@@ -1203,10 +1225,16 @@ export function createClient(options: ClientOptions = {}) {
       element("auto-resolution").checked = fullscreenAutoResolution;
       fullscreenAutoResolution = null;
     }
-    if (document.fullscreenElement !== viewport) { release(); unlockKeyboard(); }
+    if (!fullscreen) { release(); unlockKeyboard(); }
     updateDisplayMode();
-    viewport.classList.toggle("fit", document.fullscreenElement ? true : windowMode === "fit");
+    viewport.classList.toggle("fit", fullscreen ? true : windowMode === "fit");
     scheduleAutoResize();
+    if (entering) {
+      keyboardCaptureWanted = true;
+      setToolsOpen(false, true);
+      canvas.focus({ preventScroll: true });
+      void captureKeyboard();
+    }
   });
   listen(element("keyboard-capture"), "click", async () => {
     if (keyboardCaptured) {
@@ -1217,7 +1245,7 @@ export function createClient(options: ClientOptions = {}) {
     }
     keyboardCaptureWanted = true;
     setToolsOpen(false);
-    if (document.fullscreenElement !== viewport) await displayMode("fullscreen");
+    if (!isDesktopFullscreen()) await displayMode("fullscreen");
     else { canvas.focus({ preventScroll: true }); await captureKeyboard(); }
   });
   element("shortcut-key").replaceChildren();

@@ -3,6 +3,45 @@
 Date: 2026-10-22 (machine local date). This records a verified initial native
 implementation, not complete Selkies or Omarchy feature parity.
 
+## Cursor, keyboard and toolbar regression checks
+
+The interaction fixes were checked locally on 2026-10-22 with two isolated
+Hyprland sessions and native Wayland Chrome. The existing compatibility patch
+was built privately against this machine's Aquamarine 0.15.0 for the candidate
+sessions; the system library and installed service were not changed.
+
+- `npm run build` and `npm test` passed (70 Node tests and 3 React tests).
+  `cargo test --locked`, `cargo fmt --check` and
+  `cargo clippy --locked --all-targets -- -D warnings` passed. Tests requiring
+  separate audio/desktop environments remain explicitly ignored by Cargo.
+- Native Chrome ran in the isolated client compositor and connected to the
+  other candidate's actual desktop. Keyboard permission was granted for that
+  local test origin. Super+Enter was injected through the client's virtual
+  keyboard, so it passed through the compositor rather than a browser test
+  API: only the remote terminal count increased (client 1, remote 1 → 2).
+  Ctrl+Alt+Shift+Esc released capture; the next Super+Enter increased only the
+  client terminal count (1 → 2). Clicking the windowed desktop did not enter
+  fullscreen. This verifies native Wayland capture, not XWayland suppression.
+- A native browser in the remote session switched between default, text,
+  grabbing and hidden cursors over an otherwise unchanged page. Each change
+  produced a distinct actual server JPEG. The text and grabbing captures were
+  visually inspected. Cursor shape and motion are carried by video, with its
+  associated latency; no independent cursor-shape channel is claimed.
+- Real Chrome/React pointer drags at 1280×720 and 375×812 retained the pointer
+  offset across delayed layouts, docked on release and did not open the panel
+  after a drag. The narrow panel keeps its drag handle accessible above it.
+- Focused regressions cover manual fullscreen events, fullscreen ancestors,
+  capture retry after denial, captured Super+Enter/Ctrl+V, cursor capability
+  fallback, and React layouts during a drag. Manual fullscreen-event and
+  capture-retry regressions were observed failing before the keyboard fix.
+
+After these checks, a release build with `--features bundled-jpeg` and NASM
+was installed through the executable's transactional `install-service` command.
+The local service remained active with zero restarts; its health PID matched
+the new MainPID, its executable matched the release build, and its served
+JavaScript/CSS matched the rebuilt frontend. The previous release was retained
+for rollback. The user subsequently confirmed that testing passed.
+
 ## Latency instrumentation follow-up
 
 The floating toolbar now samples actual canvas draws per second, codec and
@@ -239,8 +278,10 @@ when bypassing the unavailable configured local proxy.
   bounded synthetic workload, not a general bandwidth or WAN performance claim.
 - Unchanged captures refresh health without repeatedly encoding or sending
   video. Pointer moves coalesce per animation frame, but clicks/releases are
-  never throttled; the final move is flushed before a click/release. The browser
-  renders a local pointer rather than a cursor baked into delayed video.
+  never throttled; the final move is flushed before a click/release. Captures
+  now include the remote cursor so text, resize and drag shapes are visible;
+  cursor motion is subject to video latency. The local browser pointer is
+  hidden when the server advertises the embedded cursor.
 - Chrome rendered actual VideoFrame outputs (30 observed, no JPEG draws in the
   instrumented H.264 window), decoded 800x600 then 1280x720 after resize, and
   fell back to JPEG when VideoDecoder was deliberately unavailable.
@@ -259,8 +300,7 @@ when bypassing the unavailable configured local proxy.
 - Independent review caught a stale JPEG ACK potentially releasing a new H.264
   keyframe. Negotiated monotonic frame IDs now bind each ACK to its video packet;
   IDs survive async decode and codec changes. Targeted regressions passed and
-  the reviewer found no remaining blocking issue in that fix. The local pointer
-  deliberately does not reproduce remote text/resize/busy cursor shapes.
+  the reviewer found no remaining blocking issue in that fix.
 
 ## Self-installation and automated binary builds
 

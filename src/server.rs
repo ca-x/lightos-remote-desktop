@@ -509,7 +509,7 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
     let audio_available = state.config.audio && audio_source.is_some();
     let audio_session = audio_available.then(|| state.audio_hub.start());
     let ready = Message::Text(
-        json!({"type":"ready","version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":["h264","jpeg"],"desktop":state.desktop,"desktops":state.desktop_options(),"resize":state.desktop == DesktopMode::Virtual,"outputs":state.outputs,"output":state.output})
+        json!({"type":"ready","version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":"embedded","audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":["h264","jpeg"],"desktop":state.desktop,"desktops":state.desktop_options(),"resize":state.desktop == DesktopMode::Virtual,"outputs":state.outputs,"output":state.output})
             .to_string()
             .into(),
     );

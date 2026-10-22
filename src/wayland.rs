@@ -523,17 +523,19 @@ fn run_capture(
         }
         let current = batch.as_mut().context("missing capture connection")?;
         let capture = &current.connection;
+        // Preserve compositor/application cursor shapes in both video codecs.
+        // Readiness advertises this so the browser can hide its local cursor.
         let captured = if let Some(name) = &target.output {
             let output = capture
                 .get_all_outputs()
                 .iter()
                 .find(|output| &output.name == name)
                 .context("selected monitor disconnected")?;
-            capture.screenshot_single_output(output, false)
+            capture.screenshot_single_output(output, true)
         } else if capture.get_all_outputs().len() == 1 {
-            capture.screenshot_single_output(&capture.get_all_outputs()[0], false)
+            capture.screenshot_single_output(&capture.get_all_outputs()[0], true)
         } else {
-            capture.screenshot_all(false)
+            capture.screenshot_all(true)
         };
         let image = match captured {
             Ok(image) => {

@@ -60,6 +60,23 @@ installed Python service. Source lives in ~/code/rust/lightos-remote-desktop.
 - Keycode is Linux evdev, without the XKB +8 offset. Browser event.code mapping
   must not forward arbitrary strings to a shell. Text uses a Unicode-aware
   virtual keymap in the backend. Bounded text and clipboard sizes.
+- Server readiness includes `cursor: "embedded"`: the compositor overlays its
+  actual cursor in both JPEG and H.264 captures. The client hides the local
+  cursor only for this capability and restores it on disconnect or when
+  connecting to an older server. Cursor changes and motion publish new frames.
+- While dragging the floating toolbar, all layout requests retain the current
+  pointer-relative position, including React updates and resize callbacks.
+  The toolbar docks and persists its position only on pointer release;
+  cancellation restores the previous dock.
+- Windowed control never enters fullscreen automatically. A manual fullscreen
+  entry containing the desktop focuses it and requests all available keys;
+  leaving fullscreen, losing focus, disconnecting, or Ctrl+Alt+Shift+Esc
+  releases held input and keyboard capture. A new manual fullscreen entry
+  re-enables capture after an explicit release. Clicking the focused desktop
+  can retry a denied request. Captured shortcuts (including Ctrl+V) go to the
+  remote desktop; windowed Ctrl+V preserves browser-to-remote text transfer.
+  OS shortcut suppression requires browser/compositor support and permission;
+  on Wayland hosts, use native Wayland Chrome/Chromium with shortcut inhibition.
 
 ## Native backend contract
 

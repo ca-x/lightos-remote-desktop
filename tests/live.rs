@@ -82,7 +82,12 @@ async fn browser_protocol_against_real_desktop() {
         .unwrap()
         .unwrap()
         .unwrap();
-    assert!(matches!(ready, Message::Text(text) if text.contains("\"type\":\"ready\"")));
+    let Message::Text(ready) = ready else {
+        panic!("expected desktop readiness");
+    };
+    let ready: serde_json::Value = serde_json::from_str(&ready).unwrap();
+    assert_eq!(ready["type"], "ready");
+    assert_eq!(ready["cursor"], "embedded");
     let denied = connect_async(request(&origin)).await.unwrap_err();
     assert!(
         matches!(denied, tokio_tungstenite::tungstenite::Error::Http(response) if response.status()==409)

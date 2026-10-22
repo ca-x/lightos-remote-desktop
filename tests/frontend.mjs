@@ -381,6 +381,45 @@ test("desktop switching preserves manual disconnect and stale audio cannot enabl
   assert.equal(physical.sent.some((command) => command.type === "audio" && command.enabled), false);
 });
 
+test("remote cursor is shown once and legacy connections retain a local pointer", () => {
+  const app = harness();
+  const socket = app.ready();
+  assert.equal(app.nodes.desktop.style.values.cursor, "default");
+  socket.json({ type: "ready", width: 1280, height: 720, cursor: "embedded" });
+  assert.equal(app.nodes.desktop.style.values.cursor, "none");
+  socket.finishClose();
+  assert.equal(app.nodes.desktop.style.values.cursor, "default");
+  app.tick();
+  app.ready();
+  assert.equal(app.nodes.desktop.style.values.cursor, "default");
+});
+
+test("toolbar follows the pointer through deferred React layouts and closes only at drag start", () => {
+  const changes = [];
+  const app = harness("/", new Map(), { onToolsOpen: (open) => changes.push(open), isToolsOpen: () => false });
+  const handle = app.nodes["tools-toggle"];
+  changes.length = 0;
+  handle.fire("pointerdown", { button: 0, pointerId: 1, clientX: 20, clientY: 30 });
+  handle.fire("pointermove", { pointerId: 1, clientX: 500, clientY: 300 });
+  assert.equal(app.nodes.tools.style.values["--tool-x"], "490px");
+  assert.equal(app.nodes.tools.style.values["--tool-y"], "290px");
+  app.paint();
+  app.run("client.layoutTools()");
+  assert.equal(app.nodes.tools.style.values["--tool-x"], "490px");
+  handle.fire("pointermove", { pointerId: 1, clientX: 550, clientY: 320 });
+  app.paint();
+  app.window.fire("resize");
+  assert.equal(app.nodes.tools.style.values["--tool-x"], "540px");
+  assert.equal(app.nodes.tools.style.values["--tool-y"], "310px");
+  assert.deepEqual(changes, [false]);
+  handle.fire("pointerup", { pointerId: 1, clientX: 550, clientY: 320 });
+  app.paint();
+  const docked = app.nodes.tools.style.values["--tool-x"];
+  app.run("client.layoutTools()");
+  assert.equal(app.nodes.tools.style.values["--tool-x"], docked);
+  assert.equal(handle.hasPointerCapture(1), false);
+});
+
 test("toolbar drags to all four edges, suppresses drag click and restores persisted position", () => {
   const storage = new Map();
   const app = harness("/", storage);
@@ -444,6 +483,44 @@ test("fullscreen requests all-key capture, emergency escape unlocks and disables
   assert.ok(unlocks >= 1);
 });
 
+test("manual fullscreen changes capture automatically, including a fullscreen page ancestor", async () => {
+  const app = harness();
+  let requests = 0;
+  app.navigator.keyboard = { lock: async () => { requests += 1; }, unlock() {} };
+  app.ready();
+  app.nodes.desktop.fire("pointerdown", { button: 0, pointerId: 1, clientX: 30, clientY: 30 });
+  await flush();
+  assert.equal(app.document.fullscreenElement, undefined, "windowed desktop must stay windowed");
+  assert.equal(requests, 0);
+  app.document.fullscreenElement = { contains: (node) => node === app.nodes.desktop };
+  app.document.fire("fullscreenchange");
+  await flush();
+  assert.equal(requests, 1);
+  assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "true");
+  app.fireKey("Escape", { ctrlKey: true, altKey: true, shiftKey: true });
+  assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "false");
+  await app.document.exitFullscreen();
+  await app.nodes.viewport.requestFullscreen();
+  await flush();
+  assert.equal(requests, 2, "a fresh manual fullscreen entry restores automatic capture");
+  await app.document.exitFullscreen();
+  assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "false");
+});
+
+test("clicking a focused fullscreen desktop retries a denied capture request", async () => {
+  const app = harness();
+  let requests = 0;
+  app.navigator.keyboard = { lock: async () => { if (++requests === 1) throw Error("NotAllowedError"); }, unlock() {} };
+  app.ready();
+  await app.nodes.viewport.requestFullscreen();
+  await flush();
+  assert.notEqual(app.nodes["keyboard-capture"].attributes["aria-pressed"], "true");
+  app.nodes.desktop.fire("pointerdown", { button: 0, pointerId: 1, clientX: 30, clientY: 30 });
+  await flush();
+  assert.equal(requests, 2);
+  assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "true");
+});
+
 test("late keyboard permission cannot capture after disconnect, denial and unsupported remain usable", async () => {
   const app = harness();
   let resolveLock;
@@ -468,6 +545,36 @@ test("late keyboard permission cannot capture after disconnect, denial and unsup
   unsupported.nodes.fullscreen.fire("click");
   await flush();
   assert.match(unsupported.nodes["keyboard-state"].textContent, /不支持/);
+});
+
+test("captured Super+Enter and Ctrl+V are sent as remote chords and released on focus loss", async () => {
+  const app = harness();
+  app.navigator.keyboard = { lock: async () => {}, unlock() {} };
+  const socket = app.ready();
+  app.nodes["keyboard-capture"].fire("click");
+  await flush();
+  socket.sent.length = 0;
+  const enter = app.fireKey("Enter", { metaKey: true });
+  assert.equal(enter.defaultPrevented, true);
+  assert.deepEqual(socket.sent, [
+    { type: "key", code: 125, pressed: true },
+    { type: "key", code: 28, pressed: true },
+  ]);
+  app.window.fire("keyup", { code: "Enter", metaKey: true });
+  app.window.fire("keyup", { code: "MetaLeft" });
+  socket.sent.length = 0;
+  const paste = app.fireKey("KeyV", { ctrlKey: true });
+  assert.equal(paste.defaultPrevented, true);
+  assert.deepEqual(socket.sent, [
+    { type: "key", code: 29, pressed: true },
+    { type: "key", code: 47, pressed: true },
+  ]);
+  app.nodes.desktop.fire("blur");
+  assert.equal(socket.sent.at(-1).type, "release");
+  assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "false");
+  app.nodes.desktop.focus();
+  const localPaste = app.fireKey("KeyV", { ctrlKey: true });
+  assert.equal(localPaste.defaultPrevented, undefined);
 });
 
 test("keyboard capture resumes after pending permission loses focus and after automatic reconnect", async () => {

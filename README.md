@@ -13,7 +13,7 @@ does not embed CPython or invoke the original Selkies Python launcher.
 - Drag the floating toolbar handle to dock on any screen edge; its position is
   saved in this browser. Click to open, or focus it and use Alt+arrow keys to
   dock left/right/top/bottom. The panel stays within the viewport.
-- Fullscreen requests all available keys via the browser Keyboard Lock API,
+- Manually entering fullscreen requests all available keys via the browser Keyboard Lock API,
   without application-specific shortcut mappings. It requires browser support
   and permission, generally a secure context; OS/compositor-reserved shortcuts
   may still never reach the page. Focus loss, disconnect or leaving fullscreen
@@ -22,12 +22,27 @@ does not embed CPython or invoke the original Selkies Python launcher.
   The keyboard section can send any supported physical key with arbitrary
   Ctrl/Alt/Shift/Super modifiers directly to the remote machine, bypassing local
   shortcut interception without changing host bindings.
+  Windowed mode stays windowed. Use the page's fullscreen button; browser F11
+  fullscreen does not activate this API. Each new fullscreen entry enables
+  automatic capture, including when a page ancestor contains the desktop.
+  Clicking the fullscreen desktop retries capture after permission denial.
+  Captured Ctrl+V uses the remote clipboard; windowed paste transfers local text.
+  If Super/Alt+Tab still acts on an Omarchy/Hyprland host, run Chrome/Chromium
+  natively on Wayland (`--ozone-platform=wayland`), rather than XWayland, so it
+  can request the compositor's shortcut inhibitor. Open the desktop as a
+  top-level HTTPS/localhost page and allow the browser's keyboard permission.
+  See [Chrome's Keyboard Lock requirements](https://developer.chrome.com/docs/capabilities/web-apis/keyboard-lock)
+  and [Chromium's Wayland implementation](https://chromium.googlesource.com/chromium/src/+/main/ui/ozone/platform/wayland/host/wayland_keyboard.cc).
 - Floating toolbar shows actual drawn FPS, codec/resolution and application
   WebSocket RTT (latest and P95 of the last 30 replies). RTT includes queueing,
   not input-to-display latency. Static desktops skip duplicate frames, so low
   idle FPS is normal. Measurements use the browser's monotonic clock.
 - Native Wayland capture and virtual keyboard/pointer through libwayshot and
   standard Wayland protocols; Unicode text injection and held-input cleanup.
+  Captures include the compositor's actual cursor, including text, resize,
+  drag and application-defined shapes. The browser hides its local pointer
+  over the desktop to avoid displaying two cursors. Cursor motion follows the
+  video pipeline's frame rate and latency.
 - Isolated Cage/wlroots host with nested Hyprland, a private D-Bus, and owned
   process-group cleanup. No UWSM source modification.
 - Dynamic resolution, text clipboard and optional private PipeWire/Pulse sink

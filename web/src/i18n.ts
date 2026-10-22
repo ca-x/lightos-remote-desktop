@@ -7,6 +7,7 @@ const en = {
   open: "Open desktop tools", close: "Close desktop tools", fit: "Fit window", actual: "Actual size", fullscreen: "Fullscreen", audioOn: "Enable audio", audioOff: "Mute audio",
   clipboard: "Text & clipboard", settings: "Display settings", source: "Desktop source", monitor: "Physical monitor", refresh: "Refresh", refreshTip: "Refresh sessions and monitors without switching desktops",
   keyboard: "Keyboard & shortcuts", capture: "Capture keyboard in fullscreen", chord: "Send a shortcut to the remote desktop", mainKey: "Main key", sendChord: "Send shortcut",
+  keyboardHelp: "Enter fullscreen with the page's fullscreen button to capture keys automatically, then allow the browser's keyboard permission. Browser F11 fullscreen does not enable capture. On Linux, use native Wayland Chrome/Chromium if Super or Alt+Tab still acts on the host. Open the desktop directly over HTTPS or localhost.",
   resolution: "Display & resolution", autoResolution: "Match browser resolution", width: "Width", height: "Height", resize: "Apply resolution",
   input: "Text input / clipboard", sendText: "Send text", getClipboard: "Read remote clipboard", setClipboard: "Write remote clipboard", pasteLocal: "Paste local text",
   preferences: "Appearance & language", language: "Language", theme: "Theme", system: "Follow system", browser: "Follow browser", light: "Light", dark: "Dark",
@@ -21,6 +22,7 @@ const zh: Record<keyof typeof en, string> = {
   open: "打开桌面工具栏", close: "收起桌面工具栏", fit: "适应窗口", actual: "原始大小", fullscreen: "全屏", audioOn: "开启声音", audioOff: "关闭声音",
   clipboard: "文字与剪贴板", settings: "画面设置", source: "桌面来源", monitor: "物理显示器", refresh: "刷新", refreshTip: "刷新会话和显示器列表，不切换桌面",
   keyboard: "键盘与组合键", capture: "全屏捕获键盘", chord: "发送任意组合键到远程", mainKey: "主键", sendChord: "发送组合键",
+  keyboardHelp: "点击页面的全屏按钮后自动捕获，并允许浏览器的键盘权限。浏览器 F11 全屏不能开启捕获。Linux 上若 Super 或 Alt+Tab 仍作用于本机，请使用原生 Wayland Chrome/Chromium，并通过 HTTPS 或 localhost 直接打开桌面页面。",
   resolution: "画面与分辨率", autoResolution: "跟随浏览器窗口分辨率", width: "宽", height: "高", resize: "调整分辨率",
   input: "文字输入 / 剪贴板", sendText: "发送文字", getClipboard: "读取远程剪贴板", setClipboard: "写入远程剪贴板", pasteLocal: "粘贴本地文字",
   preferences: "外观与语言", language: "语言", theme: "主题", system: "跟随系统", browser: "跟随浏览器", light: "浅色", dark: "深色",
@@ -66,7 +68,7 @@ export function translateClient(text: string): string {
   const pair = clientPairs.find(([english, chinese]) => text === english || text === chinese);
   const chinese = i18n.language.startsWith("zh");
   if (pair) return pair[chinese ? 1 : 0];
-  for (const [prefix, chinesePrefix] of [["Server: ", "服务端："], ["Could not connect: ", "无法连接："], ["Audio unavailable: ", "音频不可用："], ["Fullscreen unavailable: ", "全屏不可用："]]) {
+  for (const [prefix, chinesePrefix] of [["Server: ", "服务端："], ["Could not connect: ", "无法连接："], ["Audio unavailable: ", "音频不可用："], ["Fullscreen unavailable: ", "全屏不可用："], ["Keyboard capture unavailable: ", "键盘捕获不可用："]]) {
     if (text.startsWith(prefix)) return (chinese ? chinesePrefix : prefix) + text.slice(prefix.length);
   }
   if (chinese) return text

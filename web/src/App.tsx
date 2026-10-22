@@ -109,6 +109,7 @@ function Workspace({ open, close }: { open: boolean; close: (focusable?: HTMLEle
         <details id="keyboard-section"><summary>{t("keyboard")}</summary>
           <Button id="keyboard-capture" type="button" aria-pressed="false" disabled={!controls.ready} />
           <p id="keyboard-state" />
+          <p>{t("keyboardHelp")}</p>
           <fieldset id="shortcut-modifiers"><legend>{t("chord")}</legend>
             <label><input id="shortcut-ctrl" type="checkbox" /> Ctrl</label><label><input id="shortcut-alt" type="checkbox" /> Alt</label><label><input id="shortcut-shift" type="checkbox" /> Shift</label><label><input id="shortcut-super" type="checkbox" /> Super</label>
           </fieldset>

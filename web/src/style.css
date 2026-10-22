@@ -13,7 +13,7 @@ body { color: var(--text); }
 button, input, textarea, select { font: inherit; }
 button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--control); color: inherit; cursor: pointer; font-size: 12px; }
 button:disabled { opacity: .45; cursor: default; }
-.tool-handle { pointer-events: auto; touch-action: none; user-select: none; cursor: grab; width: 40px; height: 48px; padding: 0; background: var(--surface); box-shadow: var(--shadow); }
+.tool-handle { position: relative; z-index: 1; pointer-events: auto; touch-action: none; user-select: none; cursor: grab; width: 40px; height: 48px; padding: 0; background: var(--surface); box-shadow: var(--shadow); }
 .tool-handle:active { cursor: grabbing; }
 .panel { position: fixed; left: var(--panel-x, 12px); top: var(--panel-y, 12px); pointer-events: none; width: 340px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow-y: auto; overscroll-behavior: contain; padding: 16px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); opacity: 0; visibility: hidden; transform: scale(.97); transform-origin: var(--panel-origin, right center); transition: opacity 125ms var(--ease-out), transform 125ms var(--ease-out), visibility 0s 125ms; }
 .panel.is-open { pointer-events: auto; opacity: 1; visibility: visible; transform: scale(1); transition: opacity 160ms var(--ease-out), transform 160ms var(--ease-out), visibility 0s; }
