@@ -280,3 +280,8 @@ and Axum. The separate Aquamarine patch builds exact official commit
 `f31c47a1b9d300847d8fc3108ad959448103dfc1` (v0.15.1). Its upstream license applies
 to that library; see `docs/third-party.md`. It is not bundled into the Rust
 executable. No pixelflux/pcmflux source or Python wheel is copied into this repo.
+
+Optional hardware H.264 encoders (VA-API/NVENC/AMF/VideoToolbox) use a separate
+ABI-specific native worker. The portable core retains software fallback and does
+not link FFmpeg; see [hardware encoding](docs/hardware-encoding.md) for build,
+runtime dependencies and device-validation limits.

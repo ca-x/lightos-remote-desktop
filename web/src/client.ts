@@ -1,4 +1,4 @@
-import { readPreference, savePreference, videoCodecKey, videoCodecs, streamStrategyKey, streamStrategies } from "./preferences";
+import { encoderBackendKey, encoderBackends, readPreference, savePreference, videoCodecKey, videoCodecs, streamStrategyKey, streamStrategies } from "./preferences";
 import { supportedVideoConfig } from "./video-codec";
 import type { ClientOptions, DesktopChoice, DesktopOutput, Elements } from "./types";
 import { createMobileControls, mobileResolution } from "./mobile";
@@ -90,6 +90,12 @@ export function createClient(options: ClientOptions = {}) {
   let resumeWanted = false;
   let moveFrame: number | null = null;
   let pendingMove: Pick<PointerEvent, "clientX" | "clientY"> | null = null;
+  let backendPreference = readPreference(encoderBackendKey, encoderBackends, "auto");
+  let backendSelection = false;
+  let activeBackend: string | null = null;
+  let waitingForBackend = false;
+  const rejectedBackends = new Set<string>();
+  element("encoder-backend").value = backendPreference;
   let videoPreference = readPreference(videoCodecKey, videoCodecs, "auto");
   let strategyPreference = readPreference(streamStrategyKey, streamStrategies, "auto");
   let serverVideoCodecs: string[] = [];
@@ -736,6 +742,8 @@ export function createClient(options: ClientOptions = {}) {
       frameAcknowledgements = value.frame_ack === true;
       sequencedFrames = value.frame_ids === true;
       serverVideoCodecs = Array.isArray(value.video_codecs) ? value.video_codecs.filter((codec: unknown) => typeof codec === "string") : [];
+      backendSelection = value.backend_selection === true;
+      activeBackend = null; waitingForBackend = false; rejectedBackends.clear();
       configureStreamStrategy();
       cancelTimer(connectionTimer);
       connectionTimer = null;
@@ -831,7 +839,7 @@ export function createClient(options: ClientOptions = {}) {
   function requestPreferredVideo(initial = false) {
     const available = frameAcknowledgements && sequencedFrames && serverVideoCodecs.includes("h264") && window.VideoDecoder && window.EncodedVideoChunk;
     if (videoPreference !== "jpeg" && available) {
-      send({ type: "video", codec: "h264" });
+      send({ type: "video", codec: "h264", ...(backendSelection ? { backend: backendPreference } : {}) });
     } else {
       if (!initial || videoPreference !== "auto") send({ type: "video", codec: "jpeg" });
       if (videoPreference === "h264") message("H.264 is unavailable; using compatible JPEG video.");
@@ -843,6 +851,12 @@ export function createClient(options: ClientOptions = {}) {
     savePreference(videoCodecKey, videoPreference);
     if (ready) { closeVideo(); requestPreferredVideo(); }
   });
+  listen(element("encoder-backend"), "change", () => {
+    backendPreference = encoderBackends.includes(element("encoder-backend").value as typeof backendPreference) ? element("encoder-backend").value as typeof backendPreference : "auto";
+    savePreference(encoderBackendKey, backendPreference);
+    rejectedBackends.clear();
+    if (ready) { closeVideo(); requestPreferredVideo(); }
+  });
   listen(element("stream-strategy"), "change", () => {
     strategyPreference = streamStrategies.includes(element("stream-strategy").value as typeof strategyPreference) ? element("stream-strategy").value as typeof strategyPreference : "auto";
     savePreference(streamStrategyKey, strategyPreference);
@@ -851,13 +865,22 @@ export function createClient(options: ClientOptions = {}) {
 
   function fallbackVideo() {
     closeVideo();
+    if (backendSelection && activeBackend && !rejectedBackends.has(activeBackend)) {
+      rejectedBackends.add(activeBackend);
+      send({ type: "video", codec: "h264", backend: backendPreference, rejected_backend: activeBackend });
+      activeBackend = null; waitingForBackend = true;
+      return;
+    }
     send({ type: "video", codec: "jpeg" });
     message("H.264 is unavailable; using compatible JPEG video.");
   }
 
-  async function configureVideo(value: {codec: string; width: number; height: number}) {
+  async function configureVideo(value: {codec: string; width: number; height: number; backend?: string; fallback_reason?: string}) {
     closeVideo();
     pendingFrame = null;
+    waitingForBackend = false;
+    activeBackend = typeof value.backend === "string" && ["openh264", "turbojpeg", ...encoderBackends].includes(value.backend) ? value.backend : null;
+    setText("encoder-status", [activeBackend, typeof value.fallback_reason === "string" ? value.fallback_reason : ""].filter(Boolean).join(" · "));
     if (value.codec === "jpeg") { message("Video: JPEG compatibility mode."); return; }
     if (!/^avc1\.[0-9a-f]{6}$/i.test(value.codec) || !window.VideoDecoder || !validDimensions(value.width, value.height)) { fallbackVideo(); return; }
     const token = videoToken;
@@ -909,6 +932,7 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   function receiveVideo(data: ArrayBuffer, id: number | null) {
+    if (waitingForBackend) return;
     if (data.byteLength <= 10) { fallbackVideo(); return; }
     if (configuringVideo) {
       if (pendingVideo) { fallbackVideo(); return; }

@@ -1625,3 +1625,25 @@ test("manual unsupported H264 reports JPEG fallback while preserving the prefere
   socket.json({type:"ready",width:1280,height:720,frame_ack:true,frame_ids:true});
   assert.ok(socket.sent.some(packet=>packet.type==="video_flow"&&packet.strategy==="quality_first"));
 });
+
+test("hardware backend defaults to auto, persists and is negotiated independently", () => {
+  const storage=new Map(); const app=harness("/",storage);
+  assert.equal(app.nodes["encoder-backend"].value,"auto");
+  app.nodes["encoder-backend"].value="nvenc"; app.nodes["encoder-backend"].fire("change");
+  assert.equal(storage.get("lightos-desktop-encoder-backend"),"nvenc");
+  const next=harness("/",storage); next.window.VideoDecoder = class {}; next.window.EncodedVideoChunk = class {}; const socket=next.sockets.at(-1); socket.open();
+  socket.json({type:"ready",width:1280,height:720,frame_ack:true,frame_ids:true,video_codecs:["h264","jpeg"],backend_selection:true});
+  assert.ok(socket.sent.some(p=>p.type==="video"&&p.codec==="h264"&&p.backend==="nvenc"));
+});
+
+test("browser rejects the active hardware profile and requests another H264 backend before JPEG", async () => {
+  const app=harness();const socket=app.sockets.at(-1);socket.open();
+  socket.json({type:"ready",width:1280,height:720,frame_ack:true,frame_ids:true,video_codecs:["h264","jpeg"],backend_selection:true});
+  socket.sent.length=0;
+  socket.json({type:"video_config",codec:"avc1.invalid",width:1280,height:720,backend:"nvenc"});
+  await flush();
+  assert.ok(socket.sent.some(p=>p.type==="video"&&p.codec==="h264"&&p.rejected_backend==="nvenc"));
+  socket.binary(new Uint8Array([3,1,0,0,0,0,0,0,0,0,0,0,1,0x65]).buffer);
+  await flush();
+  assert.equal(socket.sent.some(p=>p.type==="video"&&p.codec==="jpeg"),false);
+});

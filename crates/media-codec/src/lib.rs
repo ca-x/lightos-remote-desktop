@@ -1,13 +1,16 @@
 //! Encoder implementations and runtime availability, independent of capture and network policy.
+mod hardware;
 mod jpeg;
 mod openh264;
 mod selection;
+pub mod worker_protocol;
+pub use hardware::{HardwareEncoders, WorkerDeadlines};
 pub use selection::{BackendPreference, EncoderBackend, choose_h264_backend};
 
 use anyhow::{Context, Result};
 use futures_util::future::BoxFuture;
 pub use jpeg::encode_jpeg;
-pub use openh264::{EncodedFrame, H264Encoder};
+pub use openh264::{EncodedFrame, H264Encoder, h264_packet_info};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

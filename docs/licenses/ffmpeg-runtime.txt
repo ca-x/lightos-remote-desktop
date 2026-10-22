@@ -1,0 +1,17 @@
+Optional native codec worker
+
+ffmpeg-next 9.0.0: WTFPL version 2 (full license included in the optional artifact).
+ffmpeg-sys-next 9.0.1: WTFPL, as declared by that crate's Cargo package metadata.
+Upstream bindings: https://github.com/zmwangx/rust-ffmpeg
+                   https://github.com/zmwangx/rust-ffmpeg-sys
+
+The helper dynamically links the host FFmpeg libraries. FFmpeg is primarily
+LGPL 2.1 or later; enabling GPL components changes the resulting FFmpeg build's
+license. This project does not redistribute FFmpeg libraries or GPU drivers.
+Check the distributor's FFmpeg build configuration, copyright files and license
+terms before redistributing a combined installation. The libx264 software
+fixture is for tests only and is never selected as a production hardware backend.
+
+FFmpeg licensing and source: https://ffmpeg.org/legal.html
+                            https://ffmpeg.org/download.html
+GPU driver runtime libraries retain their own license terms.

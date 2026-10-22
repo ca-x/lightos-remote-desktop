@@ -82,6 +82,8 @@ export interface Elements {
   "desktop-status": HTMLElement;
   "keyboard-state": HTMLElement;
   "video-details": HTMLElement;
+  "encoder-backend": HTMLSelectElement;
+  "encoder-status": HTMLElement;
   performance: HTMLElement;
   message: HTMLElement;
   state: HTMLElement;

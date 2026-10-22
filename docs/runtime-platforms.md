@@ -46,7 +46,10 @@ TurboJPEG implementations and real test-frame availability probes. Metadata
 states backend, hardware usage, availability/failure and dynamic-quality
 support, including a separately verified dynamic-bitrate flag. Software OpenH264
 supports runtime bitrate/FPS updates with native option readback and preserves
-its prediction chain; it does not claim a CRF-quality control or hardware encoding.
+its prediction chain; it does not claim a CRF-quality control. Optional native
+VA-API/NVENC/AMF/VideoToolbox adapters use a separate FFmpeg worker; see
+[hardware encoding](hardware-encoding.md) for ABI/runtime dependencies, real
+probe requirements and device-validation limits.
 Its native rate controller may skip a raw input before generating an access unit.
 The capture frame retains its lazy shared JPEG cache. `web/src/video-codec.ts`
 probes browser WebCodecs decoding support; decoder cancellation/generation and
@@ -63,15 +66,18 @@ For sequenced clients the new QoS controller learns an ACK-delay floor, confirms
 excess delay using spaced fresh samples, cuts encoder budget before ordinary FPS
 cuts, and recovers with cooldowns. A sent-frame stall brakes FPS; an idle screen
 does not. Capture encoding is paced before encoding, including native skips.
-H.264 receives a real bitrate/FPS update without a forced encoder restart; JPEG
+OpenH264 receives a real bitrate/FPS update without a forced encoder restart;
+optional hardware encoders explicitly reopen with an IDR on rate changes. JPEG
 uses the configured TurboJPEG quality. Quality first preserves the configured
 per-frame budget and reduces FPS, scaling H.264 total bitrate proportionally.
 This is a budget policy, not a lossless or fixed perceptual-quality guarantee.
 
 The toolbar has persistent encoding (Auto/H.264/JPEG) and scheduling
 (Auto/Low latency/Smooth/Quality first) preferences. Auto is the default.
-Unsupported H.264 falls back to JPEG while retaining the user's preference for
-reconnect. Reconnect continues with a jittered capped backoff while wanted, waits
+A separate H.264 backend preference defaults to Auto. Validated hardware is
+tried before software H.264, and runtime or profile failure excludes that backend
+for the connection. H.264 exhaustion falls back to JPEG while retaining the
+user's preference for reconnect. Reconnect continues with a jittered capped backoff while wanted, waits
 when offline and resumes online; a silent visible connection is replaced after
 30s. Manual disconnect cancels retries; explicit desktop-switch release still
 has its original failure boundary. See the adaptive-streaming spec/plan and

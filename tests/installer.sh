@@ -301,4 +301,32 @@ for failure in recovery-flaps recovery-restart-failed; do
     pass "$failure is reported as recovery failure, not success"
 done
 [[ ! -e $workspace/pwned && ! -e $workspace/native-pwned && ! -e $workspace/executed && ! -e $workspace/host-systemd ]]
+
+root=$workspace/hardware-root
+base=$root/usr/local/lib/lightos-remote-desktop
+state=$root/var/lib/lightos-remote-desktop
+unit=$root/etc/systemd/system/lightos-remote-desktop.service
+mkdir -p "${unit%/*}"
+cp "$workspace/unit.original" "$unit"
+printf '#!/bin/sh\nexit 99\n' > "$workspace/lightos-codec-ffmpeg"
+chmod 0755 "$workspace/lightos-codec-ffmpeg"
+run
+with_worker=$(readlink "$base/current")
+cmp "$workspace/lightos-codec-ffmpeg" "$base/current/lightos-codec-ffmpeg"
+printf '\nchanged worker\n' >> "$workspace/lightos-codec-ffmpeg"
+run
+[[ $(readlink "$base/current") != "$with_worker" ]]
+cmp "$workspace/lightos-codec-ffmpeg" "$base/current/lightos-codec-ffmpeg"
+pass 'optional sibling worker is staged and changes immutable bundle identity'
+rm "$workspace/lightos-codec-ffmpeg"
+run
+[[ ! -e $base/current/lightos-codec-ffmpeg ]]
+software=$(sha256sum "$workspace/candidate"); software=${software%% *}
+[[ $(readlink "$base/current") == "releases/$software" ]]
+pass 'software-only release keeps its original binary digest and no worker'
+printf '#!/bin/sh\nexit 99\n' > "$workspace/lightos-codec-ffmpeg"
+chmod 0600 "$workspace/lightos-codec-ffmpeg"
+reject run
+pass 'present but non-executable native worker is rejected before staging'
+
 printf 'PASS: %s installer behaviors (activation mocked); no host activation or binary execution.\n' "$count"
