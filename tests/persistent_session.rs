@@ -60,8 +60,74 @@ fn health(port: u16) -> bool {
         && response.contains("\"native\":true")
 }
 
+fn resize_through_websocket(port: u16, width: u32, height: u32) {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::{
+        connect_async,
+        tungstenite::{Message, client::IntoClientRequest},
+    };
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let mut request = format!("ws://127.0.0.1:{port}/ws")
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            "Authorization",
+            format!(
+                "Basic {}",
+                STANDARD.encode("lightos:handoff-live-test-secret")
+            )
+            .parse()
+            .unwrap(),
+        );
+        request.headers_mut().insert(
+            "Origin",
+            format!("http://127.0.0.1:{port}").parse().unwrap(),
+        );
+        let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), connect_async(request))
+            .await
+            .unwrap()
+            .unwrap();
+        let ready = tokio::time::timeout(Duration::from_secs(5), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(ready, Message::Text(ref text) if text.contains("\"type\":\"ready\"")),
+            "{ready:?}"
+        );
+        socket
+            .send(Message::Text(
+                serde_json::json!({"type":"resize", "width":width, "height":height})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(message) = socket.next().await {
+                match message.unwrap() {
+                    Message::Text(text) => assert!(!text.contains("\"type\":\"error\""), "{text}"),
+                    Message::Binary(bytes) if bytes.first() == Some(&1) => {
+                        let frame = image::load_from_memory(&bytes[1..]).unwrap();
+                        if frame.width() == width && frame.height() == height {
+                            return;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("desktop connection closed before resize");
+        })
+        .await
+        .expect("resized real frame from native Lua desktop");
+        socket.close(None).await.unwrap();
+    });
+}
+
 #[test]
-#[ignore = "requires local GPU, Cage, Omarchy, foot and the installed private Aquamarine library"]
+#[ignore = "requires local GPU, Cage, Omarchy, a supported terminal and the installed private Aquamarine library"]
 fn transport_restart_preserves_native_desktop_and_gui_process() {
     for name in [
         "Hyprland",
@@ -217,6 +283,7 @@ fn transport_restart_preserves_native_desktop_and_gui_process() {
             );
             thread::sleep(Duration::from_millis(100));
         }
+        resize_through_websocket(port, 800 + generation * 80, 600 + generation * 40);
         assert_eq!(client_pid(), Some(app));
         drop(transport);
         assert!(owner.0.try_wait().unwrap().is_none());

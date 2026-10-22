@@ -1035,6 +1035,27 @@ async fn handle_command(
             ]);
             let output = timeout(Duration::from_secs(2), command.output()).await??;
             anyhow::ensure!(output.status.success(), "desktop resize failed");
+            let mut response = String::from_utf8(output.stdout)?;
+            // Lua compositors reject legacy keywords with exit code zero.
+            // Fall back only for the explicit parser capability response.
+            if response.trim() == "keyword can't work with non-legacy parsers. Use eval." {
+                let mut command = helper(state, "hyprctl");
+                command.args([
+                    "eval",
+                    &format!(
+                        "hl.monitor({{ output = \"\", mode = \"{width}x{height}@{}\", position = \"auto\", scale = 1 }})",
+                        state.config.fps
+                    ),
+                ]);
+                let output = timeout(Duration::from_secs(2), command.output()).await??;
+                anyhow::ensure!(output.status.success(), "Lua desktop resize failed");
+                response = String::from_utf8(output.stdout)?;
+            }
+            anyhow::ensure!(
+                response.trim() == "ok",
+                "desktop resize rejected: {}",
+                response.trim()
+            );
         }
         "audio" => {
             audio.take();
