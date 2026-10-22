@@ -33,7 +33,18 @@ existing owner passed real H.264 configuration/keyframe negotiation, JPEG image
 decoding and all three scheduling strategy reports over WebSocket at 2560x1440.
 The candidate served JavaScript identical to the production frontend build.
 These are protocol tests, not browser-render or other-desktop validation.
-Local deployment is recorded below when performed.
+Local deployment completed at 2026-10-22 13:15 UTC using an independent
+`systemd-run` installer task (exit 0). `main` includes implementation `3e3e20c`
+and reviewed fixes `88097df`, both pushed. The installed version is 0.1.8,
+SHA-256 `0fe587ae7130b372c2126aeeaf5841d1be0113577401825b1551c6cb5b872ba2`,
+identical to the tested release binary. Installer backup:
+`/var/lib/lightos-remote-desktop/transaction.WZEjdVfRoU`.
+The transport is active/ready with PID 3303722 and NRestarts=0. The existing
+session owner PID 3137346 and compositor signature remained unchanged; v2rayN
+PID 3194041 survived, and compositor configerrors is empty. Final ordinary and
+bundled-JPEG workspace runs each passed 98 tests; the optional real Lua/Ghostty,
+private mock D-Bus and release WebSocket tests were run separately and passed.
+No new browser-rendering, physical-phone or non-Hyprland desktop claim is made.
 
 
 Date: 2026-10-22 (machine local date). This records a verified initial native
