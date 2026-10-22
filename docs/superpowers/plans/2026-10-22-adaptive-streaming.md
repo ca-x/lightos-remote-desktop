@@ -41,9 +41,9 @@
 **Files:** modify `crates/media-codec/Cargo.toml`, `src/lib.rs`, `src/openh264.rs`, root `Cargo.lock`.
 **Interfaces:** produce `EncoderRate { bitrate_bps, fps }`, default bitrate helper, `VideoEncoder::set_rate`; H.264 requests carry desired rate and worker applies generated SetOption bindings before encoding. Expose probed dynamic bitrate capability. Use effective bitrate = default bitrate * quality_percent/100 * target_fps/configured_fps, so Quality first retains bits per frame while reducing bandwidth.
 
-- [ ] Add failing decode-continuity and runtime-rate readback/budget tests.
-- [ ] Use existing OpenH264 generated API bindings; preserve cancellation safety and SPS/IDR rules.
-- [ ] Run media-codec tests; commit and push.
+- [x] Add failing decode-continuity and runtime-rate readback/budget tests.
+- [x] Use existing OpenH264 generated API bindings; preserve cancellation safety and SPS/IDR rules.
+- [x] Run media-codec tests; commit and push.
 
 ### Task 3: Server pacing, diagnostics and weak-write tolerance
 

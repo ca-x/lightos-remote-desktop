@@ -948,6 +948,7 @@ dependencies = [
  "futures-util",
  "image",
  "openh264",
+ "openh264-sys2",
  "serde",
  "tokio",
  "turbojpeg",

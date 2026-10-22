@@ -24,6 +24,25 @@ pub struct EncoderSettings {
     pub quality: u8,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct EncoderRate {
+    pub bitrate_bps: u32,
+    pub fps: u32,
+}
+impl EncoderRate {
+    pub fn validate(self) -> Result<()> {
+        anyhow::ensure!((1..=60).contains(&self.fps), "invalid native frame rate");
+        anyhow::ensure!(
+            (1_000..=100_000_000).contains(&self.bitrate_bps),
+            "invalid native bitrate"
+        );
+        Ok(())
+    }
+}
+pub fn default_bitrate(width: u32, height: u32) -> u32 {
+    (u64::from(width) * u64::from(height) * 3).clamp(600_000, 18_000_000) as u32
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct CodecCapability {
     pub codec: VideoCodec,
@@ -32,9 +51,13 @@ pub struct CodecCapability {
     pub available: bool,
     pub reason: Option<String>,
     pub dynamic_quality: bool,
+    pub dynamic_bitrate: bool,
 }
 
 pub trait VideoEncoder: Send {
+    fn set_rate(&mut self, _rate: EncoderRate) -> Result<()> {
+        anyhow::bail!("encoder does not support dynamic bitrate changes")
+    }
     fn set_quality(&mut self, _quality: u8) -> Result<()> {
         anyhow::bail!("encoder does not support dynamic quality changes")
     }
@@ -52,6 +75,9 @@ pub trait EncoderFactory: Send + Sync {
 pub struct SoftwareEncoders;
 
 impl VideoEncoder for H264Encoder {
+    fn set_rate(&mut self, rate: EncoderRate) -> Result<()> {
+        H264Encoder::set_rate(self, rate)
+    }
     fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
     }
@@ -134,7 +160,22 @@ impl EncoderFactory for SoftwareEncoders {
                         !encoded.data.is_empty() && encoded.key,
                         "codec test frame is not independently decodable"
                     );
-                    Ok::<_, anyhow::Error>(())
+                    let dynamic_bitrate = if codec == VideoCodec::H264 {
+                        if encoder
+                            .set_rate(EncoderRate {
+                                bitrate_bps: 300_000,
+                                fps: 15,
+                            })
+                            .is_ok()
+                        {
+                            encoder.encode(pixels.clone()).await.is_ok()
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    Ok::<_, anyhow::Error>(dynamic_bitrate)
                 })
                 .await
                 .context("codec probe timed out")
@@ -144,6 +185,7 @@ impl EncoderFactory for SoftwareEncoders {
                     backend,
                     hardware: false,
                     available: result.is_ok(),
+                    dynamic_bitrate: result.as_ref().is_ok_and(|supported| *supported),
                     reason: result.err().map(|e| format!("{e:#}")),
                     dynamic_quality,
                 });
@@ -191,6 +233,8 @@ mod tests {
                 .all(|c| c.available && !c.hardware && c.reason.is_none())
         );
         assert!(!capabilities[0].dynamic_quality);
+        assert!(capabilities[0].dynamic_bitrate);
+        assert!(!capabilities[1].dynamic_bitrate);
         assert!(capabilities[1].dynamic_quality);
     }
     #[tokio::test]
