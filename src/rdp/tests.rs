@@ -30,11 +30,235 @@ fn connection(state: AppState) -> Arc<Connection> {
     Arc::new(Connection {
         state,
         authenticated: AtomicBool::new(false),
-        active: AtomicBool::new(false),
-        lease: Mutex::new(None),
+        control: Mutex::new(Control::default()),
         ready: Notify::new(),
         close: Notify::new(),
+        before_input_enqueue: Mutex::new(None),
     })
+}
+
+pub(super) struct InputPause {
+    entered: tokio::sync::oneshot::Sender<()>,
+    resume: std::sync::mpsc::Receiver<()>,
+}
+
+impl InputPause {
+    pub(super) fn wait(self) {
+        self.entered.send(()).unwrap();
+        self.resume.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+}
+
+fn acknowledge_input_releases(
+    mut input: mpsc::Receiver<InputCommand>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(command) = input.recv().await {
+            if let InputCommand::ReleaseSync { done } = command {
+                let _ = done.send(());
+            }
+        }
+    })
+}
+
+#[tokio::test]
+async fn capture_changes_during_initial_activation_require_a_resize() {
+    let (state, frames, input) = fixture();
+    let releases = acknowledge_input_releases(input);
+    let connection = connection(state);
+    connection.authenticated.store(true, Ordering::Release);
+    let mut display = Display {
+        connection: connection.clone(),
+        announced: Arc::default(),
+    };
+    // Mirror IronRDP's capability announcement, client size request and final
+    // encoder setup, with capture changing after the announcement.
+    let advertised = display.size().await;
+    assert_eq!((advertised.width, advertised.height), (320, 200));
+    frames.send_replace(Some(rdp_frame(640, 480, [30, 80, 210, 255])));
+    let requested = display.request_initial_size(advertised).await;
+    assert_eq!((requested.width, requested.height), (320, 200));
+    let encoder = display.size().await;
+    assert_eq!((encoder.width, encoder.height), (320, 200));
+    let mut updates = display.updates().await.unwrap();
+    assert!(matches!(
+        updates.next_update().await.unwrap(),
+        Some(DisplayUpdate::HidePointer)
+    ));
+    assert!(matches!(
+        updates.next_update().await.unwrap(),
+        Some(DisplayUpdate::Resize(DesktopSize {
+            width: 640,
+            height: 480
+        }))
+    ));
+    connection.deactivate().unwrap().release().await;
+    releases.abort();
+}
+
+#[tokio::test]
+async fn capture_changes_during_reactivation_require_another_resize() {
+    let (state, frames, input) = fixture();
+    let releases = acknowledge_input_releases(input);
+    let connection = connection(state);
+    connection.authenticated.store(true, Ordering::Release);
+    let mut display = Display {
+        connection: connection.clone(),
+        announced: Arc::default(),
+    };
+    let _advertised = display.size().await;
+    let mut updates = display.updates().await.unwrap();
+    assert!(matches!(
+        updates.next_update().await.unwrap(),
+        Some(DisplayUpdate::HidePointer)
+    ));
+    assert!(matches!(
+        updates.next_update().await.unwrap(),
+        Some(DisplayUpdate::Bitmap(_))
+    ));
+    frames.send_replace(Some(rdp_frame(640, 480, [30, 80, 210, 255])));
+    let Some(DisplayUpdate::Resize(advertised)) = updates.next_update().await.unwrap() else {
+        panic!("missing first resize")
+    };
+    assert_eq!((advertised.width, advertised.height), (640, 480));
+    // A Resize ends IronRDP's client loop and drops its update stream. Capture
+    // continues changing while the replacement acceptor negotiates that size.
+    drop(updates);
+    frames.send_replace(Some(rdp_frame(800, 600, [1, 2, 3, 255])));
+    let requested = display.request_initial_size(advertised).await;
+    assert_eq!((requested.width, requested.height), (640, 480));
+    frames.send_replace(Some(rdp_frame(960, 540, [4, 5, 6, 255])));
+    let encoder = display.size().await;
+    assert_eq!((encoder.width, encoder.height), (640, 480));
+    let mut updates = display.updates().await.unwrap();
+    assert!(matches!(
+        updates.next_update().await.unwrap(),
+        Some(DisplayUpdate::HidePointer)
+    ));
+    assert!(matches!(
+        updates.next_update().await.unwrap(),
+        Some(DisplayUpdate::Resize(DesktopSize {
+            width: 960,
+            height: 540
+        }))
+    ));
+    drop(updates);
+    let encoder = display.size().await;
+    assert_eq!((encoder.width, encoder.height), (960, 540));
+    let mut updates = display.updates().await.unwrap();
+    assert!(matches!(
+        updates.next_update().await.unwrap(),
+        Some(DisplayUpdate::HidePointer)
+    ));
+    let Some(DisplayUpdate::Bitmap(bitmap)) = updates.next_update().await.unwrap() else {
+        panic!("missing bitmap after the second reactivation")
+    };
+    assert_eq!((bitmap.width.get(), bitmap.height.get()), (960, 540));
+    assert_eq!(bitmap.data[..4], [6, 5, 4, 255]);
+    connection.deactivate().unwrap().release().await;
+    releases.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disconnect_waits_for_accepted_input_before_releasing_the_controller() {
+    let (state, _frames, mut commands) = fixture();
+    let connection = connection(state.clone());
+    connection.authenticated.store(true, Ordering::Release);
+    let mut display = Display {
+        connection: connection.clone(),
+        announced: Arc::default(),
+    };
+    let _updates = display.updates().await.unwrap();
+    let (recorded, mut records) = mpsc::unbounded_channel();
+    let worker = tokio::spawn(async move {
+        while let Some(command) = commands.recv().await {
+            let command = if let InputCommand::ReleaseSync { done } = command {
+                let _ = done.send(());
+                InputCommand::Release
+            } else {
+                command
+            };
+            recorded.send(command).unwrap();
+        }
+    });
+    let (entered, paused) = tokio::sync::oneshot::channel();
+    let (resume, waiting) = std::sync::mpsc::channel();
+    *connection.before_input_enqueue.lock().unwrap() = Some(InputPause {
+        entered,
+        resume: waiting,
+    });
+    let input = Input {
+        connection: connection.clone(),
+        surrogate: None,
+    };
+    // Model IronRDP's AInput worker stopping after accepting an event but
+    // before it enters the Wayland queue.
+    let callback = tokio::task::spawn_blocking(move || {
+        input.send(InputCommand::Key {
+            code: 30,
+            pressed: true,
+        });
+    });
+    paused.await.unwrap();
+    let (started, closing) = tokio::sync::oneshot::channel();
+    let mut disconnect = tokio::task::spawn_blocking(move || {
+        started.send(()).unwrap();
+        drop(connection.deactivate());
+    });
+    closing.await.unwrap();
+    let released_while_paused = tokio::time::timeout(Duration::from_millis(100), &mut disconnect)
+        .await
+        .is_ok();
+    let next_controller = released_while_paused.then(|| state.claim_rdp_control().unwrap());
+    // Always resume/join the paused worker before asserting, including on RED.
+    resume.send(()).unwrap();
+    callback.await.unwrap();
+    if !released_while_paused {
+        disconnect.await.unwrap();
+    }
+    let next_controller = next_controller.unwrap_or_else(|| state.claim_rdp_control().unwrap());
+    Input {
+        connection: display.connection.clone(),
+        surrogate: None,
+    }
+    .send(InputCommand::Key {
+        code: 32,
+        pressed: true,
+    });
+    state
+        .backend
+        .input
+        .try_send(InputCommand::Key {
+            code: 31,
+            pressed: true,
+        })
+        .unwrap();
+    next_controller.release().await;
+    let mut received = Vec::new();
+    for _ in 0..4 {
+        received.push(records.recv().await.unwrap());
+    }
+    worker.abort();
+    assert!(
+        !released_while_paused,
+        "disconnect released the controller while an accepted input callback was paused"
+    );
+    assert!(matches!(
+        received[0],
+        InputCommand::Key {
+            code: 30,
+            pressed: true
+        }
+    ));
+    assert!(matches!(received[1], InputCommand::Release));
+    assert!(matches!(
+        received[2],
+        InputCommand::Key {
+            code: 31,
+            pressed: true
+        }
+    ));
+    assert!(matches!(received[3], InputCommand::Release));
 }
 
 #[tokio::test]
@@ -43,10 +267,10 @@ async fn credentials_gate_pixels_input_and_shared_browser_controller() {
     let connection = connection(state.clone());
     let mut display = Display {
         connection: connection.clone(),
-        negotiated: None,
+        announced: Arc::default(),
     };
     assert!(display.updates().await.is_err());
-    assert!(!connection.active.load(Ordering::Acquire));
+    assert!(!connection.control.lock().unwrap().active);
     for (username, password, domain) in [
         ("lightos", "wrong-secret", None),
         ("", "", None),
@@ -107,8 +331,7 @@ async fn credentials_gate_pixels_input_and_shared_browser_controller() {
     });
     input.mouse(MouseEvent::Move { x: 319, y: 199 });
     input.keyboard(KeyboardEvent::UnicodePressed('中' as u16));
-    connection.active.store(false, Ordering::Release);
-    let lease = connection.lease.lock().unwrap().take().unwrap();
+    let lease = connection.deactivate().unwrap();
     lease.release().await;
     let mut commands = Vec::new();
     for _ in 0..5 {
@@ -141,7 +364,7 @@ async fn display_uses_latest_raw_frame_and_resizes_before_new_geometry() {
         frames: frames.subscribe(),
         first: true,
         hide_pointer: false,
-        size: Some((320, 200)),
+        announced: Arc::new(Mutex::new(Some((320, 200)))),
     };
     let Some(DisplayUpdate::Bitmap(bitmap)) = updates.next_update().await.unwrap() else {
         panic!("missing initial bitmap")
@@ -181,7 +404,7 @@ async fn stopped_input_route_terminates_control_instead_of_losing_releases() {
     let (state, _frames, input) = fixture();
     drop(input);
     let connection = connection(state);
-    connection.active.store(true, Ordering::Release);
+    connection.control.lock().unwrap().active = true;
     let input = Input {
         connection: connection.clone(),
         surrogate: None,
@@ -190,7 +413,7 @@ async fn stopped_input_route_terminates_control_instead_of_losing_releases() {
         code: 30,
         pressed: false,
     });
-    assert!(!connection.active.load(Ordering::Acquire));
+    assert!(!connection.control.lock().unwrap().active);
     tokio::time::timeout(Duration::from_millis(20), connection.close.notified())
         .await
         .unwrap();

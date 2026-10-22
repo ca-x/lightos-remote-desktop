@@ -39,5 +39,14 @@ physical-session input, native config edits, version changes, deployment or tags
   routed inputs, failure/auth, geometry change, release and disabled operation.
 - [x] Document prerequisites, connection commands, scope and measured checks in
   `docs/rdp.md`; link from README; update RustDesk reference with source evidence.
-- [ ] Run default and enabled verification and relevant frontend checks; inspect
+- [x] Run default and enabled verification and relevant frontend checks; inspect
   diff; commit and push branch; ask parent for independent review and integration.
+
+## Independent review follow-up
+
+- [x] Reproduce a paused input callback racing disconnect/controller reuse;
+  serialize admission/enqueue with closure before releasing the controller.
+- [x] Reproduce capture changes during initial activation and resize reactivation;
+  share announced dimensions between display and replacement update streams.
+- [x] Observe RED/GREEN for all three regressions and rerun the actual FreeRDP
+  TLS/pixels/input/resize/reconnect/denial check with the fixes.

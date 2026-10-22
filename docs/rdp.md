@@ -148,9 +148,17 @@ benchmark or certification for other RDP clients. Live desktop/browser operation
 uses the unchanged capture/input backend; no live desktop was restarted for this
 verification.
 
+Regression tests also pause an accepted input callback across disconnect and
+controller reuse, and change capture dimensions between the initial announcement
+and activation, then again during resize reactivation. They check input ordering
+around the release barrier and require Resize before a bitmap with new geometry.
+Each regression failed before its corresponding fix. Input admission and closure
+share a lock; announced dimensions survive update-stream replacement and advance
+only on the initial announcement or a Resize.
+
 The same worktree passed `cargo test --workspace --locked` (122 passed, 16
 pre-existing live/environment checks ignored), `cargo test --workspace --locked
---features rdp` (128 passed, 17 opt-in checks ignored), and strict all-target
+--features rdp` (131 passed, 17 opt-in checks ignored), and strict all-target
 Clippy with RDP enabled. The explicit FreeRDP test above passed separately;
 its ignored status in the general suite is not an interoperability claim by
 itself. `cargo build --release --locked` preserved the default software binary,

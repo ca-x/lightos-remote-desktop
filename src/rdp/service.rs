@@ -158,10 +158,11 @@ async fn accept_connections(
         let connection = Arc::new(Connection {
             state: state.clone(),
             authenticated: AtomicBool::new(false),
-            active: AtomicBool::new(false),
-            lease: Mutex::new(None),
+            control: Mutex::new(Control::default()),
             ready: Notify::new(),
             close: Notify::new(),
+            #[cfg(test)]
+            before_input_enqueue: Mutex::new(None),
         });
         let mut server = RdpServer::builder()
             .with_addr(listener.local_addr()?)
@@ -172,7 +173,7 @@ async fn accept_connections(
             })
             .with_display_handler(Display {
                 connection: connection.clone(),
-                negotiated: None,
+                announced: Arc::default(),
             })
             .with_credential_validator(Some(connection.clone()))
             .with_max_request_size(1024 * 1024)
@@ -190,9 +191,8 @@ async fn accept_connections(
                 }
             } => Err(anyhow::anyhow!("RDP authentication/activation timed out")),
         };
-        connection.active.store(false, Ordering::Release);
+        let lease = connection.deactivate();
         drop(server);
-        let lease = connection.lease.lock().unwrap().take();
         if let Some(lease) = lease {
             lease.release().await;
         }
@@ -211,10 +211,27 @@ async fn accept_connections(
 struct Connection {
     state: AppState,
     authenticated: AtomicBool,
-    active: AtomicBool,
-    lease: Mutex<Option<ControllerLease>>,
+    control: Mutex<Control>,
     ready: Notify,
     close: Notify,
+    #[cfg(test)]
+    before_input_enqueue: Mutex<Option<tests::InputPause>>,
+}
+
+#[derive(Default)]
+struct Control {
+    active: bool,
+    lease: Option<ControllerLease>,
+}
+
+impl Connection {
+    fn deactivate(&self) -> Option<ControllerLease> {
+        // IronRDP also dispatches input on blocking workers. Closing admission
+        // under the enqueue lock puts every accepted event before ReleaseSync.
+        let mut control = self.control.lock().unwrap();
+        control.active = false;
+        control.lease.take()
+    }
 }
 
 #[async_trait]
@@ -242,22 +259,25 @@ impl CredentialValidator for Connection {
 
 struct Display {
     connection: Arc<Connection>,
-    negotiated: Option<(u32, u32)>,
+    announced: Arc<Mutex<Option<(u32, u32)>>>,
 }
 
 #[async_trait]
 impl RdpServerDisplay for Display {
     async fn size(&mut self) -> DesktopSize {
-        let size = self
-            .connection
-            .state
-            .backend
-            .frames
-            .borrow()
-            .as_ref()
-            .map(|frame| (frame.width, frame.height))
-            .unwrap_or_else(|| self.connection.state.config.dimensions().unwrap());
-        self.negotiated = Some(size);
+        // IronRDP calls size() again when preparing the activation encoder.
+        // Only the initial announcement or a Resize may advance this size;
+        // capture can keep changing throughout activation/reactivation.
+        let size = *self.announced.lock().unwrap().get_or_insert_with(|| {
+            self.connection
+                .state
+                .backend
+                .frames
+                .borrow()
+                .as_ref()
+                .map(|frame| (frame.width, frame.height))
+                .unwrap_or_else(|| self.connection.state.config.dimensions().unwrap())
+        });
         DesktopSize {
             width: size.0 as u16,
             height: size.1 as u16,
@@ -269,17 +289,17 @@ impl RdpServerDisplay for Display {
             self.connection.authenticated.load(Ordering::Acquire),
             "RDP credentials are required"
         );
-        let mut lease = self.connection.lease.lock().unwrap();
-        if lease.is_none() {
-            *lease = Some(self.connection.state.claim_rdp_control()?);
+        let mut control = self.connection.control.lock().unwrap();
+        if control.lease.is_none() {
+            control.lease = Some(self.connection.state.claim_rdp_control()?);
         }
-        self.connection.active.store(true, Ordering::Release);
+        control.active = true;
         self.connection.ready.notify_one();
         Ok(Box::new(Updates {
             frames: self.connection.state.backend.frames.clone(),
             first: true,
             hide_pointer: true,
-            size: self.negotiated,
+            announced: self.announced.clone(),
         }))
     }
 }
@@ -288,7 +308,7 @@ struct Updates {
     frames: watch::Receiver<Option<Arc<Frame>>>,
     first: bool,
     hide_pointer: bool,
-    size: Option<(u32, u32)>,
+    announced: Arc<Mutex<Option<(u32, u32)>>>,
 }
 
 #[async_trait]
@@ -312,8 +332,13 @@ impl RdpServerDisplayUpdates for Updates {
                 "RDP capture is stale"
             );
             let size = (frame.width, frame.height);
-            if self.size.is_some_and(|old| old != size) {
-                self.size = Some(size);
+            let resized = {
+                let mut announced = self.announced.lock().unwrap();
+                let resized = announced.is_some_and(|old| old != size);
+                *announced = Some(size);
+                resized
+            };
+            if resized {
                 self.first = true;
                 return Ok(Some(DisplayUpdate::Resize(DesktopSize {
                     width: u16::try_from(frame.width)?,
@@ -321,7 +346,6 @@ impl RdpServerDisplayUpdates for Updates {
                 })));
             }
             self.first = false;
-            self.size = Some(size);
             return Ok(Some(DisplayUpdate::Bitmap(bitmap(frame)?)));
         }
     }
@@ -359,8 +383,16 @@ struct Input {
 
 impl Input {
     fn send(&self, command: InputCommand) {
-        if !self.connection.active.load(Ordering::Acquire) || command.validate().is_err() {
+        if command.validate().is_err() {
             return;
+        }
+        let mut control = self.connection.control.lock().unwrap();
+        if !control.active {
+            return;
+        }
+        #[cfg(test)]
+        if let Some(pause) = self.connection.before_input_enqueue.lock().unwrap().take() {
+            pause.wait();
         }
         if self
             .connection
@@ -372,7 +404,7 @@ impl Input {
         {
             // Losing a key release would leave the compositor in a stuck state.
             // Close and run the same release barrier as the browser path.
-            self.connection.active.store(false, Ordering::Release);
+            control.active = false;
             self.connection.close.notify_one();
         }
     }
