@@ -66,6 +66,8 @@ export function createClient(options: ClientOptions = {}) {
   let connectionTimer: Timer | null = null;
   let closeTimer: Timer | null = null;
   let retries = 0;
+  let lastServerActivity = 0;
+  let connectedAt: number | null = null;
   let connectionFailure = "";
   let pendingFrame: { data: ArrayBuffer; generation: number; videoToken: number; id: number | null } | null = null;
   let decoding = false;
@@ -338,6 +340,13 @@ export function createClient(options: ClientOptions = {}) {
     metricsTimer = null;
     if (!ready || destroyed) return;
     const now = performance.now();
+    if (!document.hidden && now - lastServerActivity >= 30_000 && socket) {
+      connectionFailure = "Connection stopped responding; reconnecting.";
+      message(connectionFailure);
+      closeSocket(socket, 4000, "Liveness timeout");
+      resetSession();
+      return;
+    }
     const fps = renderedFrames * 1000 / Math.max(1, now - metricsStarted);
     renderedFrames = 0;
     metricsStarted = now;
@@ -429,7 +438,7 @@ export function createClient(options: ClientOptions = {}) {
     if (!ready || !socket || socket.readyState !== WebSocket.OPEN) return false;
     if (socket.bufferedAmount > 262144) {
       message("Connection is too slow; reconnecting to release input safely.");
-      socket.close(4001, "Input backpressure");
+      closeSocket(socket, 4001, "Input backpressure");
       resetSession();
       return false;
     }
@@ -437,7 +446,7 @@ export function createClient(options: ClientOptions = {}) {
       socket.send(JSON.stringify(command));
       return true;
     } catch {
-      socket.close();
+      closeSocket(socket);
       resetSession();
       return false;
     }
@@ -524,9 +533,9 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   function waitForClose(current: WebSocket) {
-    // A Close frame can be lost by a proxy. Stop waiting, but require an
-    // explicit user action before opening another transport. The server still
-    // owns the single-controller gate if the abandoned transport is alive.
+    // A Close frame can be lost by a proxy. Desktop switches still require
+    // explicit control release. A failed transport may retry: the server's
+    // exclusive-controller gate rejects it until the old connection expires.
     if (wanted && current === socket && closeTimer === null) {
       closeTimer = setTimeout(() => {
         closeTimer = null;
@@ -537,13 +546,18 @@ export function createClient(options: ClientOptions = {}) {
         current.close(4000, "Control release timeout");
         socket = null;
         releasingSocket = null;
+        connectedAt = null;
+        const releaseTimedOut = switchingDesktop;
         switchingDesktop = false;
-        wanted = false;
-        connectionFailure = "Previous connection did not close within 3 seconds. Reconnect or select another desktop.";
+        if (releaseTimedOut) wanted = false;
+        connectionFailure = releaseTimedOut
+          ? "Previous connection did not close within 3 seconds. Reconnect or select another desktop."
+          : "Connection close timed out; retrying.";
         resetSession();
         setText("state", "Disconnected");
         desktopStatus(connectionFailure);
         message(connectionFailure);
+        if (!releaseTimedOut) scheduleRetry();
       }, 3000);
     }
   }
@@ -570,6 +584,7 @@ export function createClient(options: ClientOptions = {}) {
 
   function connect() {
     if (!wanted || destroyed || socket || retryTimer !== null) return;
+    if (navigator.onLine === false) { setText("state", "Waiting for network"); return; }
     setText("state", "Connecting");
     const url = new URL("./ws", location.href);
     url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
@@ -601,6 +616,7 @@ export function createClient(options: ClientOptions = {}) {
     };
     current.onmessage = (event) => {
       if (current !== socket || !wanted || destroyed) return;
+      lastServerActivity = performance.now();
       if (switchingDesktop) {
         if (typeof event.data === "string") {
           try { if (JSON.parse(event.data)?.type === "released") completeRelease(current); } catch {}
@@ -639,6 +655,8 @@ export function createClient(options: ClientOptions = {}) {
       closeTimer = null;
       socket = null;
       releasingSocket = null;
+      if (connectedAt !== null && performance.now() - connectedAt >= 10_000) retries = 0;
+      connectedAt = null;
       resetSession();
       setText("state", "Disconnected");
       if (switchingDesktop) {
@@ -651,15 +669,10 @@ export function createClient(options: ClientOptions = {}) {
 
   function scheduleRetry() {
     if (!wanted || destroyed || retryTimer !== null) return;
-    if (retries >= 2) {
-      wanted = false;
-      connectionFailure ||= "Desktop connection failed.";
-      desktopStatus(connectionFailure);
-      message(`Automatic reconnect stopped after two retries. ${connectionFailure}`);
-      updateControls();
-      return;
-    }
-    const delay = 500 * 2 ** retries++;
+    if (navigator.onLine === false) { setText("state", "Waiting for network"); return; }
+    if (connectionFailure) desktopStatus(connectionFailure);
+    const base = Math.min(30_000, 500 * 2 ** Math.min(retries++, 6));
+    const delay = Math.round(Math.min(30_000, base * (0.8 + Math.random() * 0.4)));
     setText("state", `Reconnecting in ${delay / 1000}s`);
     retryTimer = setTimeout(() => {
       retryTimer = null;
@@ -726,7 +739,7 @@ export function createClient(options: ClientOptions = {}) {
       configureStreamStrategy();
       cancelTimer(connectionTimer);
       connectionTimer = null;
-      retries = 0;
+      connectedAt = performance.now();
       audioAvailable = value.audio === true;
       audioSession = Number.isSafeInteger(value.audio_session) && value.audio_session > 0 ? value.audio_session : null;
       opusAvailable = Array.isArray(value.audio_codecs) && value.audio_codecs.includes("opus");
@@ -1466,6 +1479,15 @@ export function createClient(options: ClientOptions = {}) {
       socket = null;
     }
   }
+
+  listen(window, "online", () => {
+    if (!wanted || destroyed || socket) return;
+    cancelTimer(retryTimer); retryTimer = null;
+    connect();
+  });
+  listen(document, "visibilitychange", () => {
+    if (!document.hidden) lastServerActivity = performance.now();
+  });
 
   listen(window, "pagehide", (event) => {
     resumeWanted = wanted;

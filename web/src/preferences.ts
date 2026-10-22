@@ -33,4 +33,4 @@ export const themes = ["system", "light", "dark"] as const;
 export const videoCodecKey = "lightos-desktop-video-codec";
 export const streamStrategyKey = "lightos-desktop-stream-strategy";
 export const videoCodecs = ["auto", "h264", "jpeg"] as const;
-export const streamStrategies = ["auto", "low_latency", "smooth"] as const;
+export const streamStrategies = ["auto", "low_latency", "smooth", "quality_first"] as const;

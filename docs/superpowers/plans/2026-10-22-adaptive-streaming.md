@@ -60,9 +60,9 @@
 **Files:** modify `web/src/preferences.ts`, `App.tsx`, `i18n.ts`, `client.ts`; relevant frontend/UI tests.
 **Interfaces:** new `quality_first` enum wire value and bilingual select entry. Retry with capped exponential backoff while wanted, pause offline/resume online; monitor visible connection inactivity. Keep decoder generation cancellation and desktop-switch release invariant.
 
-- [ ] Add failing preference, repeated-retry, offline/online, liveness and manual-disconnect tests.
-- [ ] Add option in existing UI style; implement reconnect/liveness behavior.
-- [ ] Build and run frontend tests; commit and push.
+- [x] Add failing preference, repeated-retry, offline/online, liveness and manual-disconnect tests.
+- [x] Add option in existing UI style; implement reconnect/liveness behavior.
+- [x] Build and run frontend tests; commit and push.
 
 ### Task 5: Review, release and persistent-owner deployment
 

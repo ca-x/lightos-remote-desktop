@@ -3,7 +3,7 @@ import { initReactI18next } from "react-i18next";
 import { languageKey, languages, readPreference, resolveLanguage } from "./preferences";
 
 const en = {
-  streamSettings: "Video & streaming", videoCodec: "Video encoding", streamStrategy: "Streaming strategy", automatic: "Automatic", lowLatency: "Low latency", smooth: "Smoothness",
+  streamSettings: "Video & streaming", videoCodec: "Video encoding", streamStrategy: "Streaming strategy", automatic: "Automatic", lowLatency: "Low latency", smooth: "Smoothness", qualityFirst: "Quality first",
   streamHelp: "Automatic negotiates video support and adjusts buffering from render acknowledgements. An unavailable codec falls back to JPEG; your preference is saved.",
   title: "Remote desktop", viewport: "Remote desktop viewport", canvas: "Remote desktop. Focus here to send keyboard and pointer input.",
   open: "Open desktop tools", close: "Close desktop tools", fit: "Fit window", actual: "Actual size", fullscreen: "Fullscreen", audioOn: "Enable audio", audioOff: "Mute audio",
@@ -23,7 +23,7 @@ const en = {
   touchHelp: "Tap to click, drag with one finger, hold to right-click, and scroll with two fingers. Use the leftmost keyboard button to show or hide the keyboard. Highlighted modifiers apply to the next key.",
 };
 const zh: Record<keyof typeof en, string> = {
-  streamSettings: "视频与传输", videoCodec: "视频编码", streamStrategy: "传输策略", automatic: "自动", lowLatency: "低延迟优先", smooth: "流畅优先",
+  streamSettings: "视频与传输", videoCodec: "视频编码", streamStrategy: "传输策略", automatic: "自动", lowLatency: "低延迟优先", smooth: "流畅优先", qualityFirst: "清晰优先",
   streamHelp: "自动模式协商编码能力，并根据画面确认调整缓冲。不支持的编码会回退为 JPEG，保留你的选择。",
   title: "远程桌面", viewport: "远程桌面视口", canvas: "远程桌面，聚焦此处发送键盘和鼠标输入。",
   open: "打开桌面工具栏", close: "收起桌面工具栏", fit: "适应窗口", actual: "原始大小", fullscreen: "全屏", audioOn: "开启声音", audioOff: "关闭声音",
@@ -56,6 +56,9 @@ const clientPairs: [string, string][] = [
   ["All available keys requested. System-reserved keys may still be intercepted. Ctrl+Alt+Shift+Esc releases capture and opens tools.", "已请求捕获所有可用按键。部分系统快捷键仍可能被本机拦截。Ctrl+Alt+Shift+Esc 释放捕获并打开工具栏。"],
   ["Keyboard capture denied. Check browser permissions or use the shortcut sender below.", "键盘捕获被拒绝，请检查浏览器权限或使用下方通用发送器。"],
   ["Connection is too slow; reconnecting to release input safely.", "连接过慢，正在重新连接以安全释放输入。"],
+  ["Waiting for network", "等待网络恢复"],
+  ["Connection stopped responding; reconnecting.", "连接长时间无响应，正在重新连接。"],
+  ["Connection close timed out; retrying.", "连接关闭超时，正在重试。"],
   ["Desktop readiness timed out; reconnecting.", "桌面就绪超时，正在重新连接。"],
   ["Previous connection did not close within 3 seconds. Reconnect or select another desktop.", "旧连接在 3 秒内未完成关闭，请重新连接或选择其他桌面。"],
   ["Desktop connection failed.", "桌面连接失败。"],

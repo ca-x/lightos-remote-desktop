@@ -142,6 +142,7 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}) {
     cancelAnimationFrame(id) { animationFrames.delete(id); },
     createImageBitmap(blob) { return new Promise((resolve, reject) => decodes.push({ blob, resolve, reject })); },
   });
+  vm.runInContext("Math.random = () => 0.5", context);
   vm.runInContext(source, context);
   const run = (code) => vm.runInContext(code, context);
   const ready = (socket = sockets.at(-1), audio = true) => {
@@ -370,30 +371,24 @@ test("a source selection recovers from a stalled close without reusing old input
   assert.equal(app.nodes["send-text"].disabled, true);
 });
 
-test("readiness timeout followed by a stalled close remains bounded", () => {
-  const app = harness();
-  app.sockets[0].open();
-  assert.equal(app.tick(), 15000);
-  assert.equal(app.tick(), 3000);
-  assert.equal(app.sockets.length, 1);
-  assert.equal(app.timers.size, 0);
-  assert.match(app.nodes.message.textContent, /did not close/);
-  app.nodes.connection.fire("click");
-  assert.equal(app.sockets.length, 2);
+test("readiness timeout followed by a stalled close retries without concurrent sockets", () => {
+  const app=harness();app.sockets[0].open();
+  assert.equal(app.tick(),15000);assert.equal(app.tick(),3000);
+  assert.equal(app.sockets.length,1);
+  assert.equal(app.timers.size,1);
+  app.tick();assert.equal(app.sockets.length,2);
 });
 
-test("initialization failures preserve the server reason after automatic retries stop", () => {
-  const app = harness();
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const socket = app.sockets.at(-1);
-    socket.open();
-    socket.json({type:"error",message:"capture permission denied"});
-    socket.finishClose();
-    if (attempt < 2) app.tick();
+test("initialization failures preserve server reasons while automatic retries continue", () => {
+  const app=harness();
+  for(let attempt=0;attempt<4;attempt++){
+    const socket=app.sockets.at(-1);socket.open();
+    socket.json({type:"error",message:"capture permission denied"});socket.finishClose();
+    if(attempt<3)app.tick();
   }
-  assert.equal(app.timers.size, 0);
-  assert.match(app.nodes["desktop-status"].textContent, /capture permission denied/);
-  assert.match(app.nodes.message.textContent, /stopped after two retries/);
+  assert.equal(app.timers.size,1);
+  assert.match(app.nodes["desktop-status"].textContent,/capture permission denied/);
+  assert.match(app.nodes.message.textContent,/capture permission denied/);
 });
 
 test("physical desktop cannot resize, monitor switches are encoded and virtual restores resize", async () => {
@@ -1202,24 +1197,63 @@ test("resolution is explicit and validated", () => {
   assert.equal(app.nodes.message.textContent, "Server: resize unsupported");
 });
 
-test("reconnect stops after two failures and manual retry starts a new attempt", () => {
+test("weak-network reconnect continues with bounded backoff and manual disconnect cancels it", () => {
   const app = harness();
-  app.nodes.connection.fire("click");
-  app.nodes.connection.fire("click");
-  assert.equal(app.sockets.length, 1);
   app.sockets[0].finishClose();
   const delays = [];
-  for (let index = 0; index < 2; index += 1) {
+  for (let index = 0; index < 10; index += 1) {
     delays.push(app.tick());
     app.sockets.at(-1).finishClose();
   }
-  assert.deepEqual(delays, [500, 1000]);
-  assert.equal(app.timers.size, 0);
-  assert.match(app.nodes.message.textContent, /stopped after two retries/);
-  assert.match(app.nodes["desktop-status"].textContent, /failed/);
+  assert.deepEqual(delays.slice(0,5),[500,1000,2000,4000,8000]);
+  assert.ok(delays.every(delay=>delay<=30000));
+  assert.equal(app.sockets.length,11);
+  assert.equal(app.timers.size,1);
   app.nodes.connection.fire("click");
-  assert.equal(app.sockets.length, 4);
-  assert.equal(app.timers.size, 1);
+  assert.equal(app.timers.size,0);
+});
+
+test("offline waits for online without spending reconnect attempts", () => {
+  const app=harness();
+  app.navigator.onLine=false;
+  app.sockets[0].finishClose();
+  assert.equal(app.timers.size,0);
+  assert.match(app.nodes.state.textContent,/network/);
+  app.navigator.onLine=true;
+  app.window.fire("online");
+  assert.equal(app.sockets.length,2);
+  app.nodes.connection.fire("click");
+  app.sockets.at(-1).finishClose();
+  app.window.fire("online");
+  assert.equal(app.sockets.length,2,"manual disconnect must not reconnect online");
+});
+
+test("silent visible transport is replaced after a bounded close without reviving stale callbacks", () => {
+  const app=harness();
+  const old=app.sockets[0];
+  old.open();old.json({type:"ready",width:1280,height:720,metrics:true});
+  app.advance(31000);
+  assert.equal(app.tick(),1000);
+  assert.equal(old.readyState,2);
+  assert.equal(app.tick(),3000);
+  app.tick();
+  assert.equal(app.sockets.length,2);
+  app.ready();
+  old.json({type:"ready",width:800,height:600});
+  old.finishClose();
+  assert.equal(app.nodes.width.value,"1280");
+});
+
+test("recent server replies and a newly visible tab keep a static desktop connected", () => {
+  const app=harness();const socket=app.sockets[0];
+  socket.open();socket.json({type:"ready",width:1280,height:720,metrics:true});
+  app.advance(29000);socket.json({type:"pong",id:1});
+  app.advance(2000);app.tick();
+  assert.equal(socket.readyState,1);
+  app.document.hidden=true;app.advance(60000);app.tick();
+  assert.equal(socket.readyState,1);
+  app.document.hidden=false;app.document.fire("visibilitychange");app.tick();
+  assert.equal(socket.readyState,1);
 });
 
 test("JPEG decode is single-flight with one latest pending frame; stale results are closed", async () => {
@@ -1580,4 +1614,14 @@ test("manual unsupported H264 reports JPEG fallback while preserving the prefere
   assert.equal(app.nodes["video-codec"].value,"h264");
   assert.match(app.nodes.message.textContent,/H\.264.*unavailable.*JPEG/);
   assert.equal(storage.get("lightos-desktop-video-codec"),"h264");
+});
+
+ test("quality-first preference has a real option and survives reconnect", () => {
+  assert.match(html,/option value="quality_first"/);
+  const storage=new Map();const app=harness("/",storage);
+  app.nodes["stream-strategy"].value="quality_first";app.nodes["stream-strategy"].fire("change");
+  assert.equal(storage.get("lightos-desktop-stream-strategy"),"quality_first");
+  const next=harness("/",storage);const socket=next.sockets.at(-1);socket.open();
+  socket.json({type:"ready",width:1280,height:720,frame_ack:true,frame_ids:true});
+  assert.ok(socket.sent.some(packet=>packet.type==="video_flow"&&packet.strategy==="quality_first"));
 });

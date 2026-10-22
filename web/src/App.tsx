@@ -147,7 +147,7 @@ function Workspace({ open, close }: { open: boolean; close: (focusable?: HTMLEle
         </details>
         <details id="stream-section"><summary>{t("streamSettings")}</summary>
           <Field className="preference-field"><Label htmlFor="video-codec">{t("videoCodec")}</Label><Select id="video-codec" defaultValue="auto"><option value="auto">{t("automatic")}</option><option value="h264">H.264</option><option value="jpeg">JPEG</option></Select></Field>
-          <Field className="preference-field"><Label htmlFor="stream-strategy">{t("streamStrategy")}</Label><Select id="stream-strategy" defaultValue="auto"><option value="auto">{t("automatic")}</option><option value="low_latency">{t("lowLatency")}</option><option value="smooth">{t("smooth")}</option></Select></Field>
+          <Field className="preference-field"><Label htmlFor="stream-strategy">{t("streamStrategy")}</Label><Select id="stream-strategy" defaultValue="auto"><option value="auto">{t("automatic")}</option><option value="low_latency">{t("lowLatency")}</option><option value="smooth">{t("smooth")}</option><option value="quality_first">{t("qualityFirst")}</option></Select></Field>
           <p>{t("streamHelp")}</p>
         </details>
         <details id="clipboard-section"><summary>{t("clipboard")}</summary>
