@@ -15,7 +15,11 @@ function harness(pathname = "/") {
     textContent = "";
     captures = new Set();
     attributes = {};
-    classList = { toggle() {} };
+    classList = {
+      values: new Set(),
+      toggle(name, enabled) { if (enabled) this.values.add(name); else this.values.delete(name); },
+      contains(name) { return this.values.has(name); },
+    };
     addEventListener(name, callback, options) {
       if (!this.handlers.has(name)) this.handlers.set(name, new Set());
       this.handlers.get(name).add(callback);
@@ -46,6 +50,9 @@ function harness(pathname = "/") {
     return nodes[id];
   };
   const draws = [];
+  nodes.viewport.classList.toggle("fit", true);
+  nodes.viewport.requestFullscreen = async () => { document.fullscreenElement = nodes.viewport; document.fire("fullscreenchange"); };
+  document.exitFullscreen = async () => { document.fullscreenElement = null; document.fire("fullscreenchange"); };
   nodes.desktop.getContext = () => ({ drawImage: (...args) => draws.push(args) });
   nodes.width.value = "1280";
   nodes.height.value = "720";
@@ -68,6 +75,7 @@ function harness(pathname = "/") {
     binary(data) { this.onmessage?.({ data }); }
   }
   const timers = new Map();
+  const animationFrames = new Map();
   let timerId = 0;
   const decodes = [];
   const contexts = [];
@@ -100,6 +108,8 @@ function harness(pathname = "/") {
     ArrayBuffer, Uint8Array, DataView, TextEncoder, Blob,
     setTimeout(callback, delay) { timers.set(++timerId, { callback, delay }); return timerId; },
     clearTimeout(id) { timers.delete(id); },
+    requestAnimationFrame(callback) { animationFrames.set(++timerId, callback); return timerId; },
+    cancelAnimationFrame(id) { animationFrames.delete(id); },
     createImageBitmap(blob) { return new Promise((resolve, reject) => decodes.push({ blob, resolve, reject })); },
   });
   vm.runInContext(source, context);
@@ -119,8 +129,90 @@ function harness(pathname = "/") {
     timer.callback();
     return timer.delay;
   };
-  return { nodes, document, window, sockets, ready, fireKey, run, timers, tick, decodes, draws, contexts, navigator, AudioContext };
+  const paint = () => {
+    const callbacks = [...animationFrames.values()];
+    animationFrames.clear();
+    for (const callback of callbacks) callback();
+  };
+  return { nodes, document, window, sockets, ready, fireKey, run, timers, tick, decodes, draws, contexts, navigator, AudioContext, paint, animationFrames };
 }
+
+test("floating tools start collapsed, close on desktop click and remain keyboard accessible", () => {
+  const app = harness();
+  app.ready();
+  assert.equal(app.nodes["tool-panel"].hidden, true);
+  app.nodes["tools-toggle"].fire("click");
+  assert.equal(app.nodes["tool-panel"].hidden, false);
+  assert.equal(app.nodes["tools-toggle"].attributes["aria-expanded"], "true");
+  app.nodes.desktop.fire("pointerdown", { button: 0, pointerId: 1, clientX: 50, clientY: 50 });
+  assert.equal(app.nodes["tool-panel"].hidden, true);
+  app.fireKey("Escape", { ctrlKey: true, altKey: true, shiftKey: true });
+  assert.equal(app.nodes["tool-panel"].hidden, false);
+  app.nodes["tools-close"].fire("click");
+  assert.equal(app.nodes["tool-panel"].hidden, true);
+  assert.equal(app.document.activeElement, app.nodes.desktop);
+});
+
+test("pointer bursts coalesce and the latest position precedes a click", () => {
+  const app = harness();
+  const socket = app.ready();
+  for (let index = 0; index < 100; index++) app.nodes.desktop.fire("pointermove", { clientX: 10 + index, clientY: 45 });
+  assert.equal(socket.sent.length, 0);
+  assert.equal(app.animationFrames.size, 1);
+  app.paint();
+  assert.equal(socket.sent.length, 1);
+  app.nodes.desktop.fire("pointermove", { clientX: 40, clientY: 40 });
+  app.nodes.desktop.fire("pointerdown", { button: 0, pointerId: 1, clientX: 110, clientY: 70 });
+  assert.deepEqual(socket.sent.slice(-2), [{ type: "move", x: 0.5, y: 0.5 }, { type: "button", button: 0, pressed: true }]);
+  assert.equal(app.animationFrames.size, 0);
+  app.nodes.desktop.fire("pointermove", { clientX: 160, clientY: 70 });
+  app.nodes.desktop.fire("pointerup", { button: 0, pointerId: 1 });
+  assert.equal(socket.sent.at(-2).type, "move");
+  assert.equal(socket.sent.at(-1).pressed, false);
+});
+
+test("video credit returns after decode, never before, and is session-scoped", async () => {
+  const app = harness();
+  const socket = app.ready();
+  socket.json({ type: "ready", width: 1280, height: 720, audio: false, frame_ack: true });
+  assert.equal(socket.sent.at(-1).type, "video_flow");
+  socket.binary(jpeg(1));
+  assert.equal(socket.sent.filter((command) => command.type === "frame_ack").length, 0);
+  app.decodes[0].resolve(bitmap());
+  await flush();
+  assert.equal(socket.sent.at(-1).type, "frame_ack");
+  socket.binary(jpeg(2));
+  socket.finishClose();
+  app.decodes[1].resolve(bitmap());
+  await flush();
+  assert.equal(socket.sent.filter((command) => command.type === "frame_ack").length, 1);
+});
+
+test("display mode icons switch fit, 1:1 and fullscreen, restoring the prior window mode", async () => {
+  const app = harness();
+  const socket = app.ready();
+  app.nodes["mode-actual"].fire("click");
+  await flush();
+  assert.equal(app.nodes.viewport.classList.contains("fit"), false);
+  assert.equal(app.nodes["mode-actual"].attributes["aria-pressed"], "true");
+  app.nodes.fullscreen.fire("click");
+  await flush();
+  assert.equal(app.document.fullscreenElement, app.nodes.viewport);
+  assert.equal(app.nodes.viewport.classList.contains("fit"), true);
+  assert.equal(app.nodes.fullscreen.attributes["aria-pressed"], "true");
+  await app.document.exitFullscreen();
+  assert.equal(app.nodes.viewport.classList.contains("fit"), false);
+  app.nodes["mode-fit"].fire("click");
+  await flush();
+  assert.equal(app.nodes.viewport.classList.contains("fit"), true);
+  assert.equal(app.nodes["mode-fit"].attributes["aria-pressed"], "true");
+  assert.equal(socket.sent.filter((command) => command.type === "resize").length, 0);
+  app.nodes.viewport.requestFullscreen = async () => { throw new Error("denied"); };
+  app.nodes.fullscreen.fire("click");
+  await flush();
+  assert.equal(app.nodes["mode-fit"].attributes["aria-pressed"], "true");
+  assert.match(app.nodes.message.textContent, /denied/);
+});
 
 function jpeg(marker) { return new Uint8Array([1, marker]).buffer; }
 function bitmap(width = 1280, height = 720) { return { width, height, closed: false, close() { this.closed = true; } }; }
@@ -190,6 +282,7 @@ test("pointer normalization, buttons, wheel units and capture cleanup", () => {
   app.nodes.desktop.fire("pointerdown", { button: 2, pointerId: 7, clientX: 110, clientY: 45 });
   assert.deepEqual(socket.sent.slice(-2), [{ type: "move", x: 0.5, y: 0.25 }, { type: "button", button: 2, pressed: true }]);
   app.nodes.desktop.fire("pointermove", { clientX: 900, clientY: -10 });
+  app.paint();
   assert.deepEqual(socket.sent.at(-1), { type: "move", x: 1, y: 0 });
   app.nodes.desktop.fire("wheel", { deltaX: 2, deltaY: -3, deltaMode: 1 });
   assert.deepEqual(socket.sent.at(-1), { type: "scroll", x: 32, y: -48 });
@@ -360,6 +453,7 @@ test("resized JPEG updates canvas before drawing, preserves edited resolution, a
   await flush();
   assert.equal(changes.length, 2);
   canvas.fire("pointermove", { clientX: 110, clientY: 45 });
+  app.paint();
   assert.deepEqual(socket.sent.at(-1), { type: "move", x: 0.5, y: 0.25 });
   socket.json({ type: "ready", width: 1024, height: 768, audio: true });
   assert.equal(changes.length, 2);

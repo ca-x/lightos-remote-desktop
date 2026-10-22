@@ -1,5 +1,13 @@
 # Installing the native candidate
 
+The executable embeds this transactional installer. On a provisioned LightOS
+machine, `sudo ./lightos-remote-desktop install-service` replaces the existing
+Python service command and activates Rust after dependency and health checks.
+Use `install-service --dry-run` for read-only checks, `--stage-only` to avoid
+restarting, and `sudo ./lightos-remote-desktop rollback-service` for the previous
+transaction. Root is needed only for installation, never for desktop runtime.
+This does not bootstrap Cage/Hyprland or the version-specific Aquamarine patch.
+
 The installer does not build, download, install packages, edit the original unit,
 or remove the Python launcher or `/opt/lightos/remote-desktop` payload. Use a
 reviewed local release executable. Current native transport is JPEG over

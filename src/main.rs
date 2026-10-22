@@ -23,6 +23,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
+    #[command(
+        about = "Install this binary over the existing LightOS Python service, with backup and rollback"
+    )]
+    InstallService(lightos_remote_desktop::install::ServiceOptions),
+    #[command(
+        about = "Restore the previous service binary and override from the latest transaction"
+    )]
+    RollbackService(lightos_remote_desktop::install::ServiceOptions),
     Serve(Config),
     Doctor(Config),
     Probe {
@@ -41,6 +49,8 @@ async fn main() -> Result<()> {
         )
         .init();
     match Cli::parse().command {
+        Action::InstallService(options) => lightos_remote_desktop::install::service(options, false),
+        Action::RollbackService(options) => lightos_remote_desktop::install::service(options, true),
         Action::Doctor(config) => doctor(&config),
         Action::Probe { config, expect_pid } => {
             config.validate()?;

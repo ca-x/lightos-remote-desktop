@@ -55,12 +55,23 @@ function createClient() {
   let composing = false;
   let clipboardPending = false;
   let resumeWanted = false;
+  let moveFrame = null;
+  let pendingMove = null;
+  let frameAcknowledgements = false;
+  let windowMode = "fit";
 
   function listen(target, name, handler, options = {}) {
     target.addEventListener(name, handler, { ...options, signal: listeners.signal });
   }
 
   function message(value) { element("message").textContent = value; }
+
+  function setToolsOpen(open, focus = false) {
+    element("tool-panel").hidden = !open;
+    element("tools-toggle").setAttribute("aria-expanded", String(open));
+    element("tools-toggle").setAttribute("aria-label", open ? "收起桌面工具栏" : "打开桌面工具栏");
+    if (focus) (open ? element("connection") : canvas).focus({ preventScroll: true });
+  }
 
   function validDimensions(width, height) {
     return Number.isInteger(width) && Number.isInteger(height) && width >= 1 && height >= 1 &&
@@ -75,9 +86,11 @@ function createClient() {
   function updateControls() {
     for (const id of controls) element(id).disabled = !ready;
     element("audio").disabled = !ready || !audioAvailable;
-    element("audio").textContent = audioContext ? "Disable audio" : "Enable audio";
+    const audioLabel = audioContext ? "关闭声音" : "开启声音";
+    for (const attribute of ["aria-label", "title", "data-tip"]) element("audio").setAttribute(attribute, audioLabel);
+    element("audio-icon").setAttribute("href", audioEnabled ? "#icon-volume" : "#icon-muted");
     element("audio").setAttribute("aria-pressed", String(audioEnabled));
-    element("connection").textContent = wanted ? "Disconnect" : "Connect";
+    for (const attribute of ["aria-label", "title", "data-tip"]) element("connection").setAttribute(attribute, wanted ? "断开连接" : "重新连接");
   }
 
   function send(command) {
@@ -99,6 +112,9 @@ function createClient() {
   }
 
   function release() {
+    if (moveFrame !== null) cancelAnimationFrame(moveFrame);
+    moveFrame = null;
+    pendingMove = null;
     send({ type: "release" });
     keys.clear();
     buttons.clear();
@@ -131,6 +147,7 @@ function createClient() {
     pendingFrame = null;
     clipboardPending = false;
     audioAvailable = false;
+    frameAcknowledgements = false;
     keys.clear();
     buttons.clear();
     release();
@@ -233,6 +250,8 @@ function createClient() {
         element("height").value = height;
       }
       ready = true;
+      frameAcknowledgements = value.frame_ack === true;
+      if (frameAcknowledgements) send({ type: "video_flow", enabled: true });
       clearTimeout(connectionTimer);
       connectionTimer = null;
       retries = 0;
@@ -275,6 +294,7 @@ function createClient() {
           if (frame.generation === generation && ready) message("Could not decode a desktop JPEG frame.");
         } finally {
           if (bitmap) bitmap.close();
+          if (frame.generation === generation && ready && frameAcknowledgements) send({ type: "frame_ack" });
         }
       }
     } finally { decoding = false; }
@@ -367,18 +387,44 @@ function createClient() {
       y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)) });
   }
 
+  function flushMove() {
+    if (moveFrame !== null) cancelAnimationFrame(moveFrame);
+    moveFrame = null;
+    const event = pendingMove;
+    pendingMove = null;
+    if (event) move(event);
+  }
+
+  listen(element("tools-toggle"), "click", () => setToolsOpen(element("tool-panel").hidden, true));
+  listen(element("tools-close"), "click", () => setToolsOpen(false, true));
+  listen(element("clipboard-toggle"), "click", () => { element("clipboard-section").open = !element("clipboard-section").open; });
+  listen(element("settings-toggle"), "click", () => { element("settings-section").open = !element("settings-section").open; });
+  listen(document, "keydown", (event) => {
+    if (event.key === "Escape" && !element("tool-panel").hidden && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+      event.preventDefault();
+      setToolsOpen(false, true);
+    }
+  });
+
   listen(canvas, "pointerdown", (event) => {
     if (!ready || event.button < 0 || event.button > 2) return;
     event.preventDefault();
+    setToolsOpen(false);
     canvas.focus({ preventScroll: true });
     syncModifiers(event);
     canvas.setPointerCapture(event.pointerId);
     capturedPointers.add(event.pointerId);
-    move(event);
+    pendingMove = event;
+    flushMove();
     if (!buttons.has(event.button) && send({ type: "button", button: event.button, pressed: true })) buttons.add(event.button);
   });
-  listen(canvas, "pointermove", move);
+  listen(canvas, "pointermove", (event) => {
+    if (!ready) return;
+    pendingMove = { clientX: event.clientX, clientY: event.clientY };
+    if (moveFrame === null) moveFrame = requestAnimationFrame(flushMove);
+  });
   listen(canvas, "pointerup", (event) => {
+    flushMove();
     if (buttons.delete(event.button)) send({ type: "button", button: event.button, pressed: false });
     if (!buttons.size) {
       capturedPointers.delete(event.pointerId);
@@ -402,6 +448,7 @@ function createClient() {
     if (event.code === "Escape" && event.ctrlKey && event.altKey && event.shiftKey) {
       event.preventDefault();
       release();
+      setToolsOpen(true);
       element("connection").focus();
       return;
     }
@@ -439,16 +486,39 @@ function createClient() {
     else { wanted = true; retries = 0; updateControls(); connect(); }
   });
   listen(element("audio"), "click", () => { void toggleAudio(); });
-  listen(element("fit"), "change", (event) => viewport.classList.toggle("fit", event.target.checked));
-  listen(element("fullscreen"), "click", async () => {
+  async function displayMode(mode) {
     try {
-      if (document.fullscreenElement) await document.exitFullscreen();
-      else await viewport.requestFullscreen();
+      if (mode === "fullscreen") {
+        await viewport.requestFullscreen();
+        viewport.classList.toggle("fit", true);
+      } else {
+        windowMode = mode === "actual" ? "actual" : "fit";
+        if (document.fullscreenElement) await document.exitFullscreen();
+        viewport.classList.toggle("fit", windowMode === "fit");
+      }
       canvas.focus({ preventScroll: true });
-    } catch (error) { message(`Fullscreen unavailable: ${error.message}`); }
+      updateDisplayMode();
+    } catch (error) {
+      updateDisplayMode();
+      message(`Fullscreen unavailable: ${error.message}`);
+    }
+  }
+  function updateDisplayMode() {
+    const mode = document.fullscreenElement ? "fullscreen" : windowMode;
+    element("mode-fit").setAttribute("aria-pressed", String(mode === "fit"));
+    element("mode-actual").setAttribute("aria-pressed", String(mode === "actual"));
+    element("fullscreen").setAttribute("aria-pressed", String(mode === "fullscreen"));
+    element("display-mode").textContent = mode === "actual" ? "原始大小 · 按设定分辨率 1:1 显示" : mode === "fullscreen" ? "全屏 · Esc 退出" : "适应窗口";
+    for (const attribute of ["aria-label", "title", "data-tip"]) element("fullscreen").setAttribute(attribute, mode === "fullscreen" ? "退出全屏" : "全屏");
+  }
+  listen(element("mode-fit"), "click", () => { void displayMode("fit"); });
+  listen(element("mode-actual"), "click", () => { void displayMode("actual"); });
+  listen(element("fullscreen"), "click", async () => {
+    await displayMode(document.fullscreenElement ? windowMode : "fullscreen");
   });
   listen(document, "fullscreenchange", () => {
-    element("fullscreen").textContent = document.fullscreenElement ? "Exit fullscreen" : "Fullscreen";
+    updateDisplayMode();
+    viewport.classList.toggle("fit", document.fullscreenElement ? true : windowMode === "fit");
   });
   listen(element("resize"), "submit", (event) => {
     event.preventDefault();
@@ -496,6 +566,8 @@ function createClient() {
     if (event.persisted && resumeWanted) { wanted = true; updateControls(); connect(); }
   });
   wanted = true;
+  setToolsOpen(false);
+  updateDisplayMode();
   updateControls();
   if (drawing) connect();
   else { disconnect(); message("Canvas rendering is unavailable in this browser."); }

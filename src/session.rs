@@ -61,7 +61,12 @@ impl Session {
             });
         }
         let temporary = if config.runtime_dir.is_none() {
-            Some(tempfile::Builder::new().prefix("lrd.").tempdir_in("/tmp")?)
+            Some(
+                tempfile::Builder::new()
+                    .prefix("lrd.")
+                    .permissions(fs::Permissions::from_mode(0o700))
+                    .tempdir_in("/tmp")?,
+            )
         } else {
             None
         };

@@ -26,7 +26,39 @@ tests. This bounds resources but adds per-frame protocol setup overhead.
 
 ## Build and test
 
-Use a current stable Rust toolchain. Native linking requires libxkbcommon;
+GitHub Actions tests every push/PR, then builds a Linux x86_64 archive and
+SHA256 checksum (also available through `workflow_dispatch`). A `v*` tag
+publishes these files to GitHub Releases. Release builds use Ubuntu 22.04 and
+bundle the SIMD JPEG library; Wayland, xkbcommon and glibc remain system libraries.
+
+### Install the downloaded executable
+
+```sh
+./lightos-remote-desktop install-service --dry-run
+sudo ./lightos-remote-desktop install-service
+sudo ./lightos-remote-desktop rollback-service
+```
+
+`install-service` installs this executable and activates the existing LightOS
+service, preserving its original unit, Python payload, credentials and URL prefix.
+Failure restores the previous transaction. `--stage-only` skips activation.
+Rollback restores the previous version, which may already be Rust. The installer
+and unit template are embedded; no source checkout is required. Existing native
+desktop dependencies and any required private Aquamarine compatibility library
+must already be provisioned; installation does not download libraries or packages.
+
+### Desktop controls
+
+The desktop fills the page. The right-hand icon opens floating controls;
+icon tooltips and keyboard focus labels identify actions. Display modes are
+fit-to-window, configured resolution at 1:1 with scrolling, and browser fullscreen.
+Fullscreen preserves the floating controls; Escape restores the preceding window
+mode. Display scaling does not change the remote resolution; use its settings
+to change that separately. Clipboard and resolution fields are tucked away.
+
+Use a current stable Rust toolchain. Native linking requires Wayland,
+libxkbcommon and libturbojpeg 3+. Alternatively build with `--features bundled-jpeg`
+(requires CMake and NASM), as CI does, to statically bundle libjpeg-turbo.
 runtime also needs Cage, Hyprland, D-Bus, hyprctl and wl-clipboard. Audio requires
 FFmpeg, pactl, pipewire, pipewire-pulse and WirePlumber 0.5+. A private audio graph is
 created per desktop; no host PulseAudio cookies or default sink are changed.

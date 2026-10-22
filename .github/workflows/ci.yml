@@ -2,15 +2,19 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      TURBOJPEG_SOURCE: vendor
+      TURBOJPEG_STATIC: '1'
     steps:
       - uses: actions/checkout@v4
       - name: Native dependencies
-        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev cmake nasm pkg-config
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -18,8 +22,68 @@ jobs:
         with:
           node-version: '24'
       - run: cargo fmt --check
-      - run: cargo test --locked
-      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked --features bundled-jpeg
+      - run: cargo clippy --locked --features bundled-jpeg --all-targets -- -D warnings
       - run: bash tests/installer.sh
       - run: bash scripts/test-install-compat.sh
       - run: node --test tests/frontend.mjs
+  build:
+    needs: test
+    runs-on: ubuntu-22.04
+    env:
+      TURBOJPEG_SOURCE: vendor
+      TURBOJPEG_STATIC: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev cmake nasm pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked --features bundled-jpeg
+      - name: Package Linux x86_64 binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          package=lightos-remote-desktop-linux-x86_64
+          mkdir -p "dist/$package/licenses"
+          cp target/release/lightos-remote-desktop README.md "dist/$package/"
+          cp -r docs "dist/$package/"
+          registry="${CARGO_HOME:-$HOME/.cargo}/registry/src"
+          jpeg_license=$(find "$registry" -path '*/turbojpeg-sys-1.2.0/libjpeg-turbo/LICENSE.md' -print -quit)
+          wrapper_license=$(find "$registry" -path '*/turbojpeg-1.5.1/LICENSE' -print -quit)
+          test -s "$jpeg_license" && test -s "$wrapper_license"
+          cp "$jpeg_license" "dist/$package/licenses/libjpeg-turbo.md"
+          cp "$wrapper_license" "dist/$package/licenses/turbojpeg.txt"
+          ldd "dist/$package/lightos-remote-desktop" | tee "dist/$package/dependencies.txt"
+          if grep -q 'libturbojpeg\|not found' "dist/$package/dependencies.txt"; then exit 1; fi
+          "dist/$package/lightos-remote-desktop" --help
+          tar -C dist -czf "dist/$package.tar.gz" "$package"
+          (cd dist && sha256sum "$package.tar.gz" > "$package.tar.gz.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lightos-remote-desktop-linux-x86_64
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: lightos-remote-desktop-linux-x86_64
+          path: dist
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/* --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes
+          fi

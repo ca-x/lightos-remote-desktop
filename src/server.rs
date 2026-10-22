@@ -19,10 +19,15 @@ use axum::{
     routing::get,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, Stream, StreamExt};
 use serde_json::json;
 use subtle::ConstantTimeEq;
-use tokio::{io::AsyncReadExt, process::Command, time::timeout};
+use tokio::{
+    io::AsyncReadExt,
+    process::Command,
+    sync::{mpsc, watch},
+    time::timeout,
+};
 
 use crate::{
     config::Config,
@@ -246,7 +251,15 @@ async fn upgrade(
 }
 
 async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease) {
-    let (mut writer, mut reader) = socket.split();
+    let (mut writer, reader) = socket.split();
+    let (control_tx, mut controls) = mpsc::channel(16);
+    let (pacing_tx, mut pacing) = watch::channel(VideoFlow::default());
+    let receive = receive_commands(
+        reader,
+        state.backend.input.clone(),
+        control_tx,
+        pacing_tx.clone(),
+    );
     let mut frames = state.backend.frames.clone();
     let dimensions = frames
         .borrow()
@@ -262,7 +275,7 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
         .and_then(|session| session.audio_source.clone());
     let audio_available = state.config.audio && audio_source.is_some();
     let ready = Message::Text(
-        json!({"type":"ready","width":width,"height":height,"audio":audio_available})
+        json!({"type":"ready","width":width,"height":height,"audio":audio_available,"frame_ack":true})
             .to_string()
             .into(),
     );
@@ -276,61 +289,130 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
     let mut audio_buffer = vec![0_u8; 3840];
     let mut first_frame = true;
     let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
-    let mut last_input = tokio::time::Instant::now();
-    loop {
-        let outgoing = tokio::select! {
-            changed = async { if !first_frame { frames.changed().await } else { Ok(()) } } => {
-                first_frame = false;
-                if changed.is_err() { break; }
-                let frame = frames.borrow_and_update().clone();
-                let Some(frame) = frame else { break; };
-                let mut packet = Vec::with_capacity(frame.jpeg.len() + 1);
-                packet.push(1);
-                packet.extend_from_slice(&frame.jpeg);
-                Some(Message::Binary(packet.into()))
-            }
-            packet = read_audio(&mut audio, &mut audio_buffer) => {
-                match packet {
-                    Ok(length) if length > 0 => {
-                        let mut bytes = vec![2]; bytes.extend_from_slice(&audio_buffer[..length]);
-                        Some(Message::Binary(bytes.into()))
-                    }
-                    _ => { audio.take(); Some(error_message("Audio stream stopped")) }
+    let transmit = async {
+        loop {
+            let outgoing = tokio::select! {
+                changed = async { if !first_frame { frames.changed().await } else { Ok(()) } }, if !pacing.borrow().waiting() => {
+                    first_frame = false;
+                    if changed.is_err() { break; }
+                    let frame = frames.borrow_and_update().clone();
+                    let Some(frame) = frame else { break; };
+                    let mut packet = Vec::with_capacity(frame.jpeg.len() + 1);
+                    packet.push(1);
+                    packet.extend_from_slice(&frame.jpeg);
+                    pacing_tx.send_modify(|flow| { flow.pending = flow.enabled; });
+                    Some(Message::Binary(packet.into()))
                 }
-            }
-            _ = heartbeat.tick() => {
-                if last_input.elapsed() > Duration::from_secs(60) { break; }
-                Some(Message::Ping(bytes::Bytes::new()))
-            }
-            incoming = reader.next() => {
-                match incoming {
-                    Some(Ok(Message::Pong(_))) | Some(Ok(Message::Ping(_))) => { last_input = tokio::time::Instant::now(); None }
-                    Some(Ok(Message::Text(text))) => {
-                        last_input = tokio::time::Instant::now();
-                        match handle_command(&state, &text, &mut audio, audio_source.as_deref()).await {
-                            Ok(response) => response,
-                            Err(error) => Some(error_message(&error.to_string())),
+                changed = pacing.changed() => {
+                    if changed.is_err() { break; }
+                    None
+                }
+                packet = read_audio(&mut audio, &mut audio_buffer) => {
+                    match packet {
+                        Ok(length) if length > 0 => {
+                            let mut bytes = vec![2]; bytes.extend_from_slice(&audio_buffer[..length]);
+                            Some(Message::Binary(bytes.into()))
                         }
+                        _ => { audio.take(); Some(error_message("Audio stream stopped")) }
                     }
-                    _ => break,
                 }
+                _ = heartbeat.tick() => {
+                    Some(Message::Ping(bytes::Bytes::new()))
+                }
+                incoming = controls.recv() => {
+                    match incoming {
+                        Some(text) => {
+                            match handle_command(&state, &text, &mut audio, audio_source.as_deref()).await {
+                                Ok(response) => response,
+                                Err(error) => Some(error_message(&error.to_string())),
+                            }
+                        }
+                        _ => break,
+                    }
+                }
+            };
+            if let Some(message) = outgoing
+                && !matches!(
+                    timeout(Duration::from_secs(3), writer.send(message)).await,
+                    Ok(Ok(()))
+                )
+            {
+                break;
             }
-        };
-        if let Some(message) = outgoing
-            && !matches!(
-                timeout(Duration::from_secs(3), writer.send(message)).await,
-                Ok(Ok(()))
-            )
-        {
-            break;
         }
-    }
+    };
+    tokio::select! { _ = receive => {}, _ = transmit => {} }
     audio.take();
     let _ = timeout(
         Duration::from_secs(1),
         state.backend.input.send(InputCommand::Release),
     )
     .await;
+}
+
+#[derive(Clone, Copy, Default)]
+struct VideoFlow {
+    enabled: bool,
+    pending: bool,
+}
+
+impl VideoFlow {
+    fn waiting(self) -> bool {
+        self.enabled && self.pending
+    }
+}
+
+async fn receive_commands(
+    mut reader: impl Stream<Item = Result<Message, axum::Error>> + Unpin,
+    input: mpsc::Sender<InputCommand>,
+    controls: mpsc::Sender<String>,
+    pacing: watch::Sender<VideoFlow>,
+) {
+    while let Ok(Some(Ok(message))) = timeout(Duration::from_secs(60), reader.next()).await {
+        match message {
+            Message::Text(text) => {
+                if text.len() > 96 * 1024 {
+                    break;
+                }
+                if let Ok(command) = serde_json::from_str::<InputCommand>(&text)
+                    && command.validate().is_ok()
+                {
+                    if !matches!(
+                        timeout(Duration::from_millis(500), input.send(command)).await,
+                        Ok(Ok(()))
+                    ) {
+                        break;
+                    }
+                    continue;
+                }
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                    match value.get("type").and_then(|kind| kind.as_str()) {
+                        Some("video_flow") => {
+                            pacing.send_modify(|flow| {
+                                flow.enabled =
+                                    value.get("enabled").and_then(|enabled| enabled.as_bool())
+                                        == Some(true);
+                                flow.pending = false;
+                            });
+                            continue;
+                        }
+                        Some("frame_ack") => {
+                            pacing.send_modify(|flow| {
+                                flow.pending = false;
+                            });
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                if controls.try_send(text.to_string()).is_err() {
+                    break;
+                }
+            }
+            Message::Ping(_) | Message::Pong(_) => {}
+            _ => break,
+        }
+    }
 }
 
 struct AudioStream {
@@ -513,6 +595,53 @@ fn error_message(message: &str) -> Message {
 mod tests {
     use super::*;
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn input_is_delivered_while_control_writer_is_not_draining() {
+        let (input, mut received) = mpsc::channel(4);
+        let (controls, _blocked_writer) = mpsc::channel(1);
+        let (pacing, _) = watch::channel(VideoFlow::default());
+        let messages = [
+            "{\"type\":\"clipboard_get\"}",
+            "{\"type\":\"move\",\"x\":0.5,\"y\":0.25}",
+            "{\"type\":\"button\",\"button\":0,\"pressed\":true}",
+            "{\"type\":\"button\",\"button\":0,\"pressed\":false}",
+        ];
+        let reader = futures_util::stream::iter(
+            messages
+                .into_iter()
+                .map(|message| Ok(Message::Text(message.into()))),
+        );
+        receive_commands(reader, input, controls, pacing).await;
+        assert!(matches!(
+            received.recv().await,
+            Some(InputCommand::Move { .. })
+        ));
+        assert!(matches!(
+            received.recv().await,
+            Some(InputCommand::Button { pressed: true, .. })
+        ));
+        assert!(matches!(
+            received.recv().await,
+            Some(InputCommand::Button { pressed: false, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn frame_acknowledgement_releases_only_the_video_gate() {
+        let (input, _) = mpsc::channel(1);
+        let (controls, _responses) = mpsc::channel(1);
+        let (pacing, state) = watch::channel(VideoFlow {
+            enabled: true,
+            pending: true,
+        });
+        assert!(state.borrow().waiting());
+        let reader =
+            futures_util::stream::iter([Ok(Message::Text("{\"type\":\"frame_ack\"}".into()))]);
+        receive_commands(reader, input, controls, pacing).await;
+        assert!(!state.borrow().waiting());
+        assert!(state.borrow().enabled);
+    }
 
     #[tokio::test]
     async fn prefixed_index_redirects_without_overlapping_routes() {

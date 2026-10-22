@@ -1,0 +1,60 @@
+use std::{fs, process::Command};
+
+#[test]
+fn embedded_installer_stages_itself_preserves_python_and_rolls_back_without_source_tree() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let unit = root.join("etc/systemd/system/lightos-remote-desktop.service");
+    fs::create_dir_all(unit.parent().unwrap()).unwrap();
+    let original_unit = "[Service]\nUser=desktop\nExecStart=/original/python\n";
+    fs::write(&unit, original_unit).unwrap();
+    let environment = root.join("etc/lightos/remote-desktop.env");
+    fs::create_dir_all(environment.parent().unwrap()).unwrap();
+    let original_env = "LIGHTOS_REMOTE_DESKTOP_AUTH_PASSWORD=preserve-this-test-value\n";
+    fs::write(&environment, original_env).unwrap();
+    let binary = env!("CARGO_BIN_EXE_lightos-remote-desktop");
+    let run = |action: &str, extra: &[&str]| {
+        Command::new(binary)
+            .current_dir(root)
+            .arg(action)
+            .args(["--stage-only", "--test-root"])
+            .arg(root)
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let state = root.join("var/lib/lightos-remote-desktop");
+    let dry_run = run("install-service", &["--dry-run"]);
+    assert!(
+        dry_run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    assert!(!state.exists());
+    let installed = run("install-service", &[]);
+    assert!(
+        installed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&installed.stderr)
+    );
+    let current = root.join("usr/local/lib/lightos-remote-desktop/current/lightos-remote-desktop");
+    assert_eq!(fs::read(current).unwrap(), fs::read(binary).unwrap());
+    assert_eq!(fs::read_to_string(&unit).unwrap(), original_unit);
+    assert_eq!(fs::read_to_string(&environment).unwrap(), original_env);
+    assert_eq!(
+        fs::read_to_string(state.join("original/unit")).unwrap(),
+        original_unit
+    );
+    let restored = run("rollback-service", &[]);
+    assert!(
+        restored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    assert!(
+        !root
+            .join("etc/systemd/system/lightos-remote-desktop.service.d/90-native.conf")
+            .exists()
+    );
+    assert_eq!(fs::read_to_string(environment).unwrap(), original_env);
+}

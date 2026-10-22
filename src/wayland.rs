@@ -17,7 +17,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
-use image::codecs::jpeg::JpegEncoder;
 use libwayshot::WayshotConnection;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
@@ -44,7 +43,7 @@ const MAX_EVDEV_CODE: u32 = 767;
 pub struct Frame {
     pub width: u32,
     pub height: u32,
-    pub jpeg: Vec<u8>,
+    pub jpeg: Arc<[u8]>,
     pub captured_at: Instant,
 }
 
@@ -351,6 +350,11 @@ fn run_capture(
     let mut initial_stream = Some(stream);
     let interval = Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut first = true;
+    let mut encoder = turbojpeg::Compressor::new().context("initialize SIMD JPEG encoder")?;
+    encoder.set_quality(i32::from(quality))?;
+    encoder.set_subsamp(turbojpeg::Subsamp::Sub2x2)?;
+    let mut previous_pixels = None;
+    let mut previous_jpeg: Arc<[u8]> = Arc::from([]);
     while !shared.stopped.load(Ordering::Acquire) {
         let started = Instant::now();
         let stream = match initial_stream.take() {
@@ -371,9 +375,7 @@ fn run_capture(
         let connection = Connection::from_socket(stream)?;
         let capture = WayshotConnection::from_connection(connection)
             .context("initialize native screencopy (compositor protocols required)")?;
-        let image = capture
-            .screenshot_all(true)
-            .context("capture desktop with cursor")?;
+        let image = capture.screenshot_all(false).context("capture desktop")?;
         let captured_at = Instant::now();
         drop(capture);
         if let Some(socket) = shared
@@ -384,30 +386,30 @@ fn run_capture(
         {
             let _ = socket.shutdown(Shutdown::Both);
         }
-        let rgb = image.to_rgb8();
-        let mut jpeg = Vec::new();
-        JpegEncoder::new_with_quality(&mut jpeg, quality).encode(
-            rgb.as_raw(),
-            rgb.width(),
-            rgb.height(),
-            image::ExtendedColorType::Rgb8,
-        )?;
+        let rgba = image.to_rgba8();
+        let changed = previous_pixels.as_ref() != Some(&rgba);
+        if changed {
+            previous_jpeg = encoder
+                .compress_to_vec(turbojpeg::Image {
+                    pixels: rgba.as_raw().as_slice(),
+                    width: rgba.width() as usize,
+                    pitch: rgba.width() as usize * 4,
+                    height: rgba.height() as usize,
+                    format: turbojpeg::PixelFormat::RGBA,
+                })?
+                .into();
+        }
         if shared.stopped.load(Ordering::Acquire) {
             break;
         }
         let frame = Arc::new(Frame {
-            width: rgb.width(),
-            height: rgb.height(),
-            jpeg,
+            width: rgba.width(),
+            height: rgba.height(),
+            jpeg: previous_jpeg.clone(),
             captured_at,
         });
-        shared.frames.send_if_modified(|latest| {
-            if shared.stopped.load(Ordering::Acquire) {
-                return false;
-            }
-            *latest = Some(frame);
-            true
-        });
+        previous_pixels = Some(rgba);
+        publish_frame(shared, frame, changed);
         if first {
             ready.send(Ok(()))?;
             first = false;
@@ -415,6 +417,16 @@ fn run_capture(
         thread::park_timeout(interval.saturating_sub(started.elapsed()));
     }
     Ok(())
+}
+
+fn publish_frame(shared: &Shared, frame: Arc<Frame>, changed: bool) {
+    shared.frames.send_if_modified(|latest| {
+        if shared.stopped.load(Ordering::Acquire) {
+            return false;
+        }
+        *latest = Some(frame);
+        changed
+    });
 }
 
 fn replace_capture_socket(shared: &Shared, stream: &UnixStream) -> Result<bool> {
@@ -729,12 +741,26 @@ fn run_input(
 mod tests {
     use super::*;
 
+    #[test]
+    fn unchanged_frame_refreshes_health_without_waking_video_subscribers() {
+        let backend = backend_with_frame(Some(Instant::now() - Duration::from_secs(10)));
+        let frame = Arc::new(Frame {
+            width: 1,
+            height: 1,
+            jpeg: Arc::from([]),
+            captured_at: Instant::now(),
+        });
+        publish_frame(&backend.shared, frame, false);
+        assert!(!backend.frames.has_changed().unwrap());
+        assert!(backend.frame_is_fresh(Duration::from_secs(1)));
+    }
+
     fn backend_with_frame(captured_at: Option<Instant>) -> Backend {
         let frame = captured_at.map(|captured_at| {
             Arc::new(Frame {
                 width: 1,
                 height: 1,
-                jpeg: Vec::new(),
+                jpeg: Arc::from([]),
                 captured_at,
             })
         });
