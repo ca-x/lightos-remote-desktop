@@ -32,6 +32,7 @@ use tokio::{
 };
 
 use crate::{
+    audio::AudioStream,
     config::Config,
     session::Session,
     video::H264Encoder,
@@ -177,11 +178,14 @@ async fn index(OriginalUri(uri): OriginalUri) -> Response {
     if !uri.path().ends_with('/') {
         return axum::response::Redirect::temporary(&format!("{}/", uri.path())).into_response();
     }
-    asset(
-        include_str!("../web/index.html"),
-        "text/html; charset=utf-8",
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        include_str!("../web/index.html").replace("__LIGHTOS_VERSION__", env!("CARGO_PKG_VERSION")),
     )
-    .into_response()
+        .into_response()
 }
 
 pub fn credentials_match(headers: &HeaderMap, username: &str, password: &str) -> bool {
@@ -386,7 +390,7 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
         .and_then(|session| session.audio_source.clone());
     let audio_available = state.config.audio && audio_source.is_some();
     let ready = Message::Text(
-        json!({"type":"ready","width":width,"height":height,"audio":audio_available,"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":["h264","jpeg"],"desktop":state.desktop,"desktops":state.desktop_options(),"resize":state.desktop == DesktopMode::Virtual,"outputs":state.outputs,"output":state.output})
+        json!({"type":"ready","version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"audio":audio_available,"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":["h264","jpeg"],"desktop":state.desktop,"desktops":state.desktop_options(),"resize":state.desktop == DesktopMode::Virtual,"outputs":state.outputs,"output":state.output})
             .to_string()
             .into(),
     );
@@ -421,7 +425,7 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
                                 encoder = Some(H264Encoder::new(frame.width, frame.height, state.config.fps)?);
                                 codec = None;
                             }
-                            encoder.as_mut().ok_or_else(|| anyhow::anyhow!("encoder missing"))?.encode(&frame.pixels).await
+                            encoder.as_mut().ok_or_else(|| anyhow::anyhow!("encoder missing"))?.encode_shared(frame.pixels.clone()).await
                         }.await;
                         match result {
                             Ok(encoded) => {
@@ -446,10 +450,21 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
                             }
                         }
                     }
-                    let packet = packet.unwrap_or_else(|| {
-                        let mut packet = Vec::with_capacity(frame.jpeg.len() + 1);
-                        packet.push(1); packet.extend_from_slice(&frame.jpeg); packet
-                    });
+                    let packet = match packet {
+                        Some(packet) => packet,
+                        None => {
+                            let quality = state.config.quality;
+                            let jpeg = match tokio::task::spawn_blocking(move || frame.jpeg(quality)).await {
+                                Ok(Ok(jpeg)) => jpeg,
+                                result => {
+                                    tracing::warn!(?result, "JPEG encoding failed");
+                                    break;
+                                }
+                            };
+                            let mut packet = Vec::with_capacity(jpeg.len() + 1);
+                            packet.push(1); packet.extend_from_slice(&jpeg); packet
+                        }
+                    };
                     frame_id += 1;
                     pacing_tx.send_modify(|flow| flow.sent(frame_id));
                     if pacing.borrow().sequenced {
@@ -643,36 +658,10 @@ async fn receive_commands(
     }
 }
 
-struct AudioStream {
-    child: tokio::process::Child,
-    stdout: tokio::process::ChildStdout,
-    remainder: Vec<u8>,
-}
-
 async fn read_audio(audio: &mut Option<AudioStream>, buffer: &mut [u8]) -> std::io::Result<usize> {
     match audio {
-        Some(stream) => loop {
-            let prefix = stream.remainder.len();
-            buffer[..prefix].copy_from_slice(&stream.remainder);
-            let received = stream.stdout.read(&mut buffer[prefix..]).await?;
-            if received == 0 {
-                return Ok(0);
-            }
-            let length = received + prefix;
-            let aligned = length - length % 8;
-            stream.remainder.clear();
-            stream.remainder.extend_from_slice(&buffer[aligned..length]);
-            if aligned > 0 {
-                return Ok(aligned);
-            }
-        },
+        Some(stream) => stream.read(buffer).await,
         None => std::future::pending().await,
-    }
-}
-
-impl Drop for AudioStream {
-    fn drop(&mut self) {
-        let _ = self.child.start_kill();
     }
 }
 
@@ -767,34 +756,8 @@ async fn handle_command(
             if value.get("enabled").and_then(|value| value.as_bool()) == Some(true) {
                 anyhow::ensure!(state.config.audio, "audio disabled");
                 let source = source.ok_or_else(|| anyhow::anyhow!("audio unavailable"))?;
-                let mut command = helper(state, "ffmpeg");
-                command.args([
-                    "-nostdin",
-                    "-loglevel",
-                    "error",
-                    "-f",
-                    "pulse",
-                    "-i",
-                    source,
-                    "-f",
-                    "f32le",
-                    "-ac",
-                    "2",
-                    "-ar",
-                    "48000",
-                    "pipe:1",
-                ]);
-                command.stdout(std::process::Stdio::piped());
-                let mut child = command.spawn()?;
-                let stdout = child
-                    .stdout
-                    .take()
-                    .ok_or_else(|| anyhow::anyhow!("audio pipe unavailable"))?;
-                *audio = Some(AudioStream {
-                    child,
-                    stdout,
-                    remainder: Vec::new(),
-                });
+                let server = state.session.lock().unwrap().pulse_server.clone();
+                *audio = Some(AudioStream::new(server, source.to_owned())?);
             }
         }
         _ => {
@@ -1007,6 +970,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let body = axum::body::to_bytes(response.into_body(), 128 * 1024)
+            .await
+            .unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(html.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))));
+        assert!(!html.contains("__LIGHTOS_VERSION__"));
     }
 
     #[test]

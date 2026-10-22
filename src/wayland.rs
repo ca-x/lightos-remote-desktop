@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::BTreeSet,
     io::{Seek, SeekFrom, Write},
     net::Shutdown,
@@ -8,7 +9,7 @@ use std::{
     },
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
         mpsc as sync_mpsc,
     },
@@ -107,9 +108,49 @@ fn oriented_dimensions(width: u32, height: u32, transform: wl_output::Transform)
 pub struct Frame {
     pub width: u32,
     pub height: u32,
-    pub jpeg: Arc<[u8]>,
+    jpeg: OnceLock<(u8, Arc<[u8]>)>,
     pub pixels: Arc<[u8]>,
     pub captured_at: Instant,
+}
+
+thread_local! {
+    static JPEG_ENCODER: RefCell<Option<turbojpeg::Compressor>> = const { RefCell::new(None) };
+}
+
+impl Frame {
+    pub fn jpeg(&self, quality: u8) -> Result<Arc<[u8]>> {
+        ensure!(
+            self.pixels.len() == self.width as usize * self.height as usize * 4,
+            "invalid JPEG pixels"
+        );
+        if let Some((cached_quality, data)) = self.jpeg.get()
+            && *cached_quality == quality
+        {
+            return Ok(data.clone());
+        }
+        let data: Arc<[u8]> = JPEG_ENCODER.with(|slot| -> Result<_> {
+            let mut slot = slot.borrow_mut();
+            if slot.is_none() {
+                let mut encoder =
+                    turbojpeg::Compressor::new().context("initialize SIMD JPEG encoder")?;
+                encoder.set_subsamp(turbojpeg::Subsamp::Sub2x2)?;
+                *slot = Some(encoder);
+            }
+            let encoder = slot.as_mut().unwrap();
+            encoder.set_quality(i32::from(quality))?;
+            Ok(encoder
+                .compress_to_vec(turbojpeg::Image {
+                    pixels: &self.pixels,
+                    width: self.width as usize,
+                    pitch: self.width as usize * 4,
+                    height: self.height as usize,
+                    format: turbojpeg::PixelFormat::RGBA,
+                })?
+                .into())
+        })?;
+        let _ = self.jpeg.set((quality, data.clone()));
+        Ok(data)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -178,8 +219,6 @@ impl Shared {
     }
 }
 
-/// Each frame uses a separate capture connection to bound libwayshot 0.9's
-/// unreleased protocol objects; this adds registry/setup roundtrips per frame.
 pub struct Backend {
     pub frames: watch::Receiver<Option<Arc<Frame>>>,
     pub input: mpsc::Sender<InputCommand>,
@@ -267,7 +306,6 @@ impl Backend {
                     &CaptureTarget { socket, output },
                     deadline,
                     fps,
-                    quality,
                     &shared,
                     &ready_tx,
                 );
@@ -419,80 +457,109 @@ fn connect(socket: &Path, deadline: Instant, stopped: Option<&AtomicBool>) -> Re
     }
 }
 
+struct CaptureBatch {
+    connection: WayshotConnection,
+    started: Instant,
+    frames: usize,
+}
+
+fn capture_batch_expired(frames: usize, elapsed: Duration) -> bool {
+    frames >= 8 || elapsed >= Duration::from_millis(250)
+}
+
 fn run_capture(
     stream: UnixStream,
     target: &CaptureTarget,
     startup_deadline: Instant,
     fps: u32,
-    quality: u8,
     shared: &Shared,
     ready: &sync_mpsc::SyncSender<std::result::Result<(), String>>,
 ) -> Result<()> {
     let mut initial_stream = Some(stream);
     let interval = Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut first = true;
-    let mut encoder = turbojpeg::Compressor::new().context("initialize SIMD JPEG encoder")?;
-    encoder.set_quality(i32::from(quality))?;
-    encoder.set_subsamp(turbojpeg::Subsamp::Sub2x2)?;
     let mut previous_pixels: Arc<[u8]> = Arc::from([]);
     let mut previous_dimensions = (0, 0);
-    let mut previous_jpeg: Arc<[u8]> = Arc::from([]);
+    let mut batch: Option<CaptureBatch> = None;
+    let mut capture_failures = 0;
     while !shared.stopped.load(Ordering::Acquire) {
         let started = Instant::now();
-        let stream = match initial_stream.take() {
-            Some(stream) => stream,
-            None => connect(
-                &target.socket,
-                if first {
-                    startup_deadline
-                } else {
-                    Instant::now() + START_TIMEOUT
-                },
-                Some(&shared.stopped),
-            )?,
-        };
-        if !replace_capture_socket(shared, &stream)? {
-            break;
+        if batch
+            .as_ref()
+            .is_none_or(|batch| capture_batch_expired(batch.frames, batch.started.elapsed()))
+        {
+            batch.take();
+            if let Some(socket) = shared
+                .capture_socket
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+            {
+                let _ = socket.shutdown(Shutdown::Both);
+            }
+            let stream = match initial_stream.take() {
+                Some(stream) => stream,
+                None => connect(
+                    &target.socket,
+                    if first {
+                        startup_deadline
+                    } else {
+                        Instant::now() + START_TIMEOUT
+                    },
+                    Some(&shared.stopped),
+                )?,
+            };
+            if !replace_capture_socket(shared, &stream)? {
+                break;
+            }
+            let connection = Connection::from_socket(stream)?;
+            let capture = WayshotConnection::from_connection(connection)
+                .context("initialize native screencopy (compositor protocols required)")?;
+            batch = Some(CaptureBatch {
+                connection: capture,
+                started: Instant::now(),
+                frames: 0,
+            });
         }
-        let connection = Connection::from_socket(stream)?;
-        let capture = WayshotConnection::from_connection(connection)
-            .context("initialize native screencopy (compositor protocols required)")?;
-        let image = if let Some(name) = &target.output {
+        let current = batch.as_mut().context("missing capture connection")?;
+        let capture = &current.connection;
+        let captured = if let Some(name) = &target.output {
             let output = capture
                 .get_all_outputs()
                 .iter()
                 .find(|output| &output.name == name)
                 .context("selected monitor disconnected")?;
             capture.screenshot_single_output(output, false)
+        } else if capture.get_all_outputs().len() == 1 {
+            capture.screenshot_single_output(&capture.get_all_outputs()[0], false)
         } else {
             capture.screenshot_all(false)
-        }
-        .context("capture desktop")?;
+        };
+        let image = match captured {
+            Ok(image) => {
+                capture_failures = 0;
+                image
+            }
+            Err(error) => {
+                if shared.stopped.load(Ordering::Acquire) {
+                    break;
+                }
+                capture_failures += 1;
+                if capture_failures >= 3 {
+                    return Err(error).context("capture desktop after reconnect");
+                }
+                tracing::warn!(%error, capture_failures, "refreshing capture connection after failed frame");
+                batch.take();
+                thread::park_timeout(interval.min(Duration::from_millis(100)));
+                continue;
+            }
+        };
         let captured_at = Instant::now();
-        drop(capture);
-        if let Some(socket) = shared
-            .capture_socket
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .take()
-        {
-            let _ = socket.shutdown(Shutdown::Both);
-        }
-        let rgba = image.to_rgba8();
+        current.frames += 1;
+        let rgba = image.into_rgba8();
         let dimensions = (rgba.width(), rgba.height());
         let changed = previous_dimensions != dimensions
             || previous_pixels.as_ref() != rgba.as_raw().as_slice();
-        if changed {
-            previous_jpeg = encoder
-                .compress_to_vec(turbojpeg::Image {
-                    pixels: rgba.as_raw().as_slice(),
-                    width: rgba.width() as usize,
-                    pitch: rgba.width() as usize * 4,
-                    height: rgba.height() as usize,
-                    format: turbojpeg::PixelFormat::RGBA,
-                })?
-                .into();
-        }
         if shared.stopped.load(Ordering::Acquire) {
             break;
         }
@@ -503,7 +570,7 @@ fn run_capture(
         let frame = Arc::new(Frame {
             width: dimensions.0,
             height: dimensions.1,
-            jpeg: previous_jpeg.clone(),
+            jpeg: OnceLock::new(),
             pixels: previous_pixels.clone(),
             captured_at,
         });
@@ -886,12 +953,37 @@ mod tests {
     }
 
     #[test]
+    fn capture_batches_bound_protocol_retention_and_output_refresh_delay() {
+        assert!(!capture_batch_expired(7, Duration::from_millis(249)));
+        assert!(capture_batch_expired(8, Duration::ZERO));
+        assert!(capture_batch_expired(1, Duration::from_millis(250)));
+    }
+
+    #[test]
+    fn jpeg_is_lazy_cached_and_decodable() {
+        let frame = Frame {
+            width: 640,
+            height: 360,
+            pixels: vec![127; 640 * 360 * 4].into(),
+            jpeg: OnceLock::new(),
+            captured_at: Instant::now(),
+        };
+        assert!(frame.jpeg.get().is_none());
+        let jpeg = frame.jpeg(75).unwrap();
+        assert!(Arc::ptr_eq(&jpeg, &frame.jpeg(75).unwrap()));
+        let decoded = image::load_from_memory(&jpeg).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (640, 360));
+        assert!(!Arc::ptr_eq(&jpeg, &frame.jpeg(50).unwrap()));
+        assert!(Arc::ptr_eq(&jpeg, &frame.jpeg(75).unwrap()));
+    }
+
+    #[test]
     fn unchanged_frame_refreshes_health_without_waking_video_subscribers() {
         let backend = backend_with_frame(Some(Instant::now() - Duration::from_secs(10)));
         let frame = Arc::new(Frame {
             width: 1,
             height: 1,
-            jpeg: Arc::from([]),
+            jpeg: OnceLock::new(),
             pixels: Arc::from([]),
             captured_at: Instant::now(),
         });
@@ -905,7 +997,7 @@ mod tests {
             Arc::new(Frame {
                 width: 1,
                 height: 1,
-                jpeg: Arc::from([]),
+                jpeg: OnceLock::new(),
                 pixels: Arc::from([]),
                 captured_at,
             })

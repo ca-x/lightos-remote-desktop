@@ -34,7 +34,7 @@ It restores the user's wallpaper, bar and app menu without running the host
 Omarchy provisioning or importing remote variables into the host user manager.
 Use `LIGHTOS_REMOTE_DESKTOP_SHELL=minimal` for the terminal-only fallback.
 
-Audio requires the system `pipewire`, `pipewire-pulse`, `wireplumber`, `ffmpeg`
+Audio requires the system `pipewire`, `pipewire-pulse`, `wireplumber`, `libpulse`
 and `pactl` tools. The selected design uses an owned per-desktop PipeWire graph,
 private Pulse-compatible server and WirePlumber `lightos` profile with hardware
 monitors disabled, started after the private session D-Bus. It must not depend
@@ -42,6 +42,8 @@ on shared host audio, host Pulse authentication or copied host cookies. No manua
 user-group changes are required. The private-audio prototype captured more than
 76 KB of PCM; the integrated runtime still requires installed WebSocket audio
 validation. Doctor/HTTP health alone does not prove working audio.
+The unreleased native-media binary links `libpulse.so.0` even with audio disabled;
+install the runtime library before replacing an older executable.
 
 ## Provision the private compatibility library first
 

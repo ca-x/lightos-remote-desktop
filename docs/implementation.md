@@ -28,7 +28,9 @@ installed Python service. Source lives in ~/code/rust/lightos-remote-desktop.
 ## Modules
 
 - src/wayland.rs: capture and virtual keyboard/pointer input; owns synchronous
-  Wayland connections and publishes only the latest JPEG frame.
+  Wayland connections and publishes the latest raw frame. The capture connection
+  is periodically recycled after at most eight frames / 250 ms between captures;
+  JPEG is generated lazily in blocking workers, and H.264 shares the raw pixels.
 - src/config.rs: CLI/environment validation; compatible LIGHTOS_REMOTE_DESKTOP_*
   variables; refuses missing/default secrets and root runtime.
 - src/session.rs: launch/attach a private headless Hyprland session, bounded

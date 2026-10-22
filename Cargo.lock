@@ -180,6 +180,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877bf67ac8e52449eb2f9e98a344ea163beb70dd1f9eebe3cc5357dcfeaee4df"
 dependencies = [
  "find-msvc-tools",
+ "jobserver",
+ "libc",
  "shlex",
 ]
 
@@ -519,6 +521,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "jobserver"
+version = "0.1.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
+dependencies = [
+ "getrandom 0.4.3",
+ "libc",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -541,6 +553,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "libpulse-binding"
+version = "2.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "909eb3049e16e373680fe65afe6e2a722ace06b671250cc4849557bc57d6a397"
+dependencies = [
+ "bitflags",
+ "libc",
+ "libpulse-sys",
+ "num-derive",
+ "num-traits",
+ "winapi",
+]
+
+[[package]]
+name = "libpulse-sys"
+version = "1.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d74371848b22e989f829cc1621d2ebd74960711557d8b45cfe740f60d0a05e61"
+dependencies = [
+ "libc",
+ "num-derive",
+ "num-traits",
+ "pkg-config",
+ "winapi",
+]
+
+[[package]]
 name = "libwayshot"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -559,7 +598,7 @@ dependencies = [
 
 [[package]]
 name = "lightos-remote-desktop"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -569,7 +608,9 @@ dependencies = [
  "futures-util",
  "image",
  "libc",
+ "libpulse-binding",
  "libwayshot",
+ "openh264",
  "serde",
  "serde_json",
  "subtle",
@@ -666,12 +707,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "nasm-rs"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "706bf8a5e8c8ddb99128c3291d31bd21f4bcde17f0f4c20ec678d85c74faa149"
+dependencies = [
+ "log",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
  "windows-sys",
+]
+
+[[package]]
+name = "num-derive"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed3955f1a9c7c0c15e092f9c887db08b1fc683305fdf6eb6684f22555355e202"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -694,6 +755,27 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "openh264"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e54411f498088327bf5c45d2de7e5b0ed25875ee3be5800485afe45da7206bff"
+dependencies = [
+ "openh264-sys2",
+ "wide",
+]
+
+[[package]]
+name = "openh264-sys2"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "414f5bd53da84e126dc9449eb6f0003bb6994b2de63c48119b0c9b7a8b28086a"
+dependencies = [
+ "cc",
+ "nasm-rs",
+ "walkdir",
+]
 
 [[package]]
 name = "parking_lot"
@@ -863,6 +945,24 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "safe_arch"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42c6efa15875e6ecb39ca61fb0b0c1a40b84fac5a5ffe71eef7d1000c8eb3f5f"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
+name = "same-file"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
+dependencies = [
+ "winapi-util",
+]
 
 [[package]]
 name = "scoped-tls"
@@ -1303,6 +1403,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "walkdir"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
+dependencies = [
+ "same-file",
+ "winapi-util",
+]
+
+[[package]]
 name = "wasi"
 version = "0.11.1+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1402,6 +1512,47 @@ dependencies = [
  "log",
  "pkg-config",
 ]
+
+[[package]]
+name = "wide"
+version = "1.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d920ac99c3c8edce110cb8d07dbb324d6d026011dce85b1e9355b70f0adacc4f"
+dependencies = [
+ "bytemuck",
+ "safe_arch",
+]
+
+[[package]]
+name = "winapi"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419"
+dependencies = [
+ "winapi-i686-pc-windows-gnu",
+ "winapi-x86_64-pc-windows-gnu",
+]
+
+[[package]]
+name = "winapi-i686-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
+
+[[package]]
+name = "winapi-util"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
+dependencies = [
+ "windows-sys",
+]
+
+[[package]]
+name = "winapi-x86_64-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "windows-link"

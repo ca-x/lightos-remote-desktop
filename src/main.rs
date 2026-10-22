@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
+use axum::serve::{Listener, ListenerExt};
 use clap::{Parser, Subcommand};
 use lightos_remote_desktop::{
     config::Config,
@@ -100,12 +101,10 @@ fn doctor(config: &Config) -> Result<()> {
         );
     }
     if config.audio {
-        for command in ["pactl", "ffmpeg"] {
-            ensure!(
-                executable_exists(Path::new(command)),
-                "missing executable: {command}"
-            );
-        }
+        ensure!(
+            executable_exists(Path::new("pactl")),
+            "missing executable: pactl"
+        );
         if config.wayland_socket.is_none() {
             for command in ["pipewire", "pipewire-pulse", "wireplumber"] {
                 ensure!(
@@ -153,7 +152,12 @@ async fn serve(config: Config) -> Result<()> {
     }
     let listener = tokio::net::TcpListener::bind((config.listen, config.port))
         .await
-        .context("binding desktop HTTP listener")?;
+        .context("binding desktop HTTP listener")?
+        .tap_io(|stream| {
+            if let Err(error) = stream.set_nodelay(true) {
+                tracing::warn!(%error, "could not enable TCP_NODELAY");
+            }
+        });
     let settings = config.clone();
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;

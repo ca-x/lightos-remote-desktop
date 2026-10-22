@@ -7,6 +7,18 @@ const source = readFileSync(new URL("../web/app.js", import.meta.url), "utf8");
 const html = readFileSync(new URL("../web/index.html", import.meta.url), "utf8");
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
+test("toolbar displays the server version without accepting malformed values", () => {
+  const app = harness();
+  const socket = app.sockets.at(-1);
+  socket.open();
+  socket.json({ type: "ready", width: 1280, height: 720, version: "0.1.2" });
+  assert.equal(app.nodes["software-version"].textContent, "v0.1.2");
+  socket.json({ type: "ready", width: 1280, height: 720, version: "<script>" });
+  assert.equal(app.nodes["software-version"].textContent, "v0.1.2");
+  socket.json({ type: "ready", width: 1280, height: 720 });
+  assert.equal(app.nodes["software-version"].textContent, "v0.1.2");
+});
+
 function harness(pathname = "/", storage = new Map()) {
   class Target {
     handlers = new Map();

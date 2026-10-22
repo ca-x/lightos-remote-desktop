@@ -42,6 +42,7 @@ h1 { margin: 0; font-size: 15px; font-weight: 600; }
 #desktop-status { margin-top: 8px; font-size: 11px; }
 .desktop-controls button:active:not(:disabled) { background: #454e60; }
 #performance, #video-details { font-size: 11px; font-variant-numeric: tabular-nums; }
+#software-version { font-size: 11px; font-variant-numeric: tabular-nums; }
 p { margin: 10px 0 0; font-size: 12px; line-height: 1.6; color: #b4bdcd; overflow-wrap: anywhere; }
 #message { padding-bottom: 12px; }
 details { border-top: 1px solid #383e49; padding: 12px 0; }

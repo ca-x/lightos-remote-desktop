@@ -35,16 +35,17 @@ does not embed CPython or invoke the original Selkies Python launcher.
   an existing `lightos-remote-desktop.service`.
 
 **This is an initial native implementation, not complete Selkies parity.**
-Video negotiates low-latency H.264 through FFmpeg/libx264 and browser WebCodecs,
+Video negotiates H.264 through in-process OpenH264 and browser WebCodecs,
 with SIMD JPEG fallback when WebCodecs/encoding is unavailable. WebCodecs needs
 a secure browser context (HTTPS or localhost); H.264 requires even dimensions.
 The default capture cap is 30 FPS. This is CPU encoding, not DMA-BUF zero-copy
 or hardware video encoding. Audio uses stereo PCM, not Opus. Microphone uplink, image
 clipboard, file transfer, gamepads and multi-monitor control are not implemented.
 Do not assume equivalent bandwidth or latency; benchmark your deployment.
-Capture currently uses one short-lived connection per frame to contain
-libwayshot 0.9 protocol-object lifetime defects observed during real resize
-tests. This bounds resources but adds per-frame protocol setup overhead.
+Capture reuses a connection for at most eight frames / 250 ms between captures,
+amortizing AF_UNIX and Wayland setup while still bounding libwayshot 0.9
+protocol-object retention and refreshing output information. JPEG is generated
+only when requested; H.264 shares the capture allocation with its worker.
 Unchanged images are not repeatedly encoded or transmitted. Each browser
 acknowledges rendered frames; input is processed independently of video writes.
 Sequenced clients use a render-ACK-timed window of one to three frames; codec
@@ -96,12 +97,16 @@ disables following. With following disabled, display scaling alone does not
 change remote resolution. Clipboard and resolution fields are tucked away.
 
 Use a current stable Rust toolchain. Native linking requires Wayland,
-libxkbcommon and libturbojpeg 3+. Alternatively build with `--features bundled-jpeg`
+libxkbcommon, libpulse and libturbojpeg 3+, plus a C/C++ toolchain and NASM for
+source-built OpenH264. Alternatively build with `--features bundled-jpeg`
 (requires CMake and NASM), as CI does, to statically bundle libjpeg-turbo.
 runtime also needs Cage, Hyprland, D-Bus, hyprctl and wl-clipboard. Audio requires
-FFmpeg, pactl, pipewire, pipewire-pulse and WirePlumber 0.5+. A private audio graph is
+libpulse, pactl, pipewire, pipewire-pulse and WirePlumber 0.5+. A private audio graph is
 created per desktop; no host PulseAudio cookies or default sink are changed.
 The WirePlumber profile disables physical audio/Bluetooth/video monitors.
+Video encoding and PCM capture no longer spawn an FFmpeg executable. Audio uses
+a cancellable native Pulse stream; its bounded 40 ms queue discards old audio under
+backpressure. See `docs/native-media.md` for implementation and release limits.
 The current standalone
 desktop backend requires access to `/dev/dri/renderD128` for GLES rendering.
 

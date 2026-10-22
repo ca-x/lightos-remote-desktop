@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Native dependencies
-        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev cmake nasm pkg-config ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libpulse-dev cmake nasm pkg-config ffmpeg
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -23,7 +23,6 @@ jobs:
           node-version: '24'
       - run: cargo fmt --check
       - run: cargo test --locked --features bundled-jpeg
-      - run: cargo test --locked --features bundled-jpeg video::tests::encoder_emits_an_initial_keyframe_then_predictive_frame_without_lookahead -- --ignored
       - run: cargo clippy --locked --features bundled-jpeg --all-targets -- -D warnings
       - run: bash tests/installer.sh
       - run: bash scripts/test-install-compat.sh
@@ -37,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev cmake nasm pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libpulse-dev cmake nasm pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release --locked --features bundled-jpeg
       - name: Package Linux x86_64 binary
@@ -54,6 +53,12 @@ jobs:
           test -s "$jpeg_license" && test -s "$wrapper_license"
           cp "$jpeg_license" "dist/$package/licenses/libjpeg-turbo.md"
           cp "$wrapper_license" "dist/$package/licenses/turbojpeg.txt"
+          openh264_license=$(find "$registry" -path '*/openh264-sys2-*/upstream/LICENSE' -print -quit)
+          openh264_wrapper_notice=$(find "$registry" -path '*/openh264-0.9.9/README.md' -print -quit)
+          test -s "$openh264_license" && test -s "$openh264_wrapper_notice"
+          cp "$openh264_license" "dist/$package/licenses/openh264.txt"
+          cp "$openh264_wrapper_notice" "dist/$package/licenses/openh264-rust-README.md"
+          cp docs/licenses/openh264-rust.txt "dist/$package/licenses/openh264-rust.txt"
           ldd "dist/$package/lightos-remote-desktop" | tee "dist/$package/dependencies.txt"
           if grep -q 'libturbojpeg\|not found' "dist/$package/dependencies.txt"; then exit 1; fi
           "dist/$package/lightos-remote-desktop" --help

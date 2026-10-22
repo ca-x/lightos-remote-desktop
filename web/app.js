@@ -511,6 +511,9 @@ function createClient() {
         element("height").value = height;
       }
       ready = true;
+      if (typeof value.version === "string" && value.version.length <= 64 && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/.test(value.version)) {
+        element("software-version").textContent = `v${value.version}`;
+      }
       desktopMode = value.desktop === "physical" ? "physical" : "virtual";
       selectedOutput = desktopMode === "physical" && typeof value.output === "string" ? value.output : null;
       resizeAvailable = desktopMode !== "physical" && value.resize !== false;

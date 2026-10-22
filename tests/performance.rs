@@ -60,6 +60,7 @@ async fn video_throughput_with_delayed_render_ack() {
     let mut frame_id = None;
     let mut count = 0;
     let mut h264_packets = Vec::new();
+    let mut keyframes = 0;
     loop {
         let next_ack = pending
             .front()
@@ -78,7 +79,10 @@ async fn video_throughput_with_delayed_render_ack() {
                 }
                 Message::Binary(bytes) if matches!(bytes.first(), Some(1 | 3)) => {
                     count += 1;
-                    if bytes[0] == 3 { h264_packets.extend_from_slice(&bytes[10..]); }
+                    if bytes[0] == 3 {
+                        keyframes += usize::from(bytes[1] != 0);
+                        h264_packets.extend_from_slice(&bytes[10..]);
+                    }
                     if let Some(id) = frame_id.take() { pending.push_back((tokio::time::Instant::now() + delay, id)); }
                 }
                 _ => {}
@@ -88,7 +92,7 @@ async fn video_throughput_with_delayed_render_ack() {
     socket.close(None).await.unwrap();
     let fps = count as f64 / started.elapsed().as_secs_f64();
     println!(
-        "render ACK delay={delay:?}: frames={count}, fps={fps:.2}, h264_bytes={}",
+        "render ACK delay={delay:?}: frames={count}, fps={fps:.2}, keyframes={keyframes}, h264_bytes={}",
         h264_packets.len()
     );
     if use_h264 {
@@ -269,7 +273,7 @@ fn jpeg_encoder_benchmark() {
 }
 
 #[tokio::test]
-#[ignore = "requires representative desktop JPEG and ffmpeg/libx264; compares simulated small desktop updates"]
+#[ignore = "requires representative desktop JPEG and ffmpeg as test decoder; compares simulated small desktop updates"]
 async fn desktop_video_codec_bandwidth_comparison() {
     use lightos_remote_desktop::video::H264Encoder;
     let path = std::env::var("LIGHTOS_REMOTE_DESKTOP_BENCHMARK_IMAGE").unwrap();

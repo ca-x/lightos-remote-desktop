@@ -171,6 +171,19 @@ async fn browser_protocol_against_real_desktop() {
                 && bytes.first() == Some(&2)
             {
                 assert_eq!((bytes.len() - 1) % 8, 0);
+                let samples = bytes[1..].as_chunks::<4>().0;
+                assert!(
+                    samples
+                        .iter()
+                        .all(|sample| f32::from_le_bytes(*sample).is_finite())
+                );
+                if std::env::var("LIGHTOS_REMOTE_DESKTOP_TEST_AUDIO_SIGNAL").as_deref() == Ok("1")
+                    && !samples
+                        .iter()
+                        .any(|sample| f32::from_le_bytes(*sample).abs() > 0.001)
+                {
+                    continue;
+                }
                 break;
             }
         }

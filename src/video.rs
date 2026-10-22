@@ -1,9 +1,19 @@
-use std::{process::Stdio, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
+use openh264::{
+    OpenH264API, Timestamp,
+    encoder::{
+        BitRate, Complexity, Encoder, EncoderConfig, FrameRate, IntraFramePeriod, Profile,
+        RateControlMode, UsageType,
+    },
+    formats::{RgbaSliceU8, YUVBuffer},
+};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    process::{Child, ChildStdin, ChildStdout, Command},
+    sync::{mpsc, oneshot},
     time::timeout,
 };
 
@@ -13,90 +23,78 @@ pub struct EncodedFrame {
     pub codec: Option<String>,
 }
 
+struct EncodeRequest {
+    pixels: Arc<[u8]>,
+    reply: oneshot::Sender<Result<EncodedFrame>>,
+}
+
 pub struct H264Encoder {
     pub width: u32,
     pub height: u32,
-    child: Child,
-    input: ChildStdin,
-    output: ChildStdout,
-    initialized: bool,
+    requests: mpsc::Sender<EncodeRequest>,
+    usable: bool,
 }
 
 impl H264Encoder {
     pub fn new(width: u32, height: u32, fps: u32) -> Result<Self> {
         ensure!(
-            width >= 320 && height >= 200 && width <= 3840 && height <= 2160,
+            (320..=3840).contains(&width) && (200..=2160).contains(&height),
             "invalid encoder dimensions"
         );
         ensure!(
             width.is_multiple_of(2) && height.is_multiple_of(2),
             "H.264 requires even dimensions; using JPEG"
         );
-        let bitrate = (u64::from(width) * u64::from(height) * 3 / 1000).clamp(600, 18_000);
-        let mut child = Command::new("ffmpeg")
-            .args([
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-nostdin",
-                "-f",
-                "rawvideo",
-                "-pixel_format",
-                "rgba",
-                "-video_size",
-            ])
-            .arg(format!("{width}x{height}"))
-            .arg("-framerate")
-            .arg(fps.to_string())
-            .args([
-                "-i",
-                "pipe:0",
-                "-an",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "ultrafast",
-                "-tune",
-                "zerolatency",
-                "-profile:v",
-                "baseline",
-                "-pix_fmt",
-                "yuv420p",
-                "-bf",
-                "0",
-                "-threads",
-                "2",
-                "-b:v",
-            ])
-            .arg(format!("{bitrate}k"))
-            .arg("-maxrate")
-            .arg(format!("{bitrate}k"))
-            .arg("-bufsize")
-            .arg(format!("{}k", bitrate / 2))
-            .args([
-                "-x264-params",
-                "repeat-headers=1:aud=1:scenecut=0:keyint=120:rc-lookahead=0:sync-lookahead=0",
-                "-flush_packets",
-                "1",
-                "-f",
-                "avi",
-                "pipe:1",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .context("start low-latency H.264 encoder")?;
-        let input = child.stdin.take().context("encoder stdin missing")?;
-        let output = child.stdout.take().context("encoder stdout missing")?;
+        ensure!((1..=120).contains(&fps), "invalid encoder frame rate");
+        let (requests, mut receiver) = mpsc::channel::<EncodeRequest>(1);
+        std::thread::Builder::new()
+            .name("h264-encoder".into())
+            .spawn(move || {
+                let result = native_encoder(width, height, fps);
+                let mut encoder = match result {
+                    Ok(encoder) => encoder,
+                    Err(error) => {
+                        if let Some(request) = receiver.blocking_recv() {
+                            let _ = request.reply.send(Err(error));
+                        }
+                        return;
+                    }
+                };
+                let mut yuv = YUVBuffer::new(width as usize, height as usize);
+                let started = Instant::now();
+                while let Some(request) = receiver.blocking_recv() {
+                    if request.reply.is_closed() {
+                        continue;
+                    }
+                    yuv.read_rgba8(RgbaSliceU8::new(
+                        &request.pixels,
+                        (width as usize, height as usize),
+                    ));
+                    let result = encoder
+                        .encode_at(
+                            &yuv,
+                            Timestamp::from_millis(started.elapsed().as_millis() as u64),
+                        )
+                        .context("native H.264 encode")
+                        .and_then(|stream| {
+                            let data = stream.to_vec();
+                            ensure!(!data.is_empty(), "native encoder skipped a frame");
+                            let (key, codec) = annex_b_info(&data);
+                            Ok(EncodedFrame { data, key, codec })
+                        });
+                    let failed = result.is_err();
+                    let abandoned = request.reply.send(result).is_err();
+                    if failed || abandoned {
+                        break;
+                    }
+                }
+            })
+            .context("start native H.264 worker")?;
         Ok(Self {
             width,
             height,
-            child,
-            input,
-            output,
-            initialized: false,
+            requests,
+            usable: true,
         })
     }
 
@@ -105,87 +103,51 @@ impl H264Encoder {
             pixels.len() == self.width as usize * self.height as usize * 4,
             "invalid RGBA frame length"
         );
-        timeout(Duration::from_secs(5), async {
-            self.input.write_all(pixels).await?;
-            if !self.initialized {
-                self.read_header().await?;
-                self.initialized = true;
-            }
-            let data = self.read_packet().await?;
-            let (key, codec) = annex_b_info(&data);
-            Ok(EncodedFrame { data, key, codec })
+        self.encode_shared(Arc::from(pixels)).await
+    }
+
+    pub async fn encode_shared(&mut self, pixels: Arc<[u8]>) -> Result<EncodedFrame> {
+        ensure!(
+            self.usable,
+            "native encoder cannot resume after canceled or failed output"
+        );
+        ensure!(
+            pixels.len() == self.width as usize * self.height as usize * 4,
+            "invalid RGBA frame length"
+        );
+        let (reply, received) = oneshot::channel();
+        self.usable = false;
+        let result = timeout(Duration::from_secs(5), async {
+            self.requests
+                .send(EncodeRequest { pixels, reply })
+                .await
+                .map_err(|_| anyhow::anyhow!("native H.264 worker stopped"))?;
+            received.await.context("native H.264 worker stopped")?
         })
         .await
-        .context("H.264 encode timed out")?
-    }
-
-    async fn read_header(&mut self) -> Result<()> {
-        let mut header = [0_u8; 12];
-        self.output.read_exact(&mut header).await?;
-        ensure!(
-            &header[..4] == b"RIFF" && &header[8..] == b"AVI ",
-            "invalid encoder container"
-        );
-        for _ in 0..64 {
-            let (kind, length) = self.chunk_header().await?;
-            if &kind == b"LIST" {
-                ensure!(length >= 4, "invalid AVI list");
-                let mut list = [0; 4];
-                self.output.read_exact(&mut list).await?;
-                if &list == b"movi" {
-                    return Ok(());
-                }
-                self.skip(length - 4 + length % 2).await?;
-            } else {
-                self.skip(length + length % 2).await?;
-            }
-        }
-        bail!("encoder media list missing")
-    }
-
-    async fn chunk_header(&mut self) -> Result<([u8; 4], usize)> {
-        let mut header = [0; 8];
-        self.output.read_exact(&mut header).await?;
-        Ok((
-            header[..4].try_into()?,
-            u32::from_le_bytes(header[4..].try_into()?) as usize,
-        ))
-    }
-
-    async fn skip(&mut self, length: usize) -> Result<()> {
-        ensure!(length <= 16 * 1024 * 1024, "encoder header too large");
-        let mut remaining = length;
-        let mut buffer = [0_u8; 4096];
-        while remaining > 0 {
-            let count = remaining.min(buffer.len());
-            self.output.read_exact(&mut buffer[..count]).await?;
-            remaining -= count;
-        }
-        Ok(())
-    }
-
-    async fn read_packet(&mut self) -> Result<Vec<u8>> {
-        for _ in 0..64 {
-            let (kind, length) = self.chunk_header().await?;
-            ensure!(length <= 16 * 1024 * 1024, "encoded frame too large");
-            if matches!(&kind, b"00dc" | b"00db") && length > 0 {
-                let mut data = vec![0; length];
-                self.output.read_exact(&mut data).await?;
-                if length % 2 != 0 {
-                    self.skip(1).await?;
-                }
-                return Ok(data);
-            }
-            self.skip(length + length % 2).await?;
-        }
-        bail!("encoder packet missing")
+        .context("native H.264 encode timed out")?;
+        self.usable = result.is_ok();
+        result
     }
 }
 
-impl Drop for H264Encoder {
-    fn drop(&mut self) {
-        let _ = self.child.start_kill();
-    }
+fn native_encoder(width: u32, height: u32, fps: u32) -> Result<Encoder> {
+    let bitrate = (u64::from(width) * u64::from(height) * 3).clamp(600_000, 18_000_000);
+    let config = EncoderConfig::new()
+        .usage_type(UsageType::ScreenContentRealTime)
+        .profile(Profile::Baseline)
+        .complexity(Complexity::Low)
+        .rate_control_mode(RateControlMode::Bitrate)
+        .bitrate(BitRate::from_bps(bitrate as u32))
+        .max_frame_rate(FrameRate::from_hz(fps as f32))
+        .skip_frames(false)
+        .scene_change_detect(true)
+        .adaptive_quantization(false)
+        .background_detection(false)
+        .intra_frame_period(IntraFramePeriod::from_num_frames(120))
+        .num_threads(2);
+    Encoder::with_api_config(OpenH264API::from_source(), config)
+        .context("initialize native OpenH264 encoder")
 }
 
 fn annex_b_info(data: &[u8]) -> (bool, Option<String>) {
@@ -225,7 +187,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires ffmpeg with libx264; validates demand-driven framed output"]
     async fn encoder_emits_an_initial_keyframe_then_predictive_frame_without_lookahead() {
         let mut encoder = H264Encoder::new(640, 360, 20).unwrap();
         let mut pixels = vec![255; 640 * 360 * 4];
@@ -241,5 +202,87 @@ mod tests {
             first.data.len(),
             second.data.len()
         );
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_dimensions_and_pixels() {
+        assert!(H264Encoder::new(321, 200, 30).is_err());
+        assert!(H264Encoder::new(3842, 2160, 30).is_err());
+        assert!(H264Encoder::new(640, 360, 0).is_err());
+        let mut encoder = H264Encoder::new(640, 360, 30).unwrap();
+        assert!(encoder.encode(&[0; 4]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn recreated_encoder_includes_parameter_sets_and_idr() {
+        for (width, height) in [(640, 360), (800, 600), (640, 360)] {
+            let mut encoder = H264Encoder::new(width, height, 30).unwrap();
+            let frame = encoder
+                .encode(&vec![127; width as usize * height as usize * 4])
+                .await
+                .unwrap();
+            assert!(frame.key && frame.codec.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn native_stream_decodes_every_access_unit_across_keyframe_period() {
+        use openh264::{decoder::Decoder, formats::YUVSource};
+        let mut decoder = Decoder::new().unwrap();
+        let mut encoder = H264Encoder::new(640, 360, 30).unwrap();
+        let mut pixels = vec![255; 640 * 360 * 4];
+        for index in 0..130 {
+            for row in 30..80 {
+                for column in 30..120 {
+                    let offset = (row * 640 + column) * 4;
+                    pixels[offset] = (index * 7) as u8;
+                    pixels[offset + 1] = (index * 13) as u8;
+                }
+            }
+            let frame = encoder.encode(&pixels).await.unwrap();
+            let decoded = decoder
+                .decode(&frame.data)
+                .unwrap()
+                .expect("one output per frame");
+            assert_eq!(decoded.dimensions(), (640, 360));
+        }
+    }
+
+    #[tokio::test]
+    async fn canceled_output_cannot_be_followed_by_a_dependent_frame() {
+        let mut encoder = H264Encoder::new(640, 360, 30).unwrap();
+        let pixels = vec![127; 640 * 360 * 4];
+        let mut encoding = Box::pin(encoder.encode(&pixels));
+        assert!(futures_util::poll!(&mut encoding).is_pending());
+        drop(encoding);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(encoder.encode(&pixels).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn shared_encode_passes_the_capture_allocation_without_copying_pixels() {
+        let (requests, mut receiver) = mpsc::channel(1);
+        let mut encoder = H264Encoder {
+            width: 640,
+            height: 360,
+            requests,
+            usable: true,
+        };
+        let pixels: Arc<[u8]> = vec![255; 640 * 360 * 4].into();
+        let mut encoding = Box::pin(encoder.encode_shared(pixels.clone()));
+        assert!(futures_util::poll!(&mut encoding).is_pending());
+        let request = receiver.recv().await.unwrap();
+        assert!(Arc::ptr_eq(&pixels, &request.pixels));
+        assert!(
+            request
+                .reply
+                .send(Ok(EncodedFrame {
+                    data: vec![1],
+                    key: true,
+                    codec: None
+                }))
+                .is_ok()
+        );
+        assert_eq!(encoding.await.unwrap().data, [1]);
     }
 }
