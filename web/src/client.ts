@@ -1,3 +1,5 @@
+import { readPreference, savePreference, videoCodecKey, videoCodecs, streamStrategyKey, streamStrategies } from "./preferences";
+import { supportedVideoConfig } from "./video-codec";
 import type { ClientOptions, DesktopChoice, DesktopOutput, Elements } from "./types";
 import { createMobileControls, mobileResolution } from "./mobile";
 import audioWorkerUrl from "./audio-worker.js?url";
@@ -86,6 +88,11 @@ export function createClient(options: ClientOptions = {}) {
   let resumeWanted = false;
   let moveFrame: number | null = null;
   let pendingMove: Pick<PointerEvent, "clientX" | "clientY"> | null = null;
+  let videoPreference = readPreference(videoCodecKey, videoCodecs, "auto");
+  let strategyPreference = readPreference(streamStrategyKey, streamStrategies, "auto");
+  let serverVideoCodecs: string[] = [];
+  element("video-codec").value = videoPreference;
+  element("stream-strategy").value = strategyPreference;
   let frameAcknowledgements = false;
   let windowMode = "fit";
   let fullscreenAutoResolution: boolean | null = null;
@@ -715,8 +722,8 @@ export function createClient(options: ClientOptions = {}) {
       }
       frameAcknowledgements = value.frame_ack === true;
       sequencedFrames = value.frame_ids === true;
-      if (frameAcknowledgements) send({ type: "video_flow", enabled: true, sequenced: sequencedFrames });
-      if (frameAcknowledgements && sequencedFrames && value.video_codecs?.includes("h264") && window.VideoDecoder && window.EncodedVideoChunk) send({ type: "video", codec: "h264" });
+      serverVideoCodecs = Array.isArray(value.video_codecs) ? value.video_codecs.filter((codec: unknown) => typeof codec === "string") : [];
+      configureStreamStrategy();
       cancelTimer(connectionTimer);
       connectionTimer = null;
       retries = 0;
@@ -726,6 +733,7 @@ export function createClient(options: ClientOptions = {}) {
       if (!audioAvailable) stopAudio(false);
       setText("state", "Connected");
       message(audioAvailable ? `Desktop ready. Audio is ${audioEnabled ? "on" : "off until enabled"}.` : "Desktop ready. Server audio is unavailable.");
+      requestPreferredVideo(true);
       updateControls();
       scheduleAutoResize();
       void captureKeyboard();
@@ -803,6 +811,31 @@ export function createClient(options: ClientOptions = {}) {
     } else send({ type: "frame_ack" });
   }
 
+  function configureStreamStrategy() {
+    if (ready && frameAcknowledgements) send({ type: "video_flow", enabled: true, sequenced: sequencedFrames, strategy: strategyPreference });
+  }
+
+  function requestPreferredVideo(initial = false) {
+    const available = frameAcknowledgements && sequencedFrames && serverVideoCodecs.includes("h264") && window.VideoDecoder && window.EncodedVideoChunk;
+    if (videoPreference !== "jpeg" && available) {
+      send({ type: "video", codec: "h264" });
+    } else {
+      if (!initial || videoPreference !== "auto") send({ type: "video", codec: "jpeg" });
+      if (videoPreference === "h264") message("H.264 is unavailable; using compatible JPEG video.");
+    }
+  }
+
+  listen(element("video-codec"), "change", () => {
+    videoPreference = videoCodecs.includes(element("video-codec").value as typeof videoPreference) ? element("video-codec").value as typeof videoPreference : "auto";
+    savePreference(videoCodecKey, videoPreference);
+    if (ready) { closeVideo(); requestPreferredVideo(); }
+  });
+  listen(element("stream-strategy"), "change", () => {
+    strategyPreference = streamStrategies.includes(element("stream-strategy").value as typeof strategyPreference) ? element("stream-strategy").value as typeof strategyPreference : "auto";
+    savePreference(streamStrategyKey, strategyPreference);
+    configureStreamStrategy();
+  });
+
   function fallbackVideo() {
     closeVideo();
     send({ type: "video", codec: "jpeg" });
@@ -818,14 +851,9 @@ export function createClient(options: ClientOptions = {}) {
     const session = generation;
     configuringVideo = true;
     try {
-      const config: VideoDecoderConfig = { codec: value.codec, codedWidth: value.width, codedHeight: value.height, optimizeForLatency: true, hardwareAcceleration: "prefer-hardware" };
-      let support = await window.VideoDecoder.isConfigSupported(config);
-      if (!support.supported) {
-        config.hardwareAcceleration = "no-preference";
-        support = await window.VideoDecoder.isConfigSupported(config);
-      }
+      const config = await supportedVideoConfig(window.VideoDecoder, value.codec, value.width, value.height);
       if (token !== videoToken || session !== generation || !ready || destroyed) return;
-      if (!support.supported) { fallbackVideo(); return; }
+      if (!config) { fallbackVideo(); return; }
       videoDecoder = new window.VideoDecoder({
         output(frame) {
           try {

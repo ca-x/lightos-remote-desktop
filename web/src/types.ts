@@ -45,6 +45,8 @@ export interface Elements {
   width: HTMLInputElement;
   height: HTMLInputElement;
   "auto-resolution": HTMLInputElement;
+  "video-codec": HTMLSelectElement;
+  "stream-strategy": HTMLSelectElement;
   "shortcut-ctrl": HTMLInputElement;
   "shortcut-alt": HTMLInputElement;
   "shortcut-shift": HTMLInputElement;

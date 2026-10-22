@@ -1,0 +1,20 @@
+[package]
+name = "media-codec"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[features]
+bundled-jpeg = ["turbojpeg/cmake", "turbojpeg/require-simd"]
+
+[dependencies]
+anyhow = "1"
+futures-util = "0.3"
+openh264 = { version = "0.9.9", default-features = false, features = ["source"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["sync", "time", "rt"] }
+turbojpeg = { version = "1.5", default-features = false, features = ["pkg-config"] }
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

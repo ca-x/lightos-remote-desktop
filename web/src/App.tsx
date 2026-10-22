@@ -145,6 +145,11 @@ function Workspace({ open, close }: { open: boolean; close: (focusable?: HTMLEle
             <Button id="apply-size" type="submit" disabled={noResize}>{t("resize")}</Button>
           </form>
         </details>
+        <details id="stream-section"><summary>{t("streamSettings")}</summary>
+          <Field className="preference-field"><Label htmlFor="video-codec">{t("videoCodec")}</Label><Select id="video-codec" defaultValue="auto"><option value="auto">{t("automatic")}</option><option value="h264">H.264</option><option value="jpeg">JPEG</option></Select></Field>
+          <Field className="preference-field"><Label htmlFor="stream-strategy">{t("streamStrategy")}</Label><Select id="stream-strategy" defaultValue="auto"><option value="auto">{t("automatic")}</option><option value="low_latency">{t("lowLatency")}</option><option value="smooth">{t("smooth")}</option></Select></Field>
+          <p>{t("streamHelp")}</p>
+        </details>
         <details id="clipboard-section"><summary>{t("clipboard")}</summary>
           <Field className="text-controls"><Label htmlFor="text">{t("input")}</Label><Textarea id="text" rows={3} spellCheck={false} autoComplete="off" aria-describedby="help" />
             <div className="clipboard-actions"><Button id="send-text" type="button" disabled={!controls.ready}>{t("sendText")}</Button><Button id="clipboard-get" type="button" disabled={!controls.ready}>{t("getClipboard")}</Button><Button id="clipboard-set" type="button" disabled={!controls.ready}>{t("setClipboard")}</Button><Button id="paste-local" type="button" disabled={!controls.ready}>{t("pasteLocal")}</Button></div>

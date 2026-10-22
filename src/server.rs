@@ -1,11 +1,11 @@
 use std::{
-    collections::VecDeque,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
+use stream_scheduler::{FrameScheduler, LatencySamples, SchedulingStrategy};
 
 use axum::{
     Router,
@@ -20,7 +20,13 @@ use axum::{
     routing::get,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
+use display_control::{
+    DisplayController, DisplayMode, DisplayOutput, SessionTarget, WaylandDisplay,
+};
 use futures_util::{SinkExt, Stream, StreamExt, stream::SplitSink};
+use media_codec::{
+    CodecCapability, EncoderFactory, EncoderSettings, SoftwareEncoders, VideoCodec, VideoEncoder,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use subtle::ConstantTimeEq;
@@ -36,8 +42,7 @@ use crate::{
     audio_channel::{self, AudioHub},
     config::Config,
     session::Session,
-    video::H264Encoder,
-    wayland::{Backend, DisplayOutput, InputCommand, display_outputs},
+    wayland::{Backend, InputCommand},
 };
 
 static NEXT_CONNECTION: AtomicU64 = AtomicU64::new(1);
@@ -73,6 +78,24 @@ pub struct AppState {
     output: Option<String>,
     outputs: Vec<DisplayOutput>,
     transient_backend: bool,
+    displays: Arc<dyn DisplayController>,
+    codec_capabilities: Arc<tokio::sync::OnceCell<Vec<CodecCapability>>>,
+}
+
+fn session_displays(config: &Config, session: &Session, owned: bool) -> Arc<dyn DisplayController> {
+    let target = SessionTarget::wayland(session.socket.clone(), session.runtime.clone());
+    match config.display_backend.controller(
+        target.clone(),
+        target.matching_environment_hint(),
+        session.signature.as_deref(),
+        owned,
+    ) {
+        Ok(controller) => controller,
+        Err(error) => {
+            tracing::warn!(%error, "display backend unavailable");
+            Arc::new(WaylandDisplay::new(session.socket.clone()))
+        }
+    }
 }
 
 impl AppState {
@@ -82,7 +105,10 @@ impl AppState {
         } else {
             DesktopMode::Virtual
         };
+        let displays = session_displays(&config, &session, desktop == DesktopMode::Virtual);
         Self {
+            codec_capabilities: Arc::new(tokio::sync::OnceCell::new()),
+            displays,
             config: Arc::new(config),
             backend: Arc::new(backend),
             session: Arc::new(Mutex::new(session)),
@@ -125,7 +151,17 @@ impl AppState {
         }
         anyhow::ensure!(mode == DesktopMode::Physical, "虚拟桌面不可用");
         let socket = self.physical_socket()?;
-        let outputs = display_outputs(&socket).context("物理显示器枚举失败")?;
+        let target = SessionTarget::wayland(
+            socket.clone(),
+            socket.parent().context("missing session runtime")?.into(),
+        );
+        let displays = self.config.display_backend.controller(
+            target.clone(),
+            target.matching_environment_hint(),
+            None,
+            false,
+        )?;
+        let outputs = displays.outputs().context("物理显示器枚举失败")?;
         tracing::info!(
             connection_id,
             elapsed_ms = started.elapsed().as_millis() as u64,
@@ -158,6 +194,8 @@ impl AppState {
             "physical capture and input ready"
         );
         Ok(Self {
+            codec_capabilities: self.codec_capabilities,
+            displays,
             config: self.config,
             controller: self.controller,
             audio_hub: self.audio_hub,
@@ -379,7 +417,7 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
             StatusCode::SERVICE_UNAVAILABLE
         },
         axum::Json(
-            json!({"native":true,"ready":ready,"pid":std::process::id(),"transport":"websocket","video_codecs":["h264","jpeg"]}),
+            json!({"native":true,"ready":ready,"pid":std::process::id(),"transport":"websocket","video_codecs":state.codec_capabilities.get().map(|caps| caps.iter().filter(|c| c.available).map(|c| c.codec).collect::<Vec<_>>()).unwrap_or_default(),"codec_probe_complete":state.codec_capabilities.initialized()}),
         ),
     )
 }
@@ -387,8 +425,27 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
 async fn desktops(State(state): State<AppState>) -> impl IntoResponse {
     let options = state.desktop_options();
     let current = state.desktop;
-    let result =
-        tokio::task::spawn_blocking(move || display_outputs(&state.physical_socket()?)).await;
+    let result = tokio::task::spawn_blocking(move || {
+        let socket = state.physical_socket()?;
+        let target = SessionTarget::wayland(
+            socket.clone(),
+            socket
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("missing session runtime"))?
+                .into(),
+        );
+        state
+            .config
+            .display_backend
+            .controller(
+                target.clone(),
+                target.matching_environment_hint(),
+                None,
+                false,
+            )?
+            .outputs()
+    })
+    .await;
     let (outputs, reason) = match result {
         Ok(Ok(outputs)) => (outputs, None),
         Ok(Err(error)) => (Vec::new(), Some(error.to_string())),
@@ -577,10 +634,8 @@ async fn connection(
 ) -> Option<ConnectionEnd> {
     let (mut writer, reader) = socket.split();
     let (control_tx, mut controls) = mpsc::channel(16);
-    let (pacing_tx, mut pacing) = watch::channel(VideoFlow {
-        frame_interval: Duration::from_secs_f64(1.0 / f64::from(state.config.fps)),
-        ..VideoFlow::default()
-    });
+    let (pacing_tx, mut pacing) =
+        watch::channel(FrameScheduler::new(state.config.fps).expect("validated frame rate"));
     let receive = receive_commands(
         reader,
         state.backend.input.clone(),
@@ -600,8 +655,19 @@ async fn connection(
         .and_then(|session| session.audio_source.clone());
     let audio_available = state.config.audio && audio_source.is_some();
     let audio_session = audio_available.then(|| state.audio_hub.start());
+    let display_capabilities = state.displays.capabilities().await;
+    let codec_capabilities = state
+        .codec_capabilities
+        .get_or_init(|| SoftwareEncoders.probe())
+        .await;
+    let video_codecs: Vec<_> = codec_capabilities
+        .iter()
+        .filter(|c| c.available)
+        .map(|c| c.codec)
+        .collect();
     let ready = Message::Text(
-        json!({"type":"ready","control_release":true,"resize_scale":state.desktop == DesktopMode::Virtual,"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":"embedded","audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":["h264","jpeg"],"desktop":state.desktop,"desktops":state.desktop_options(),"resize":state.desktop == DesktopMode::Virtual,"outputs":state.outputs,"output":state.output})
+        json!({"type":"ready","control_release":true,"resize_scale":display_capabilities.resize_scale,"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":"embedded","audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktops":state.desktop_options(),"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
+
             .to_string()
             .into(),
     );
@@ -621,7 +687,7 @@ async fn connection(
     let mut first_frame = true;
     let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
     let mut h264 = false;
-    let mut encoder: Option<H264Encoder> = None;
+    let mut encoder: Option<Box<dyn VideoEncoder>> = None;
     let mut codec = None;
     let video_started = std::time::Instant::now();
     let mut frame_id = 0_u64;
@@ -641,11 +707,11 @@ async fn connection(
                     let mut packet = None;
                     if h264 {
                         let result = async {
-                            if encoder.as_ref().is_none_or(|encoder| (encoder.width, encoder.height) != (frame.width, frame.height)) {
-                                encoder = Some(H264Encoder::new(frame.width, frame.height, state.config.fps)?);
+                            if encoder.as_ref().is_none_or(|encoder| encoder.dimensions() != (frame.width, frame.height)) {
+                                encoder = Some(SoftwareEncoders.create(VideoCodec::H264, EncoderSettings {width:frame.width,height:frame.height,fps:state.config.fps,quality:state.config.quality})?);
                                 codec = None;
                             }
-                            encoder.as_mut().ok_or_else(|| anyhow::anyhow!("encoder missing"))?.encode_shared(frame.pixels.clone()).await
+                            encoder.as_mut().ok_or_else(|| anyhow::anyhow!("encoder missing"))?.encode(frame.pixels.clone()).await
                         }.await;
                         match result {
                             Ok(encoded) => {
@@ -663,7 +729,7 @@ async fn connection(
                             }
                             Err(error) => {
                                 tracing::warn!(%error, "H.264 unavailable; falling back to JPEG");
-                                pacing_tx.send_modify(VideoFlow::reset);
+                                pacing_tx.send_modify(FrameScheduler::reset);
                                 encoder.take(); h264 = false; codec = None;
                                 let message = Message::Text(json!({"type":"video_config","codec":"jpeg"}).to_string().into());
                                 if !matches!(timeout(Duration::from_secs(3), writer.send(message)).await, Ok(Ok(()))) { break; }
@@ -686,8 +752,8 @@ async fn connection(
                         }
                     };
                     frame_id += 1;
-                    pacing_tx.send_modify(|flow| flow.sent(frame_id));
-                    if pacing.borrow().sequenced {
+                    pacing_tx.send_modify(|flow| flow.sent(frame_id, Instant::now()));
+                    if pacing.borrow().sequenced() {
                         let metadata = Message::Text(json!({"type":"frame_id","id":frame_id}).to_string().into());
                         if !matches!(timeout(Duration::from_secs(3), writer.send(metadata)).await, Ok(Ok(()))) { break; }
                     }
@@ -719,8 +785,8 @@ async fn connection(
                             {
                                 let flow = pacing.borrow();
                                 let message = Message::Text(json!({"type":"pong","id":id,"video_metrics":{
-                                    "ack":flow.ack_samples.summary(),"encode":encode_samples.summary(),"send":send_samples.summary(),
-                                    "in_flight":flow.pending.len(),"window":flow.window
+                                    "ack":flow.ack_summary(),"encode":encode_samples.summary(),"send":send_samples.summary(),
+                                    "in_flight":flow.in_flight(),"window":flow.window(),"strategy":flow.strategy()
                                 }}).to_string().into());
                                 drop(flow);
                                 Some(message)
@@ -728,9 +794,9 @@ async fn connection(
                             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
                                 && value.get("type").and_then(|kind| kind.as_str()) == Some("video")
                             {
-                                h264 = value.get("codec").and_then(|codec| codec.as_str()) == Some("h264") && pacing.borrow().sequenced;
+                                h264 = value.get("codec").and_then(|codec| codec.as_str()) == Some("h264") && pacing.borrow().sequenced() && video_codecs.contains(&VideoCodec::H264);
                                 encoder.take(); codec = None; first_frame = true;
-                                pacing_tx.send_modify(VideoFlow::reset);
+                                pacing_tx.send_modify(FrameScheduler::reset);
                                 if !h264 {
                                     let message = Message::Text(json!({"type":"video_config","codec":"jpeg"}).to_string().into());
                                     if !matches!(timeout(Duration::from_secs(3), writer.send(message)).await, Ok(Ok(()))) { break; }
@@ -784,112 +850,11 @@ async fn connection(
     })
 }
 
-#[derive(Clone, Default)]
-struct LatencySamples {
-    samples: VecDeque<u32>,
-}
-
-impl LatencySamples {
-    fn record(&mut self, elapsed: Duration) {
-        if self.samples.len() == 120 {
-            self.samples.pop_front();
-        }
-        self.samples
-            .push_back(elapsed.as_micros().min(u32::MAX as u128) as u32);
-    }
-
-    fn summary(&self) -> serde_json::Value {
-        let mut samples: Vec<_> = self.samples.iter().copied().collect();
-        samples.sort_unstable();
-        let percentile = |percent: usize| {
-            if samples.is_empty() {
-                None
-            } else {
-                Some(samples[(samples.len() * percent).div_ceil(100) - 1] as f64 / 1000.0)
-            }
-        };
-        json!({"count":samples.len(),"p50_ms":percentile(50),"p95_ms":percentile(95)})
-    }
-}
-
-#[derive(Clone)]
-struct VideoFlow {
-    enabled: bool,
-    sequenced: bool,
-    pending: VecDeque<(u64, Instant)>,
-    window: usize,
-    frame_interval: Duration,
-    dimensions: Option<(u32, u32)>,
-    ack_samples: LatencySamples,
-}
-
-impl Default for VideoFlow {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            sequenced: false,
-            pending: VecDeque::new(),
-            window: 1,
-            frame_interval: Duration::from_secs_f64(1.0 / 30.0),
-            dimensions: None,
-            ack_samples: LatencySamples::default(),
-        }
-    }
-}
-
-impl VideoFlow {
-    fn waiting(&self) -> bool {
-        self.enabled && self.pending.len() >= self.window
-    }
-
-    fn reset(&mut self) {
-        self.pending.clear();
-        self.window = 1;
-        self.dimensions = None;
-    }
-
-    fn begin_frame(&mut self, dimensions: (u32, u32)) {
-        if self.dimensions != Some(dimensions) {
-            self.reset();
-            self.dimensions = Some(dimensions);
-        }
-    }
-
-    fn sent(&mut self, id: u64) {
-        if self.enabled {
-            self.pending.push_back((id, Instant::now()));
-        }
-    }
-
-    fn acknowledge(&mut self, id: Option<u64>) {
-        let index = if self.sequenced {
-            self.pending
-                .iter()
-                .position(|(pending_id, _)| Some(*pending_id) == id)
-        } else {
-            self.pending.front().map(|_| 0)
-        };
-        if let Some(index) = index {
-            let elapsed = self.pending[index].1.elapsed();
-            self.ack_samples.record(elapsed);
-            self.pending.drain(..=index);
-            self.window = if self.sequenced {
-                elapsed
-                    .as_nanos()
-                    .div_ceil(self.frame_interval.as_nanos())
-                    .clamp(1, 3) as usize
-            } else {
-                1
-            };
-        }
-    }
-}
-
 async fn receive_commands(
     mut reader: impl Stream<Item = Result<Message, axum::Error>> + Unpin,
     input: mpsc::Sender<InputCommand>,
     controls: mpsc::Sender<String>,
-    pacing: watch::Sender<VideoFlow>,
+    pacing: watch::Sender<FrameScheduler>,
 ) -> bool {
     while let Ok(Some(Ok(message))) = timeout(Duration::from_secs(60), reader.next()).await {
         match message {
@@ -912,20 +877,33 @@ async fn receive_commands(
                     match value.get("type").and_then(|kind| kind.as_str()) {
                         Some("disconnect") => return true,
                         Some("video_flow") => {
+                            let strategy = match value.get("strategy") {
+                                Some(value) => match serde_json::from_value::<SchedulingStrategy>(
+                                    value.clone(),
+                                ) {
+                                    Ok(strategy) => strategy,
+                                    Err(_) => {
+                                        let _ = controls.send(text.to_string()).await;
+                                        continue;
+                                    }
+                                },
+                                None => SchedulingStrategy::Auto,
+                            };
                             pacing.send_modify(|flow| {
-                                flow.enabled =
-                                    value.get("enabled").and_then(|enabled| enabled.as_bool())
-                                        == Some(true);
-                                flow.sequenced =
-                                    value.get("sequenced").and_then(|enabled| enabled.as_bool())
-                                        == Some(true);
-                                flow.reset();
+                                flow.configure(
+                                    value.get("enabled").and_then(|v| v.as_bool()) == Some(true),
+                                    value.get("sequenced").and_then(|v| v.as_bool()) == Some(true),
+                                    strategy,
+                                )
                             });
                             continue;
                         }
                         Some("frame_ack") => {
                             pacing.send_modify(|flow| {
-                                flow.acknowledge(value.get("id").and_then(|id| id.as_u64()));
+                                flow.acknowledge(
+                                    value.get("id").and_then(|id| id.as_u64()),
+                                    Instant::now(),
+                                );
                             });
                             continue;
                         }
@@ -1010,32 +988,24 @@ async fn handle_command(
             anyhow::ensure!(status.success(), "clipboard write failed");
         }
         "resize" => {
-            anyhow::ensure!(
-                state.desktop == DesktopMode::Virtual
-                    && state.session.lock().unwrap().signature.is_some(),
-                "resize requires an owned desktop session"
-            );
-            let (monitor, lua_monitor) = monitor_rules(&value, state.config.fps)?;
-            let mut command = helper(state, "hyprctl");
-            command.args(["keyword", "monitor", &monitor]);
-            let output = timeout(Duration::from_secs(2), command.output()).await??;
-            anyhow::ensure!(output.status.success(), "desktop resize failed");
-            let mut response = String::from_utf8(output.stdout)?;
-            // Lua compositors reject legacy keywords with exit code zero.
-            // Fall back only for the explicit parser capability response.
-            if response.trim() == "keyword can't work with non-legacy parsers. Use eval." {
-                let mut command = helper(state, "hyprctl");
-                command.args(["eval", &lua_monitor]);
-                let output = timeout(Duration::from_secs(2), command.output()).await??;
-                anyhow::ensure!(output.status.success(), "Lua desktop resize failed");
-                response = String::from_utf8(output.stdout)?;
-            }
-            anyhow::ensure!(
-                response.trim() == "ok",
-                "desktop resize rejected: {}",
-                response.trim()
-            );
+            let width = value.get("width").and_then(|v| v.as_u64()).unwrap_or(0);
+            let height = value.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
+            let resolution = DisplayMode {
+                width: u32::try_from(width).map_err(|_| anyhow::anyhow!("invalid dimensions"))?,
+                height: u32::try_from(height).map_err(|_| anyhow::anyhow!("invalid dimensions"))?,
+                scale: match value.get("scale") {
+                    None => 1.0,
+                    Some(value) => value
+                        .as_f64()
+                        .ok_or_else(|| anyhow::anyhow!("invalid desktop scale"))?,
+                },
+            };
+            state
+                .displays
+                .resize(state.output.as_deref(), resolution, state.config.fps)
+                .await?;
         }
+        "video_flow" => anyhow::bail!("unsupported scheduling strategy"),
         "audio" => {
             audio.take();
             if value.get("enabled").and_then(|value| value.as_bool()) == Some(true) {
@@ -1075,112 +1045,16 @@ fn error_message(message: &str) -> Message {
     Message::Text(json!({"type":"error","message":message}).to_string().into())
 }
 
-fn monitor_rules(value: &serde_json::Value, fps: u32) -> anyhow::Result<(String, String)> {
-    let width = value
-        .get("width")
-        .and_then(|value| value.as_u64())
-        .unwrap_or(0);
-    let height = value
-        .get("height")
-        .and_then(|value| value.as_u64())
-        .unwrap_or(0);
-    anyhow::ensure!(
-        (320..=3840).contains(&width) && (200..=2160).contains(&height),
-        "invalid dimensions"
-    );
-    let scale = match value.get("scale") {
-        None => 1.0,
-        Some(value) => value
-            .as_f64()
-            .ok_or_else(|| anyhow::anyhow!("invalid desktop scale"))?,
-    };
-    anyhow::ensure!(
-        [1.0, 1.5, 2.0, 2.5, 3.0].contains(&scale),
-        "invalid desktop scale"
-    );
-    let logical_width = width as f64 / scale;
-    let logical_height = height as f64 / scale;
-    anyhow::ensure!(
-        logical_width.fract() == 0.0
-            && logical_height.fract() == 0.0
-            && logical_width >= 320.0
-            && logical_height >= 200.0,
-        "invalid scaled dimensions"
-    );
-    Ok((
-        format!(",{width}x{height}@{fps},auto,{scale}"),
-        format!(
-            "hl.monitor({{ output = \"\", mode = \"{width}x{height}@{fps}\", position = \"auto\", scale = {scale} }})"
-        ),
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tower::ServiceExt;
 
-    #[test]
-    fn high_density_monitor_rules_preserve_logical_size_and_validate_scale() {
-        assert_eq!(
-            monitor_rules(&json!({"width":780,"height":1476,"scale":2}), 30)
-                .unwrap()
-                .0,
-            ",780x1476@30,auto,2"
-        );
-        assert_eq!(
-            monitor_rules(&json!({"width":582,"height":1110,"scale":1.5}), 30)
-                .unwrap()
-                .0,
-            ",582x1110@30,auto,1.5"
-        );
-        assert_eq!(
-            monitor_rules(&json!({"width":801,"height":601}), 30)
-                .unwrap()
-                .0,
-            ",801x601@30,auto,1"
-        );
-        assert_eq!(
-            monitor_rules(&json!({"width":970,"height":1840,"scale":2.5}), 30)
-                .unwrap()
-                .0,
-            ",970x1840@30,auto,2.5"
-        );
-        assert_eq!(
-            monitor_rules(&json!({"width":1080,"height":1602,"scale":3}), 30)
-                .unwrap()
-                .0,
-            ",1080x1602@30,auto,3"
-        );
-        assert_eq!(
-            monitor_rules(&json!({"width":780,"height":1476,"scale":2}), 30)
-                .unwrap()
-                .1,
-            "hl.monitor({ output = \"\", mode = \"780x1476@30\", position = \"auto\", scale = 2 })"
-        );
-        assert_eq!(
-            monitor_rules(&json!({"width":970,"height":1840,"scale":2.5}), 30)
-                .unwrap()
-                .1,
-            "hl.monitor({ output = \"\", mode = \"970x1840@30\", position = \"auto\", scale = 2.5 })"
-        );
-        for value in [
-            json!({"width":780,"height":1476,"scale":0}),
-            json!({"width":780,"height":1476,"scale":4}),
-            json!({"width":780,"height":1476,"scale":"2"}),
-            json!({"width":781,"height":1476,"scale":2}),
-            json!({"width":320,"height":200,"scale":2}),
-            json!({"width":4000,"height":2000,"scale":2}),
-        ] {
-            assert!(monitor_rules(&value, 30).is_err(), "{value}");
-        }
-    }
-
     #[tokio::test]
     async fn input_is_delivered_while_control_writer_is_not_draining() {
         let (input, mut received) = mpsc::channel(4);
         let (controls, _blocked_writer) = mpsc::channel(1);
-        let (pacing, _) = watch::channel(VideoFlow::default());
+        let (pacing, _) = watch::channel(FrameScheduler::default());
         let messages = [
             "{\"type\":\"clipboard_get\"}",
             "{\"type\":\"move\",\"x\":0.5,\"y\":0.25}",
@@ -1211,29 +1085,26 @@ mod tests {
     async fn frame_acknowledgement_releases_only_the_video_gate() {
         let (input, _) = mpsc::channel(1);
         let (controls, _responses) = mpsc::channel(1);
-        let (pacing, state) = watch::channel(VideoFlow {
-            enabled: true,
-            pending: VecDeque::from([(1, Instant::now())]),
-            ..VideoFlow::default()
-        });
+        let mut flow = FrameScheduler::default();
+        flow.configure(true, false, SchedulingStrategy::Auto);
+        flow.sent(1, Instant::now());
+        let (pacing, state) = watch::channel(flow);
         assert!(state.borrow().waiting());
         let reader =
             futures_util::stream::iter([Ok(Message::Text("{\"type\":\"frame_ack\"}".into()))]);
         receive_commands(reader, input, controls, pacing).await;
         assert!(!state.borrow().waiting());
-        assert!(state.borrow().enabled);
+        assert!(state.borrow().enabled());
     }
 
     #[tokio::test]
     async fn stale_jpeg_ack_cannot_release_a_new_h264_keyframe() {
         let (input, _) = mpsc::channel(1);
         let (controls, _) = mpsc::channel(1);
-        let (pacing, state) = watch::channel(VideoFlow {
-            enabled: true,
-            sequenced: true,
-            pending: VecDeque::from([(2, Instant::now())]),
-            ..VideoFlow::default()
-        });
+        let mut flow = FrameScheduler::default();
+        flow.configure(true, true, SchedulingStrategy::Auto);
+        flow.sent(2, Instant::now());
+        let (pacing, state) = watch::channel(flow);
         let reader = futures_util::stream::iter([Ok(Message::Text(
             "{\"type\":\"frame_ack\",\"id\":1}".into(),
         ))]);
@@ -1244,108 +1115,6 @@ mod tests {
         ))]);
         receive_commands(reader, input, controls, pacing).await;
         assert!(!state.borrow().waiting());
-    }
-
-    #[test]
-    fn sequenced_video_pipelines_only_after_first_render_and_stays_bounded() {
-        let mut flow = VideoFlow {
-            enabled: true,
-            sequenced: true,
-            ..VideoFlow::default()
-        };
-        flow.sent(1);
-        assert!(flow.waiting());
-        flow.pending[0].1 = Instant::now() - Duration::from_millis(120);
-        flow.acknowledge(Some(1));
-        assert_eq!(flow.window, 3);
-        for id in 2..=4 {
-            assert!(!flow.waiting());
-            flow.sent(id);
-        }
-        assert!(flow.waiting());
-        flow.acknowledge(Some(99));
-        flow.acknowledge(Some(1));
-        flow.acknowledge(None);
-        assert_eq!(flow.pending.len(), 3);
-        flow.pending[1].1 = Instant::now() - Duration::from_millis(120);
-        flow.acknowledge(Some(3));
-        assert_eq!(flow.pending.len(), 1);
-        assert_eq!(flow.pending[0].0, 4);
-        assert!(!flow.waiting());
-        flow.reset();
-        flow.sent(5);
-        flow.acknowledge(Some(4));
-        assert_eq!(flow.window, 1);
-        assert!(flow.waiting());
-        flow.acknowledge(Some(5));
-        assert!(!flow.waiting());
-    }
-
-    #[test]
-    fn diagnostic_percentiles_are_bounded_and_stale_acks_are_not_samples() {
-        let mut samples = LatencySamples::default();
-        assert_eq!(samples.summary()["p95_ms"], serde_json::Value::Null);
-        for value in 1..=200 {
-            samples.record(Duration::from_millis(value));
-        }
-        assert_eq!(samples.summary()["count"], 120);
-        assert_eq!(samples.summary()["p50_ms"], 140.0);
-        assert_eq!(samples.summary()["p95_ms"], 194.0);
-        let mut flow = VideoFlow {
-            enabled: true,
-            sequenced: true,
-            ..VideoFlow::default()
-        };
-        flow.sent(1);
-        flow.acknowledge(Some(999));
-        assert_eq!(flow.ack_samples.summary()["count"], 0);
-        flow.acknowledge(Some(1));
-        assert_eq!(flow.ack_samples.summary()["count"], 1);
-    }
-
-    #[test]
-    fn low_delay_and_legacy_video_keep_a_single_frame_window() {
-        for sequenced in [true, false] {
-            let mut flow = VideoFlow {
-                enabled: true,
-                sequenced,
-                frame_interval: Duration::from_secs(1),
-                ..VideoFlow::default()
-            };
-            flow.sent(1);
-            flow.acknowledge(Some(1));
-            assert_eq!(flow.window, 1);
-            if !sequenced {
-                flow.sent(2);
-                flow.pending[0].1 = Instant::now() - Duration::from_secs(4);
-                flow.acknowledge(None);
-                assert_eq!(flow.window, 1);
-            }
-        }
-    }
-
-    #[test]
-    fn jpeg_resize_requires_a_new_first_frame_ack() {
-        let mut flow = VideoFlow {
-            enabled: true,
-            sequenced: true,
-            ..VideoFlow::default()
-        };
-        flow.begin_frame((1280, 720));
-        flow.sent(1);
-        flow.pending[0].1 = Instant::now() - Duration::from_millis(120);
-        flow.acknowledge(Some(1));
-        assert_eq!(flow.window, 3);
-        flow.begin_frame((1280, 720));
-        assert_eq!(flow.window, 3);
-        flow.sent(2);
-        flow.begin_frame((800, 600));
-        flow.sent(3);
-        flow.acknowledge(Some(2));
-        assert_eq!(flow.window, 1);
-        assert!(flow.waiting());
-        flow.acknowledge(Some(3));
-        assert!(!flow.waiting());
     }
 
     #[tokio::test]

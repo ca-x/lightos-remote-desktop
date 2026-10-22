@@ -1,0 +1,152 @@
+//! Session-scoped output discovery and control, independent of distro and transport.
+mod command;
+mod controller;
+mod hyprland;
+mod kscreen;
+mod mutter;
+mod session;
+mod wayland;
+mod wlroots;
+mod x11;
+
+pub use controller::DisplayBackend;
+pub use hyprland::HyprlandDisplay;
+pub use kscreen::KScreenDisplay;
+pub use mutter::MutterDisplay;
+pub use session::{DesktopEnvironment, SessionTarget};
+pub use wayland::WaylandDisplay;
+pub use wlroots::WlrootsDisplay;
+pub use x11::X11Display;
+
+use anyhow::{Result, ensure};
+use futures_util::future::BoxFuture;
+use serde::Serialize;
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DisplayOutput {
+    pub name: String,
+    pub description: String,
+    pub width: u32,
+    pub height: u32,
+    pub x: i32,
+    pub y: i32,
+    pub scale: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DisplayMode {
+    pub width: u32,
+    pub height: u32,
+    pub scale: f64,
+}
+
+impl DisplayMode {
+    pub fn validate(self) -> Result<()> {
+        ensure!(
+            (320..=3840).contains(&self.width) && (200..=2160).contains(&self.height),
+            "invalid dimensions"
+        );
+        ensure!(
+            [1.0, 1.5, 2.0, 2.5, 3.0].contains(&self.scale),
+            "invalid desktop scale"
+        );
+        let width = self.width as f64 / self.scale;
+        let height = self.height as f64 / self.scale;
+        ensure!(
+            width.fract() == 0.0 && height.fract() == 0.0 && width >= 320.0 && height >= 200.0,
+            "invalid scaled dimensions"
+        );
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DisplayCapabilities {
+    pub resize: bool,
+    pub resize_scale: bool,
+    pub reason: Option<String>,
+}
+
+impl DisplayCapabilities {
+    fn unavailable(reason: impl ToString) -> Self {
+        Self {
+            resize: false,
+            resize_scale: false,
+            reason: Some(reason.to_string()),
+        }
+    }
+}
+
+pub trait DisplayController: Send + Sync {
+    /// Blocking, bounded query; callers on an async executor should use spawn_blocking.
+    fn outputs(&self) -> Result<Vec<DisplayOutput>>;
+    /// Read-only probe against this session, never against ambient desktop variables.
+    fn capabilities(&self) -> BoxFuture<'_, DisplayCapabilities>;
+    fn resize<'a>(
+        &'a self,
+        output: Option<&'a str>,
+        resolution: DisplayMode,
+        fps: u32,
+    ) -> BoxFuture<'a, Result<DisplayMode>>;
+}
+
+pub(crate) fn select_output<'a>(
+    outputs: &'a [DisplayOutput],
+    name: Option<&str>,
+) -> Result<&'a DisplayOutput> {
+    match name {
+        Some(name) => outputs
+            .iter()
+            .find(|o| o.name == name)
+            .ok_or_else(|| anyhow::anyhow!("selected output unavailable")),
+        None if outputs.len() == 1 => Ok(&outputs[0]),
+        _ => anyhow::bail!("select an output before resizing a multi-output desktop"),
+    }
+}
+pub(crate) fn output_matches(output: &DisplayOutput, mode: DisplayMode) -> bool {
+    output.width == mode.width
+        && output.height == mode.height
+        && (output.scale - mode.scale).abs() < 0.001
+}
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+    #[test]
+    fn high_density_modes_preserve_logical_dimensions() {
+        for (width, height, scale) in [
+            (780, 1476, 2.0),
+            (582, 1110, 1.5),
+            (801, 601, 1.0),
+            (970, 1840, 2.5),
+            (1080, 1602, 3.0),
+        ] {
+            assert!(
+                DisplayMode {
+                    width,
+                    height,
+                    scale
+                }
+                .validate()
+                .is_ok()
+            );
+        }
+        for (width, height, scale) in [
+            (780, 1476, 0.0),
+            (780, 1476, 4.0),
+            (781, 1476, 2.0),
+            (320, 200, 2.0),
+            (4000, 2000, 2.0),
+            (800, 600, f64::NAN),
+        ] {
+            assert!(
+                DisplayMode {
+                    width,
+                    height,
+                    scale
+                }
+                .validate()
+                .is_err()
+            );
+        }
+    }
+}

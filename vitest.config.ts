@@ -4,6 +4,6 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     environmentOptions: { jsdom: { pretendToBeVisual: true } },
-    include: ["tests/*.test.tsx"],
+    include: ["tests/*.test.tsx", "tests/*.test.ts"],
   },
 });

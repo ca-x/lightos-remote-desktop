@@ -1,0 +1,26 @@
+[package]
+name = "display-control"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[dependencies]
+anyhow = "1"
+futures-util = "0.3"
+libwayshot = { version = "0.9", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["net", "io-util", "time", "rt", "process", "sync"] }
+wayland-client = "0.31"
+
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+hex = "0.4"
+x11rb = "0.14"
+x11rb-async = { version = "0.14", features = ["randr"] }
+x11rb-protocol = { version = "0.14", features = ["randr"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

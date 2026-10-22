@@ -97,10 +97,18 @@ fn resize_through_websocket(port: u16, width: u32, height: u32, scale: Option<f6
             matches!(ready, Message::Text(ref text) if text.contains("\"type\":\"ready\"")),
             "{ready:?}"
         );
+        let Message::Text(ready) = ready else {
+            unreachable!()
+        };
+        let ready: Value = serde_json::from_str(&ready).unwrap();
+        assert_eq!(ready["resize"], true, "{ready}");
+        assert_eq!(ready["resize_scale"], true, "{ready}");
+        assert!(ready["resize_reason"].is_null(), "{ready}");
         let mut resize = serde_json::json!({"type":"resize", "width":width, "height":height});
         if let Some(scale) = scale {
             resize["scale"] = serde_json::json!(scale);
         }
+
         socket
             .send(Message::Text(resize.to_string().into()))
             .await
@@ -154,9 +162,9 @@ fn transport_restart_preserves_native_desktop_and_gui_process() {
         );
     }
     let (application, arguments, application_class) = [
+        ("ghostty", "--class=com.lightos.handoff.test --gtk-single-instance=false", "com.lightos.handoff.test"),
         ("foot", "--app-id=lightos-handoff-test", "lightos-handoff-test"),
         ("kitty", "--class=lightos-handoff-test", "lightos-handoff-test"),
-        ("ghostty", "--class=com.lightos.handoff.test --gtk-single-instance=false", "com.lightos.handoff.test"),
         ("alacritty", "--class=lightos-handoff-test", "lightos-handoff-test"),
     ].into_iter().find_map(|(name, arguments, class)| platform_detect::find_executable(Path::new(name)).map(|path| (path, arguments, class)))
         .expect("live UI verification requires an installed supported terminal (foot, kitty, ghostty or alacritty); no test was run");

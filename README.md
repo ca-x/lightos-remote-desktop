@@ -45,6 +45,10 @@ does not embed CPython or invoke the original Selkies Python launcher.
   video pipeline's frame rate and latency.
 - Isolated Cage/wlroots host with nested Hyprland, a private D-Bus, and owned
   process-group cleanup. No UWSM source modification.
+- Persistent encoding (Auto/H.264/JPEG) and scheduling (Auto/Low latency/Smooth)
+  choices. Independent display-control, media-codec and stream-scheduler crates;
+  see [runtime platform boundaries](docs/runtime-platforms.md) for desktop backends,
+  real capability probes and current platform limits.
 - Dynamic resolution, text clipboard and optional private PipeWire/Pulse sink
   with browser audio playback.
 - Independent audio WebSocket and sender, so video encoding and render ACKs do

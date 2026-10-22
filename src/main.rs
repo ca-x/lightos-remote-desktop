@@ -125,7 +125,7 @@ fn doctor(config: &Config) -> Result<()> {
     }
     println!(
         "{}",
-        serde_json::json!({"distribution": platform_detect::Distribution::detect(), "omarchy": platform_detect::OmarchyInstallation::detect(), "persistent_session":config.session_runtime, "ok":true,"native":true,"transport":"websocket","video_codecs":["h264","jpeg"],"desktop_smoke_test":false})
+        serde_json::json!({"distribution": platform_detect::Distribution::detect(), "omarchy": platform_detect::OmarchyInstallation::detect(), "persistent_session":config.session_runtime, "ok":true,"native":true,"transport":"websocket","video_codecs_compiled":["h264","jpeg"],"codec_probe_complete":false,"desktop_smoke_test":false})
     );
     Ok(())
 }

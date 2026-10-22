@@ -1,18 +1,21 @@
 [workspace]
-members = ["crates/platform-detect", "crates/desktop-config"]
+members = ["crates/platform-detect", "crates/desktop-config", "crates/display-control", "crates/media-codec", "crates/stream-scheduler"]
 resolver = "3"
 
 [package]
 name = "lightos-remote-desktop"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 rust-version = "1.88"
 description = "A native Rust browser remote desktop for LightOS"
 
 [features]
-bundled-jpeg = ["turbojpeg/cmake", "turbojpeg/require-simd"]
+bundled-jpeg = ["media-codec/bundled-jpeg", "turbojpeg/cmake", "turbojpeg/require-simd"]
 
 [dependencies]
+stream-scheduler = { path = "crates/stream-scheduler" }
+media-codec = { path = "crates/media-codec" }
+display-control = { path = "crates/display-control" }
 platform-detect = { path = "crates/platform-detect" }
 desktop-config = { path = "crates/desktop-config" }
 anyhow = "1"
@@ -25,7 +28,6 @@ image = { version = "0.25", default-features = false, features = ["jpeg"] }
 libc = "0.2"
 libwayshot = { version = "0.9", default-features = false }
 libpulse-binding = "2.30.1"
-openh264 = { version = "0.9.9", default-features = false, features = ["source"] }
 opus = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -1,5 +1,33 @@
 # Verification on LightOS
 
+## Runtime platform extraction — 2026-10-22
+
+Baseline origin/main `050fbe1` preserves mobile/IME controls and high-density
+resize. `display-control`, `media-codec`, and `stream-scheduler` are independent
+workspace crates; version 0.1.8 adds persistent codec/scheduling choices.
+Distribution/configuration initialization is separate from session environment
+and actual display-protocol probing. GNOME (zbus), KDE (kscreen-doctor), wlroots
+(generated Rust Wayland bindings), Hyprland IPC and X11 (x11rb-async) adapters
+have explicit session coordinates. Physical-session authorization remains
+read-only. See `docs/runtime-platforms.md` for backend-specific restrictions.
+
+Current local checks: workspace tests (including installer fixtures), bundled-JPEG
+workspace tests and Clippy with warnings denied passed; frontend build/typecheck,
+80 Node tests and 15 Vitest tests passed. Display tests include explicit Lua
+fallback, IPC deadlines, a same-pixel/different-scale change, Mutter multi-output
+configuration and scale restrictions, KScreen JSON/rotation/mode-ID selection,
+missing session/tool failures and physical authorization for all backends.
+The isolated native Lua test exercised real decoded resize/scale frames across
+two transport generations: the same Ghostty process and compositor signature
+survived, 225 native bindings were active, and configerrors was empty.
+
+GNOME, KDE, wlroots and X11 adapters have not been exercised against real desktop
+sessions on this Hyprland host. Their fixture/probe tests are not real desktop
+validation. No hardware codec, additional OS, WAN throughput or end-to-end latency
+claim follows from this extraction. Independent final review and local deployment
+are recorded below when performed.
+
+
 Date: 2026-10-22 (machine local date). This records a verified initial native
 implementation, not complete Selkies or Omarchy feature parity.
 

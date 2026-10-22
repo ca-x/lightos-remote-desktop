@@ -106,6 +106,13 @@ pub struct Config {
     pub wayland_socket: Option<PathBuf>,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_PHYSICAL_WAYLAND_SOCKET")]
     pub physical_wayland_socket: Option<PathBuf>,
+    /// Display protocol override, independent of distribution and desktop configuration flavor.
+    #[arg(
+        long,
+        env = "LIGHTOS_REMOTE_DESKTOP_DISPLAY_BACKEND",
+        default_value = "auto"
+    )]
+    pub display_backend: display_control::DisplayBackend,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_DESKTOP_CONFIG")]
     pub desktop_config: Option<PathBuf>,
     #[arg(

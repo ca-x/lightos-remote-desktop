@@ -5,7 +5,10 @@ import vm from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
 
 const mobileSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/mobile.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
-const source = mobileSource + "\n" + stripTypeScriptTypes(readFileSync(new URL("../web/src/client.ts", import.meta.url), "utf8"))
+const codecSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/video-codec.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
+const preferenceSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/preferences.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
+const source = mobileSource + "\n" + preferenceSource + "\n" + codecSource + "\n" + stripTypeScriptTypes(readFileSync(new URL("../web/src/client.ts", import.meta.url), "utf8"))
+
   .replace(/^import .* from .*;$/gm, "")
   .replace(/^export /gm, "") + '\nconst audioWorkerUrl = "./audio-worker.js"; const audioWorkletUrl = "./audio-worklet.js"; const client = createClient(clientOptions);';
 const html = readFileSync(new URL("../web/src/App.tsx", import.meta.url), "utf8");
@@ -1540,4 +1543,41 @@ test("manual disconnect releases held input and BFCache restore reconnects once"
   app.window.fire("pagehide", { persisted: false });
   assert.equal(app.sockets[1].onmessage, null);
   assert.equal(app.timers.size, 0);
+});
+
+test("codec and streaming strategy default to automatic and invalid saved values are rejected", () => {
+  for (const storage of [new Map(), new Map([["lightos-desktop-video-codec", "invalid"], ["lightos-desktop-stream-strategy", "invalid"]])]) {
+    const app = harness("/", storage);
+    assert.equal(app.nodes["video-codec"].value,"auto");
+    assert.equal(app.nodes["stream-strategy"].value,"auto");
+  }
+});
+
+test("manual JPEG and scheduling preferences persist and are sent on reconnect", () => {
+  const storage = new Map();
+  const app = harness("/", storage);
+  app.nodes["video-codec"].value = "jpeg";
+  app.nodes["video-codec"].fire("change");
+  app.nodes["stream-strategy"].value = "low_latency";
+  app.nodes["stream-strategy"].fire("change");
+  assert.equal(storage.get("lightos-desktop-video-codec"),"jpeg");
+  assert.equal(storage.get("lightos-desktop-stream-strategy"),"low_latency");
+  const next = harness("/", storage);
+  const socket = next.sockets.at(-1);
+  socket.open();
+  socket.json({type:"ready",width:1280,height:720,frame_ack:true,frame_ids:true,video_codecs:["h264","jpeg"]});
+  assert.ok(socket.sent.some(packet => packet.type === "video" && packet.codec === "jpeg"));
+  assert.ok(socket.sent.some(packet => packet.type === "video_flow" && packet.strategy === "low_latency"));
+});
+
+test("manual unsupported H264 reports JPEG fallback while preserving the preference", () => {
+  const storage = new Map([["lightos-desktop-video-codec","h264"]]);
+  const app = harness("/",storage);
+  const socket = app.sockets.at(-1);
+  socket.open();
+  socket.json({type:"ready",width:1280,height:720,frame_ack:true,frame_ids:true,video_codecs:["jpeg"]});
+  assert.ok(socket.sent.some(packet => packet.type === "video" && packet.codec === "jpeg"));
+  assert.equal(app.nodes["video-codec"].value,"h264");
+  assert.match(app.nodes.message.textContent,/H\.264.*unavailable.*JPEG/);
+  assert.equal(storage.get("lightos-desktop-video-codec"),"h264");
 });

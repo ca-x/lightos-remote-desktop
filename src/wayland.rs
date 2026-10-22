@@ -1,5 +1,4 @@
 use std::{
-    cell::RefCell,
     collections::BTreeSet,
     io::{Seek, SeekFrom, Write},
     net::Shutdown,
@@ -24,7 +23,7 @@ use tokio::sync::{mpsc, watch};
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
     globals::{GlobalListContents, registry_queue_init},
-    protocol::{wl_output, wl_pointer, wl_registry, wl_seat},
+    protocol::{wl_pointer, wl_registry, wl_seat},
 };
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
     zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
@@ -40,68 +39,9 @@ const START_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_TEXT_BYTES: usize = 16 * 1024;
 const MAX_EVDEV_CODE: u32 = 767;
 
-#[derive(Clone, Debug, Serialize)]
-pub struct DisplayOutput {
-    pub name: String,
-    pub description: String,
-    pub width: u32,
-    pub height: u32,
-    pub x: i32,
-    pub y: i32,
-    pub scale: f64,
-}
-
-pub fn display_outputs(socket: &Path) -> Result<Vec<DisplayOutput>> {
-    let stream = connect(socket, Instant::now() + Duration::from_secs(3), None)?;
-    let interrupt = stream.try_clone()?;
-    let (done, finished) = sync_mpsc::channel();
-    let watchdog = thread::spawn(move || {
-        if finished.recv_timeout(Duration::from_secs(3)).is_err() {
-            let _ = interrupt.shutdown(Shutdown::Both);
-        }
-    });
-    let result = (|| {
-        let capture = WayshotConnection::from_connection(Connection::from_socket(stream)?)?;
-        let outputs = capture
-            .get_all_outputs()
-            .iter()
-            .map(|output| {
-                let size = output.physical_size();
-                let logical = output.logical_size();
-                let position = output.logical_position();
-                let (width, height) =
-                    oriented_dimensions(size.width, size.height, output.transform);
-                DisplayOutput {
-                    name: output.name.clone(),
-                    description: output.description.clone(),
-                    width,
-                    height,
-                    x: position.x,
-                    y: position.y,
-                    scale: f64::from(height) / f64::from(logical.height.max(1)),
-                }
-            })
-            .collect();
-        Ok(outputs)
-    })();
-    let _ = done.send(());
-    let _ = watchdog.join();
-    result
-}
-
 struct CaptureTarget {
     socket: PathBuf,
     output: Option<String>,
-}
-
-fn oriented_dimensions(width: u32, height: u32, transform: wl_output::Transform) -> (u32, u32) {
-    match transform {
-        wl_output::Transform::_90
-        | wl_output::Transform::_270
-        | wl_output::Transform::Flipped90
-        | wl_output::Transform::Flipped270 => (height, width),
-        _ => (width, height),
-    }
 }
 
 #[derive(Debug)]
@@ -111,10 +51,6 @@ pub struct Frame {
     jpeg: OnceLock<(u8, Arc<[u8]>)>,
     pub pixels: Arc<[u8]>,
     pub captured_at: Instant,
-}
-
-thread_local! {
-    static JPEG_ENCODER: RefCell<Option<turbojpeg::Compressor>> = const { RefCell::new(None) };
 }
 
 impl Frame {
@@ -128,26 +64,7 @@ impl Frame {
         {
             return Ok(data.clone());
         }
-        let data: Arc<[u8]> = JPEG_ENCODER.with(|slot| -> Result<_> {
-            let mut slot = slot.borrow_mut();
-            if slot.is_none() {
-                let mut encoder =
-                    turbojpeg::Compressor::new().context("initialize SIMD JPEG encoder")?;
-                encoder.set_subsamp(turbojpeg::Subsamp::Sub2x2)?;
-                *slot = Some(encoder);
-            }
-            let encoder = slot.as_mut().unwrap();
-            encoder.set_quality(i32::from(quality))?;
-            Ok(encoder
-                .compress_to_vec(turbojpeg::Image {
-                    pixels: &self.pixels,
-                    width: self.width as usize,
-                    pitch: self.width as usize * 4,
-                    height: self.height as usize,
-                    format: turbojpeg::PixelFormat::RGBA,
-                })?
-                .into())
-        })?;
+        let data = media_codec::encode_jpeg(self.width, self.height, &self.pixels, quality)?;
         let _ = self.jpeg.set((quality, data.clone()));
         Ok(data)
     }
@@ -1002,26 +919,6 @@ mod tests {
     #[test]
     fn input_barrier_cannot_be_requested_over_the_public_protocol() {
         assert!(serde_json::from_str::<InputCommand>(r#"{"type":"release_sync"}"#).is_err());
-    }
-
-    #[test]
-    fn rotated_outputs_report_oriented_pixel_dimensions() {
-        for transform in [
-            wl_output::Transform::_90,
-            wl_output::Transform::_270,
-            wl_output::Transform::Flipped90,
-            wl_output::Transform::Flipped270,
-        ] {
-            assert_eq!(oriented_dimensions(1920, 1080, transform), (1080, 1920));
-        }
-        for transform in [
-            wl_output::Transform::Normal,
-            wl_output::Transform::_180,
-            wl_output::Transform::Flipped,
-            wl_output::Transform::Flipped180,
-        ] {
-            assert_eq!(oriented_dimensions(1920, 1080, transform), (1920, 1080));
-        }
     }
 
     #[test]
