@@ -26,7 +26,7 @@ permissions must already permit the service user to encode. The installer does
 not install drivers or modify device permissions or user groups.
 
 ```sh
-cargo build --release --locked --features bundled-jpeg
+cargo build --release --locked --features bundled-jpeg,rdp
 cargo build --release --locked -p media-codec-ffmpeg --features native,media-codec/bundled-jpeg
 sudo ./target/release/lightos-remote-desktop install-service
 ```

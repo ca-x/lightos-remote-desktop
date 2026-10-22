@@ -13,14 +13,15 @@ reference details are in [rustdesk-reference.md](rustdesk-reference.md).
 
 ## Build and configuration
 
-RDP is absent from the default binary. Build it explicitly using Rust **1.89+**
-(IronRDP 0.13's minimum); the default software build retains Rust 1.88 and its
-existing prerequisites:
+The published Linux binary includes RDP, with its listener disabled until
+configured. Source builds can omit it: RDP is an optional Cargo feature requiring
+Rust **1.89+** (IronRDP 0.13's minimum). Builds without it retain Rust 1.88 and their
+existing prerequisites. To build with RDP:
 
 ```sh
 npm ci
 npm run build
-cargo build --release --features rdp
+cargo build --release --locked --features bundled-jpeg,rdp
 ```
 
 Runtime RDP is off by default even in that binary. Enabling it requires a PEM
