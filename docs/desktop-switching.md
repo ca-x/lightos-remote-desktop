@@ -1,5 +1,11 @@
 # Desktop switching
 
+Owned virtual sessions advertise `resize_scale` for automatic high-density
+capture. Optional `resize.scale` accepts 1, 1.5, 2, 2.5 or 3; dimensions must fit
+the existing encoder limits and divide into whole logical pixels at that scale.
+Missing scale retains the legacy scale-1 behavior. Physical sessions reject
+resizing as before.
+
 The toolbar selects the desktop source, independently of fit, 1:1 and fullscreen.
 Page reload defaults to the service's virtual desktop. A switch releases held
 input and reconnects to the authenticated, same-origin WebSocket with

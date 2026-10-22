@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button, Field, Input, Label, Popover, PopoverButton, PopoverPanel, Select, Textarea } from "@headlessui/react";
-import { Cable, Clipboard, Expand, Maximize, Minimize, MoreVertical, RefreshCw, Settings2, Volume2, VolumeX, X } from "lucide-react";
+import { Cable, Clipboard, Expand, Keyboard, Maximize, Menu, Minimize, MoreVertical, RefreshCw, Settings2, Volume2, VolumeX, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { createClient } from "./client";
+import { MOBILE_ROWS, type MobileShortcut } from "./mobile";
 import type { ControlState } from "./types";
 import i18n, { translateClient } from "./i18n";
 import { languageKey, languages, readPreference, resolveLanguage, resolveTheme, savePreference, themeKey, themes, type LanguagePreference, type ThemePreference } from "./preferences";
@@ -81,10 +82,29 @@ function Workspace({ open, close }: { open: boolean; close: (focusable?: HTMLEle
 
   useLayoutEffect(() => { lifecycle.current?.layoutTools(); }, [open, controls, language]);
   const noResize = !controls.ready || !controls.resizeAvailable;
+  const shortcut = (item: MobileShortcut) => {
+    const names: Record<string, string> = { ArrowUp: t("arrowUp"), ArrowDown: t("arrowDown"), ArrowLeft: t("arrowLeft"), ArrowRight: t("arrowRight"), Backspace: t("backspace") };
+    const label = item.modifier ? t("stickyKey", { key: item.label }) : names[item.key ?? ""] ?? item.label;
+    return <button key={item.key ?? item.text} type="button" className="mobile-key" disabled={!controls.ready}
+      data-mobile-key={item.key} data-mobile-modifiers={item.modifiers?.join(" ")} data-mobile-text={item.text}
+      aria-label={label} title={label} aria-pressed={item.modifier ? false : undefined}>{item.label}</button>;
+  };
   return <main id="viewport" className="fit" aria-label={t("viewport")} data-input="pointer"
     onPointerDownCapture={(event) => { event.currentTarget.dataset.input = "pointer"; }}
     onKeyDownCapture={(event) => { event.currentTarget.dataset.input = "keyboard"; }}>
     <canvas id="desktop" width="1280" height="720" tabIndex={0} aria-label={t("canvas")} aria-describedby="help" />
+    <textarea id="mobile-input" className="mobile-input" tabIndex={-1} aria-label={t("mobileInput")}
+      autoCapitalize="off" autoCorrect="off" autoComplete="off" spellCheck={false} inputMode="text" enterKeyHint="enter" />
+    <nav id="mobile-shortcuts" className="mobile-shortcuts" aria-label={t("mobileShortcuts")}>
+      <div className="mobile-shortcut-row" role="toolbar" aria-label={t("mobileRow1")}>
+        <button id="mobile-keyboard" className="mobile-key mobile-keyboard" type="button" disabled={!controls.ready} aria-label={t("showKeyboard")} title={t("showKeyboard")} aria-pressed="false"><Keyboard size={21} aria-hidden="true" /></button>
+        <div className="mobile-key-scroll">{MOBILE_ROWS[0].map(shortcut)}</div>
+      </div>
+      <div className="mobile-shortcut-row" role="toolbar" aria-label={t("mobileRow2")}>
+        <button id="mobile-menu" className="mobile-key" type="button" data-mobile-action="menu" disabled={!controls.ready} aria-label={t("mobileMenu")} title={t("mobileMenu")}><Menu size={19} aria-hidden="true" /></button>
+        <div className="mobile-key-scroll">{MOBILE_ROWS[1].map(shortcut)}</div>
+      </div>
+    </nav>
     <aside id="tools" aria-label={t("title")}>
       <PopoverButton id="tools-toggle" className="tool-handle" title={t("drag")} aria-label={t(open ? "close" : "open")}><MoreVertical size={22} aria-hidden="true" /></PopoverButton>
       <PopoverPanel static id="tool-panel" className={`panel ${open ? "is-open" : ""}`} inert={!open} aria-hidden={!open} aria-label={t("title")}>
@@ -134,7 +154,7 @@ function Workspace({ open, close }: { open: boolean; close: (focusable?: HTMLEle
           <Field className="preference-field"><Label htmlFor="language">{t("language")}</Label><Select id="language" value={language} onChange={(event) => { const value = event.target.value as LanguagePreference; savePreference(languageKey, value); setLanguage(value); }}><option value="system">{t("browser")}</option><option value="zh">简体中文</option><option value="en">English</option></Select></Field>
           <Field className="preference-field"><Label htmlFor="theme">{t("theme")}</Label><Select id="theme" value={theme} onChange={(event) => { const value = event.target.value as ThemePreference; savePreference(themeKey, value); setTheme(value); }}><option value="system">{t("system")}</option><option value="light">{t("light")}</option><option value="dark">{t("dark")}</option></Select></Field>
         </details>
-        <p id="help">{t("help")}</p><footer><span>LightOS Remote Desktop</span><span id="software-version" title={t("version")}>v{version}</span></footer>
+        <p id="help">{t("help")}</p><p className="mobile-help">{t("touchHelp")}</p><footer><span>LightOS Remote Desktop</span><span id="software-version" title={t("version")}>v{version}</span></footer>
       </PopoverPanel>
     </aside>
   </main>;

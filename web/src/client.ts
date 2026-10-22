@@ -1,4 +1,5 @@
 import type { ClientOptions, DesktopChoice, DesktopOutput, Elements } from "./types";
+import { createMobileControls, mobileResolution } from "./mobile";
 import audioWorkerUrl from "./audio-worker.js?url";
 import audioWorkletUrl from "./audio-worklet.js?url";
 
@@ -99,6 +100,8 @@ export function createClient(options: ClientOptions = {}) {
   const videoFrameIds = new Map<number, number | null>();
   const videoDecodeStarted = new Map<number, number>();
   let autoResizeTimer: Timer | null = null;
+  let resizeScaleAvailable = false;
+  let lastAutoResolution: string | null = null;
   let lastRequestedSize: string | null = null;
   let keyboardCaptured = false;
   let keyboardCaptureWanted = true;
@@ -114,6 +117,7 @@ export function createClient(options: ClientOptions = {}) {
   let releasingSocket: WebSocket | null = null;
   let discoveryRequest = 0;
   let refreshingDesktops = false;
+  let mobile: ReturnType<typeof createMobileControls> | null = null;
   let discoveryReason = "";
 
   function desktopLabel() {
@@ -264,24 +268,27 @@ export function createClient(options: ClientOptions = {}) {
   } catch {}
 
   function layoutTools(point: {x: number; y: number} | null = toolDrag?.moved ? toolDrag : null) {
-    const width = window.innerWidth || 1280;
-    const height = window.innerHeight || 720;
+    const bounds = mobile?.bounds();
+    const width = bounds?.width || window.innerWidth || 1280;
+    const height = bounds ? bounds.height - bounds.bar : window.innerHeight || 720;
+    const originX = bounds?.left ?? 0;
+    const originY = bounds?.top ?? 0;
     const maxX = Math.max(12, width - 52);
     const maxY = Math.max(12, height - 60);
     const horizontal = toolPosition.edge === "top" || toolPosition.edge === "bottom";
-    const left = point ? Math.max(12, Math.min(maxX, point.x)) :
+    const left = point ? Math.max(12, Math.min(maxX, point.x - originX)) :
       horizontal ? 12 + toolPosition.ratio * (maxX - 12) : toolPosition.edge === "left" ? 12 : maxX;
-    const top = point ? Math.max(12, Math.min(maxY, point.y)) :
+    const top = point ? Math.max(12, Math.min(maxY, point.y - originY)) :
       horizontal ? toolPosition.edge === "top" ? 12 : maxY : 12 + toolPosition.ratio * (maxY - 12);
-    tools.style.setProperty("--tool-x", `${left}px`);
-    tools.style.setProperty("--tool-y", `${top}px`);
+    tools.style.setProperty("--tool-x", `${left + originX}px`);
+    tools.style.setProperty("--tool-y", `${top + originY}px`);
     tools.style.setProperty("--panel-origin", toolPosition.edge === "left" ? "left center" : toolPosition.edge === "right" ? "right center" : toolPosition.edge === "top" ? "center top" : "center bottom");
     if (options.isToolsOpen ? !options.isToolsOpen() : element("tool-panel").hidden) return;
     const panel = element("tool-panel").getBoundingClientRect();
     const panelX = toolPosition.edge === "left" ? left + 48 : toolPosition.edge === "right" ? left - panel.width - 8 : left + 20 - panel.width / 2;
     const panelY = toolPosition.edge === "top" ? top + 56 : toolPosition.edge === "bottom" ? top - panel.height - 8 : top + 24 - panel.height / 2;
-    tools.style.setProperty("--panel-x", `${Math.max(12, Math.min(width - panel.width - 12, panelX))}px`);
-    tools.style.setProperty("--panel-y", `${Math.max(12, Math.min(height - panel.height - 12, panelY))}px`);
+    tools.style.setProperty("--panel-x", `${originX + Math.max(12, Math.min(width - panel.width - 12, panelX))}px`);
+    tools.style.setProperty("--panel-y", `${originY + Math.max(12, Math.min(height - panel.height - 12, panelY))}px`);
   }
 
   function saveToolPosition() {
@@ -391,6 +398,7 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   function updateControls() {
+    mobile?.update();
     options.onControls?.({ ready, wanted, audioAvailable, audioEnabled, resizeAvailable, desktopMode,
       switchingDesktop, refreshingDesktops, choices: desktopChoices, outputs: desktopOutputs });
     for (const id of controls) element(id).disabled = !ready;
@@ -478,6 +486,9 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   function resetSession() {
+    resizeScaleAvailable = false;
+    lastAutoResolution = null;
+    mobile?.reset();
     discoveryRequest += 1;
     refreshingDesktops = false;
     canvas.hidden = true;
@@ -685,6 +696,8 @@ export function createClient(options: ClientOptions = {}) {
         element("height").value = String(height);
       }
       ready = true;
+      resizeScaleAvailable = value.resize_scale === true;
+      lastAutoResolution = null;
       controlRelease = value.control_release === true;
       connectionFailure = "";
       if (typeof value.version === "string" && value.version.length <= 64 && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/.test(value.version)) {
@@ -1128,6 +1141,7 @@ export function createClient(options: ClientOptions = {}) {
   });
 
   listen(canvas, "pointerdown", (event) => {
+    if (mobile?.handlePointer(event, "down")) return;
     if (!ready || event.button < 0 || event.button > 2) return;
     event.preventDefault();
     setToolsOpen(false);
@@ -1141,11 +1155,13 @@ export function createClient(options: ClientOptions = {}) {
     if (!buttons.has(event.button) && send({ type: "button", button: event.button, pressed: true })) buttons.add(event.button);
   });
   listen(canvas, "pointermove", (event) => {
+    if (mobile?.handlePointer(event, "move")) return;
     if (!ready) return;
     pendingMove = { clientX: event.clientX, clientY: event.clientY };
     if (moveFrame === null) moveFrame = requestAnimationFrame(flushMove);
   });
   listen(canvas, "pointerup", (event) => {
+    if (mobile?.handlePointer(event, "up")) return;
     flushMove();
     if (buttons.delete(event.button)) send({ type: "button", button: event.button, pressed: false });
     if (!buttons.size) {
@@ -1153,8 +1169,9 @@ export function createClient(options: ClientOptions = {}) {
       if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
     }
   });
-  listen(canvas, "pointercancel", release);
+  listen(canvas, "pointercancel", (event) => { if (!mobile?.handlePointer(event, "cancel")) release(); });
   listen(canvas, "lostpointercapture", (event) => {
+    if (event.pointerType === "touch") { mobile?.lostPointer(event.pointerId); return; }
     if (capturedPointers.has(event.pointerId)) release();
   });
   listen(canvas, "contextmenu", (event) => event.preventDefault());
@@ -1253,6 +1270,7 @@ export function createClient(options: ClientOptions = {}) {
         windowMode = mode === "actual" ? "actual" : "fit";
         if (document.fullscreenElement) await document.exitFullscreen();
         if (windowMode === "actual") {
+          lastAutoResolution = null;
           element("auto-resolution").checked = false;
           cancelTimer(autoResizeTimer);
           autoResizeTimer = null;
@@ -1280,16 +1298,23 @@ export function createClient(options: ClientOptions = {}) {
   function scheduleAutoResize() {
     cancelTimer(autoResizeTimer);
     autoResizeTimer = null;
-    if (!ready || !resizeAvailable || !element("auto-resolution").checked) return;
+    if (!ready || !resizeAvailable || mobile?.keyboardActive() || !element("auto-resolution").checked) return;
     autoResizeTimer = setTimeout(() => {
       autoResizeTimer = null;
-      if (!ready || !resizeAvailable || !element("auto-resolution").checked || document.hidden || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return;
-      const width = Math.max(320, Math.min(3840, Math.floor(viewport.clientWidth / 2) * 2));
-      const height = Math.max(200, Math.min(2160, Math.floor(viewport.clientHeight / 2) * 2));
+      if (!ready || !resizeAvailable || mobile?.keyboardActive() || !element("auto-resolution").checked || document.hidden || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return;
+      const bounds = mobile?.bounds();
+      const scaled = !!bounds && resizeScaleAvailable;
+      const target = scaled ? mobileResolution(bounds.width, bounds.height - bounds.bar, window.devicePixelRatio || 1) : {
+        width: Math.max(320, Math.min(3840, Math.floor(viewport.clientWidth / 2) * 2)),
+        height: Math.max(200, Math.min(2160, Math.floor((bounds ? bounds.height - bounds.bar : viewport.clientHeight) / 2) * 2)), scale: 1,
+      };
+      const { width, height, scale } = target;
       const size = `${width}x${height}`;
-      if (lastRequestedSize === size || (canvas.width === width && canvas.height === height)) return;
+      const resolution = `${size}@${scale}`;
+      if (scaled ? lastAutoResolution === resolution : lastRequestedSize === size || (canvas.width === width && canvas.height === height)) return;
       release();
-      if (send({ type: "resize", width, height })) {
+      if (send({ type: "resize", width, height, ...(scaled ? { scale } : {}) })) {
+        lastAutoResolution = resolution;
         lastRequestedSize = size;
         element("width").value = String(width);
         element("height").value = String(height);
@@ -1298,7 +1323,7 @@ export function createClient(options: ClientOptions = {}) {
     }, 250);
   }
   listen(window, "resize", scheduleAutoResize);
-  listen(element("auto-resolution"), "change", scheduleAutoResize);
+  listen(element("auto-resolution"), "change", () => { lastAutoResolution = null; scheduleAutoResize(); });
   listen(element("fullscreen"), "click", async () => {
     await displayMode(isDesktopFullscreen() ? windowMode : "fullscreen");
   });
@@ -1355,6 +1380,10 @@ export function createClient(options: ClientOptions = {}) {
       if (element(id).checked) chord.push(KEY_CODES[code]);
     }
     if (!chord.includes(KEY_CODES[mainKey])) chord.push(KEY_CODES[mainKey]);
+    sendChord(chord);
+    message("组合键已发送到远程桌面。");
+  });
+  function sendChord(chord: number[]) {
     release();
     for (const code of chord) {
       if (!send({ type: "key", code, pressed: true })) return;
@@ -1364,10 +1393,10 @@ export function createClient(options: ClientOptions = {}) {
       if (!send({ type: "key", code, pressed: false })) return;
       keys.delete(code);
     }
-    message("组合键已发送到远程桌面。");
-  });
+  }
   listen(element("resize"), "submit", (event) => {
     event.preventDefault();
+    lastAutoResolution = null;
     if (!ready || !resizeAvailable) return;
     const width = Number(element("width").value);
     const height = Number(element("height").value);
@@ -1401,6 +1430,7 @@ export function createClient(options: ClientOptions = {}) {
     if (destroyed) return;
     disconnect();
     destroyed = true;
+    mobile?.dispose();
     toolObserver?.disconnect();
     listeners.abort();
     if (socket) {
@@ -1416,6 +1446,12 @@ export function createClient(options: ClientOptions = {}) {
   });
   listen(window, "pageshow", (event) => {
     if (event.persisted && resumeWanted) { wanted = true; updateControls(); connect(); }
+  });
+  mobile = createMobileControls({
+    canvas, viewport, input: element("mobile-input"), bar: element("mobile-shortcuts"), toggle: element("mobile-keyboard"),
+    ready: () => ready, send, text: typeText, move, tools: (open) => setToolsOpen(open), translate,
+    chord: (codes) => { if (ready && codes.every((code) => Object.hasOwn(KEY_CODES, code))) sendChord(codes.map((code) => KEY_CODES[code])); },
+    layout: () => { layoutTools(); scheduleAutoResize(); },
   });
   wanted = true;
   setToolsOpen(false);

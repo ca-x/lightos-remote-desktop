@@ -60,7 +60,7 @@ fn health(port: u16) -> bool {
         && response.contains("\"native\":true")
 }
 
-fn resize_through_websocket(port: u16, width: u32, height: u32) {
+fn resize_through_websocket(port: u16, width: u32, height: u32, scale: Option<f64>) {
     use base64::{Engine, engine::general_purpose::STANDARD};
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::{
@@ -97,12 +97,12 @@ fn resize_through_websocket(port: u16, width: u32, height: u32) {
             matches!(ready, Message::Text(ref text) if text.contains("\"type\":\"ready\"")),
             "{ready:?}"
         );
+        let mut resize = serde_json::json!({"type":"resize", "width":width, "height":height});
+        if let Some(scale) = scale {
+            resize["scale"] = serde_json::json!(scale);
+        }
         socket
-            .send(Message::Text(
-                serde_json::json!({"type":"resize", "width":width, "height":height})
-                    .to_string()
-                    .into(),
-            ))
+            .send(Message::Text(resize.to_string().into()))
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(10), async {
@@ -123,6 +123,15 @@ fn resize_through_websocket(port: u16, width: u32, height: u32) {
         .await
         .expect("resized real frame from native Lua desktop");
         socket.close(None).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if matches!(socket.next().await.unwrap().unwrap(), Message::Close(_)) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("control was not released before closing");
     });
 }
 
@@ -283,7 +292,18 @@ fn transport_restart_preserves_native_desktop_and_gui_process() {
             );
             thread::sleep(Duration::from_millis(100));
         }
-        resize_through_websocket(port, 800 + generation * 80, 600 + generation * 40);
+        resize_through_websocket(port, 800 + generation * 80, 600 + generation * 40, None);
+        let (width, height, scale) = if generation == 1 {
+            (780, 1476, 2.0)
+        } else {
+            (970, 1840, 2.5)
+        };
+        resize_through_websocket(port, width, height, Some(scale));
+        let monitors: Value =
+            serde_json::from_str(&ipc(runtime.path(), signature, "j/monitors")).unwrap();
+        assert_eq!(monitors[0]["width"], width);
+        assert_eq!(monitors[0]["height"], height);
+        assert_eq!(monitors[0]["scale"], scale);
         assert_eq!(client_pid(), Some(app));
         drop(transport);
         assert!(owner.0.try_wait().unwrap().is_none());

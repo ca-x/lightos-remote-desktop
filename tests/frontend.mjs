@@ -4,7 +4,8 @@ import test from "node:test";
 import vm from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
 
-const source = stripTypeScriptTypes(readFileSync(new URL("../web/src/client.ts", import.meta.url), "utf8"))
+const mobileSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/mobile.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
+const source = mobileSource + "\n" + stripTypeScriptTypes(readFileSync(new URL("../web/src/client.ts", import.meta.url), "utf8"))
   .replace(/^import .* from .*;$/gm, "")
   .replace(/^export /gm, "") + '\nconst audioWorkerUrl = "./audio-worker.js"; const audioWorkletUrl = "./audio-worklet.js"; const client = createClient(clientOptions);';
 const html = readFileSync(new URL("../web/src/App.tsx", import.meta.url), "utf8");

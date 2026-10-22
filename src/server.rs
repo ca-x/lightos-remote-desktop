@@ -601,7 +601,7 @@ async fn connection(
     let audio_available = state.config.audio && audio_source.is_some();
     let audio_session = audio_available.then(|| state.audio_hub.start());
     let ready = Message::Text(
-        json!({"type":"ready","control_release":true,"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":"embedded","audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":["h264","jpeg"],"desktop":state.desktop,"desktops":state.desktop_options(),"resize":state.desktop == DesktopMode::Virtual,"outputs":state.outputs,"output":state.output})
+        json!({"type":"ready","control_release":true,"resize_scale":state.desktop == DesktopMode::Virtual,"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":"embedded","audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":["h264","jpeg"],"desktop":state.desktop,"desktops":state.desktop_options(),"resize":state.desktop == DesktopMode::Virtual,"outputs":state.outputs,"output":state.output})
             .to_string()
             .into(),
     );
@@ -1015,24 +1015,9 @@ async fn handle_command(
                     && state.session.lock().unwrap().signature.is_some(),
                 "resize requires an owned desktop session"
             );
-            let width = value
-                .get("width")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(0);
-            let height = value
-                .get("height")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(0);
-            anyhow::ensure!(
-                (320..=3840).contains(&width) && (200..=2160).contains(&height),
-                "invalid dimensions"
-            );
+            let (monitor, lua_monitor) = monitor_rules(&value, state.config.fps)?;
             let mut command = helper(state, "hyprctl");
-            command.args([
-                "keyword",
-                "monitor",
-                &format!(",{width}x{height}@{},auto,1", state.config.fps),
-            ]);
+            command.args(["keyword", "monitor", &monitor]);
             let output = timeout(Duration::from_secs(2), command.output()).await??;
             anyhow::ensure!(output.status.success(), "desktop resize failed");
             let mut response = String::from_utf8(output.stdout)?;
@@ -1040,13 +1025,7 @@ async fn handle_command(
             // Fall back only for the explicit parser capability response.
             if response.trim() == "keyword can't work with non-legacy parsers. Use eval." {
                 let mut command = helper(state, "hyprctl");
-                command.args([
-                    "eval",
-                    &format!(
-                        "hl.monitor({{ output = \"\", mode = \"{width}x{height}@{}\", position = \"auto\", scale = 1 }})",
-                        state.config.fps
-                    ),
-                ]);
+                command.args(["eval", &lua_monitor]);
                 let output = timeout(Duration::from_secs(2), command.output()).await??;
                 anyhow::ensure!(output.status.success(), "Lua desktop resize failed");
                 response = String::from_utf8(output.stdout)?;
@@ -1096,10 +1075,106 @@ fn error_message(message: &str) -> Message {
     Message::Text(json!({"type":"error","message":message}).to_string().into())
 }
 
+fn monitor_rules(value: &serde_json::Value, fps: u32) -> anyhow::Result<(String, String)> {
+    let width = value
+        .get("width")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let height = value
+        .get("height")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    anyhow::ensure!(
+        (320..=3840).contains(&width) && (200..=2160).contains(&height),
+        "invalid dimensions"
+    );
+    let scale = match value.get("scale") {
+        None => 1.0,
+        Some(value) => value
+            .as_f64()
+            .ok_or_else(|| anyhow::anyhow!("invalid desktop scale"))?,
+    };
+    anyhow::ensure!(
+        [1.0, 1.5, 2.0, 2.5, 3.0].contains(&scale),
+        "invalid desktop scale"
+    );
+    let logical_width = width as f64 / scale;
+    let logical_height = height as f64 / scale;
+    anyhow::ensure!(
+        logical_width.fract() == 0.0
+            && logical_height.fract() == 0.0
+            && logical_width >= 320.0
+            && logical_height >= 200.0,
+        "invalid scaled dimensions"
+    );
+    Ok((
+        format!(",{width}x{height}@{fps},auto,{scale}"),
+        format!(
+            "hl.monitor({{ output = \"\", mode = \"{width}x{height}@{fps}\", position = \"auto\", scale = {scale} }})"
+        ),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tower::ServiceExt;
+
+    #[test]
+    fn high_density_monitor_rules_preserve_logical_size_and_validate_scale() {
+        assert_eq!(
+            monitor_rules(&json!({"width":780,"height":1476,"scale":2}), 30)
+                .unwrap()
+                .0,
+            ",780x1476@30,auto,2"
+        );
+        assert_eq!(
+            monitor_rules(&json!({"width":582,"height":1110,"scale":1.5}), 30)
+                .unwrap()
+                .0,
+            ",582x1110@30,auto,1.5"
+        );
+        assert_eq!(
+            monitor_rules(&json!({"width":801,"height":601}), 30)
+                .unwrap()
+                .0,
+            ",801x601@30,auto,1"
+        );
+        assert_eq!(
+            monitor_rules(&json!({"width":970,"height":1840,"scale":2.5}), 30)
+                .unwrap()
+                .0,
+            ",970x1840@30,auto,2.5"
+        );
+        assert_eq!(
+            monitor_rules(&json!({"width":1080,"height":1602,"scale":3}), 30)
+                .unwrap()
+                .0,
+            ",1080x1602@30,auto,3"
+        );
+        assert_eq!(
+            monitor_rules(&json!({"width":780,"height":1476,"scale":2}), 30)
+                .unwrap()
+                .1,
+            "hl.monitor({ output = \"\", mode = \"780x1476@30\", position = \"auto\", scale = 2 })"
+        );
+        assert_eq!(
+            monitor_rules(&json!({"width":970,"height":1840,"scale":2.5}), 30)
+                .unwrap()
+                .1,
+            "hl.monitor({ output = \"\", mode = \"970x1840@30\", position = \"auto\", scale = 2.5 })"
+        );
+        for value in [
+            json!({"width":780,"height":1476,"scale":0}),
+            json!({"width":780,"height":1476,"scale":4}),
+            json!({"width":780,"height":1476,"scale":"2"}),
+            json!({"width":781,"height":1476,"scale":2}),
+            json!({"width":320,"height":200,"scale":2}),
+            json!({"width":4000,"height":2000,"scale":2}),
+        ] {
+            assert!(monitor_rules(&value, 30).is_err(), "{value}");
+        }
+    }
 
     #[tokio::test]
     async fn input_is_delivered_while_control_writer_is_not_draining() {

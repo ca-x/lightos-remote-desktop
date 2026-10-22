@@ -3,6 +3,78 @@
 Date: 2026-10-22 (machine local date). This records a verified initial native
 implementation, not complete Selkies or Omarchy feature parity.
 
+## Mobile input and shortcuts (remote-mobile)
+
+The mobile branch adds an explicit keyboard toggle pinned at the left of the
+first shortcut row, one-shot modifiers and a two-row WebShell-inspired bar.
+With the keyboard closed, fit mode lays out the bar directly below the canvas;
+the open-keyboard and 1:1 layouts reserve a separate visible area for it.
+VisualViewport geometry positions the bar above the keyboard without resizing
+the remote desktop. Touch supports taps, dragging, hold-to-right-click and
+two-finger scrolling, with cancellation and input/composition cleanup.
+
+77 Node regression tests and 10 Vitest tests passed, including seven focused
+mobile-controller cases. The frontend typecheck/build, bundled-JPEG release
+build, whitespace checks and specification validation passed.
+
+Real Chrome with a 390x844 touch viewport exercised the separately running native
+candidate, then rotated to 844x390. Proxy-input text `中文mobile🙂` was typed into
+the candidate's terminal and verified through its output file. A sticky Ctrl+L
+chord, retained input focus, keyboard toggle, touch drag/right-click/scroll and
+the keyboard-height simulation passed. The keyboard-height simulation emitted
+no remote resize request. With the actual 1920x1080 HDMI-A-1 source in portrait,
+the canvas bottom and bar top both measured 479.1875 CSS pixels, without page
+horizontal overflow. The first keyboard button stayed at x=6 CSS pixels.
+
+This is browser touch-viewport evidence, not a physical-phone keyboard test.
+The user will manually verify OS keyboard presentation, IME and safe areas on
+their phone. The validated candidate SHA-256 is
+`df63ea9a660ad1b446e9e5d2fa4921a969811c0f72943bdf19e54bd68d2875e4`.
+It was installed on the local service after candidate validation. The installer's
+health/stability gate passed with zero automatic restarts, and the authenticated
+served JavaScript matched the current build byte-for-byte. Physical-phone manual
+verification remains pending.
+
+### Mobile density and floating-entry follow-up
+
+Automatic mobile sizing previously captured one pixel per CSS pixel, causing
+upscaling on high-density screens. The new `resize_scale` capability lets the
+client request higher capture density together with compositor scaling, bounded
+by the existing 3840x2160 encoder limits. Legacy requests omit scale and retain
+scale 1. Physical desktop resolution and scale remain protected.
+
+The focused browser checks used the current built frontend with the identical
+candidate backend. Capture/output observations were 780x1476 at scale 2 for a
+390x844/DPR2 viewport; 970x1840 at scale 2.5 for a 390x844/DPR3 viewport; and
+1080x1602 at scale 3 for a 360x640/DPR3 viewport. Logical dimensions stayed near
+the usable CSS viewport. A desktop pointer context retained 1280x800/scale 1.
+Earlier in this candidate run, Unicode terminal input, keyboard geometry and
+normalized touch coordinates at scale 2 passed through the real input pipeline.
+
+The floating entry is transparent, ignores pointer input and is removed from
+tab/accessibility navigation while the bar is shown; its internal focus anchor
+remains for Headless UI. The bottom menu opened interactive settings and closed
+successfully for all three touch density cases. The desktop floating entry stayed
+visible. Native smartphone keyboard/sharpness judgement remains a manual check.
+77 Node tests, 12 Vitest tests, 57 Rust unit tests and the installer fixture passed;
+clippy, release build and specification validation passed. Release
+`9560d5ae22f9813b1844af8666f98cde9e5713cac11e77819475d1de41c6b240`
+was installed locally and passed the health/stability gate with zero restarts.
+
+### Rebase onto native desktop/session support
+
+The mobile changes were rebased onto main `b57675d` (v0.1.7), retaining native
+configuration loading, persistent session ownership and attached-installation
+handling. Legacy monitor keywords and the Lua `hl.monitor` fallback now use the
+same validated dimensions and scale, including high-density mobile requests.
+
+The explicit native Lua session test decoded real resized frames at scale 2
+and 2.5 and checked the actual output scale. The same GUI process and desktop
+signature survived two transport generations; 230 native bindings remained
+active with no configuration errors. This test owned its isolated session and
+transport processes. Frontend tests, bundled-JPEG workspace tests, workspace
+Clippy, formatting, 40 installer fixtures and 13 compatibility fixtures passed.
+
 ## Desktop-switch close-handshake regression (2026-10-22)
 
 The actual authenticated HTTPS gateway reproduced the reported delay: the old

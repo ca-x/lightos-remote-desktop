@@ -125,6 +125,11 @@ must already be provisioned; installation does not download libraries or package
 
 ### Desktop controls
 
+Touch devices have a two-row shortcut bar with a pinned keyboard toggle. The
+bar sits below the desktop image while the keyboard is closed and follows the
+visible viewport above the open keyboard. Touch supports taps, dragging, hold
+for right-click and two-finger scrolling. See [docs/mobile-input.md](docs/mobile-input.md).
+
 The desktop fills the page. The right-hand icon opens floating controls;
 icon tooltips and keyboard focus labels identify actions. Display modes are
 fit-to-window, configured resolution at 1:1 with scrolling, and browser fullscreen.
