@@ -773,6 +773,37 @@ test("automatic resolution follows viewport CSS pixels with debounce, even dimen
   assert.equal(app.timers.size, 0);
 });
 
+for (const acknowledgeInitialResize of [false, true]) {
+  test(`fullscreen restores resolution after a manual downsize (${acknowledgeInitialResize ? "completed" : "pending"} earlier request)`, async () => {
+    const app = harness();
+    const socket = app.ready();
+    app.nodes.viewport.clientWidth = 640;
+    app.nodes.viewport.clientHeight = 360;
+    app.nodes["auto-resolution"].checked = true;
+    app.window.fire("resize");
+    app.tick();
+    if (acknowledgeInitialResize) {
+      socket.binary(jpeg(1));
+      app.decodes.at(-1).resolve(bitmap(640, 360));
+      await flush();
+    }
+    app.nodes.width.value = "320";
+    app.nodes.height.value = "200";
+    app.nodes.resize.fire("submit");
+    socket.binary(jpeg(2));
+    app.decodes.at(-1).resolve(bitmap(320, 200));
+    await flush();
+    assert.equal(app.nodes.desktop.width, 320);
+    const beforeFullscreen = socket.sent.length;
+    app.nodes.fullscreen.fire("click");
+    await flush();
+    app.tick();
+    assert.deepEqual(socket.sent.slice(beforeFullscreen).filter((command) => command.type === "resize"), [
+      { type: "resize", width: 640, height: 360 },
+    ]);
+  });
+}
+
 function jpeg(marker) { return new Uint8Array([1, marker]).buffer; }
 function bitmap(width = 1280, height = 720) { return { width, height, closed: false, close() { this.closed = true; } }; }
 function pcm(frames = 1) {

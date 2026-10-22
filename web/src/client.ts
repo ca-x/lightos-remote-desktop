@@ -327,6 +327,7 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   function resizeCanvas(width: number, height: number) {
+    if (lastRequestedSize === `${width}x${height}`) lastRequestedSize = null;
     if (canvas.width !== width) canvas.width = width;
     if (canvas.height !== height) canvas.height = height;
     canvas.style.setProperty("--desktop-aspect", String(width / height));
@@ -1105,6 +1106,7 @@ export function createClient(options: ClientOptions = {}) {
     element("auto-resolution").checked = false;
     cancelTimer(autoResizeTimer);
     autoResizeTimer = null;
+    lastRequestedSize = null;
     if (send({ type: "resize", width, height })) message("Resize requested; waiting for the server.");
   });
   listen(element("send-text"), "click", () => { if (!composing) typeText(textBox.value); });
