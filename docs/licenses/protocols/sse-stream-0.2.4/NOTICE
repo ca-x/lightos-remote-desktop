@@ -1,0 +1,7 @@
+sse-stream 0.2.4, upstream revision 92dcf45bf1917324e60378bddbc92de3ed258eb0.
+
+The published manifest declares MIT OR Apache-2.0. This crate archive and the
+exact upstream repository revision do not contain a separate license file.
+The original manifest (including authors and license declaration) is retained
+verbatim beside the standard Apache License, Version 2.0 text. This notice
+records the available upstream attribution; it does not add a license grant.

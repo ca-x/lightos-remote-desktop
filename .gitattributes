@@ -1,1 +1,4 @@
 *.patch whitespace=-blank-at-eol,-blank-at-eof
+
+# Preserve verbatim upstream notices, including terminal blank lines.
+docs/licenses/protocols/** whitespace=-blank-at-eof

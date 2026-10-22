@@ -69,9 +69,11 @@ does not embed CPython or invoke the original Selkies Python launcher.
 Video negotiates H.264 through in-process OpenH264 and browser WebCodecs,
 with SIMD JPEG fallback when WebCodecs/encoding is unavailable. WebCodecs needs
 a secure browser context (HTTPS or localhost); H.264 requires even dimensions.
-The default capture cap is 30 FPS. This is CPU encoding, not DMA-BUF zero-copy
-or hardware video encoding. Audio uses stereo PCM, not Opus. Microphone uplink, image
-clipboard, file transfer, gamepads and multi-monitor control are not implemented.
+The default capture cap is 30 FPS. Software H.264 is built in; an optional native
+worker adds probed VA-API/NVENC/AMF/VideoToolbox H.264 encoding with software
+fallback. Capture still uses CPU buffers, without DMA-BUF zero-copy. Audio uses
+stereo Opus with PCM fallback. Microphone uplink, image clipboard, file transfer,
+gamepads and multi-monitor control are not implemented.
 Do not assume equivalent bandwidth or latency; benchmark your deployment.
 Capture reuses a connection for at most eight frames / 250 ms between captures,
 amortizing AF_UNIX and Wayland setup while still bounding libwayshot 0.9
@@ -83,8 +85,9 @@ Sequenced clients use a render-ACK-timed window of one to three frames; codec
 changes and new H.264 encoders wait for their first rendered frame before expanding.
 H.264 samples the latest raw frame only when video credit is available, so it
 does not discard predictive frames after encoding. Reconnect and resolution
-changes create a fresh encoder/keyframe. RustDesk-inspired adaptive bitrate,
-GPU capture and remote cursor-shape streaming are not implemented.
+changes create a fresh encoder/keyframe. Automatic, low-latency, smooth and
+quality-first policies adjust pacing and supported encoder bitrate from bounded
+ACK feedback. GPU capture and remote cursor-shape streaming are not implemented.
 
 ## Build and test
 

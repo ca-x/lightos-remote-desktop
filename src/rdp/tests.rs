@@ -609,3 +609,221 @@ async fn invalid_tls_files_fail_before_opening_the_rdp_listener() {
     let error = start(state).await.err().unwrap();
     assert!(error.to_string().contains("certificate chain is empty"));
 }
+
+#[tokio::test]
+async fn browser_mcp_and_rdp_share_control_and_release_after_cancellation() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use futures_util::StreamExt;
+    use serde_json::{Value, json};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    async fn rpc(
+        client: &reqwest::Client,
+        base: &str,
+        token: &str,
+        session: &str,
+        value: Value,
+    ) -> Value {
+        let response = client
+            .post(format!("{base}/mcp"))
+            .bearer_auth(token)
+            .header("Accept", "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", "2025-11-25")
+            .header("Mcp-Session-Id", session)
+            .json(&value)
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        let text = response.text().await.unwrap();
+        if text.is_empty() {
+            return Value::Null;
+        }
+        let body = text
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .next_back()
+            .unwrap_or(&text);
+        serde_json::from_str(body).unwrap()
+    }
+    let directory = tempfile::Builder::new()
+        .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let (mut state, frames, mut input) = fixture();
+    state.mcp = Arc::new(crate::mcp::TokenStore::open(Some(
+        directory.path().join("mcp.json"),
+    )));
+    Arc::make_mut(&mut state.config).subfolder = "/integration".into();
+    let drag_started = Arc::new(Notify::new());
+    let started = drag_started.clone();
+    let worker = tokio::spawn(async move {
+        while let Some(command) = input.recv().await {
+            let Some((command, guard)) = command.into_active() else {
+                continue;
+            };
+            match command {
+                InputCommand::ReleaseSync { done } => {
+                    let _ = done.send(());
+                }
+                InputCommand::Button { pressed: true, .. } => started.notify_one(),
+                _ => {}
+            }
+            if let Some(guard) = guard {
+                guard.text_done.notify_one();
+            }
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = crate::server::router(state.clone());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{address}/integration");
+    let origin = format!("http://{address}");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .unwrap();
+    let managed = |method, suffix: &str| {
+        client
+            .request(method, format!("{base}/{suffix}"))
+            .basic_auth("lightos", Some("rdp-test-password"))
+            .header("Origin", &origin)
+            .header("X-LightOS-MCP", "1")
+    };
+    let enabled = managed(reqwest::Method::PUT, "api/mcp")
+        .json(&json!({"enabled":true}))
+        .send()
+        .await
+        .unwrap();
+    let status = enabled.status();
+    let text = enabled.text().await.unwrap();
+    assert!(status.is_success(), "MCP setup {status}: {text}");
+    let token: Value = managed(reqwest::Method::POST, "api/mcp/tokens")
+        .json(&json!({"name":"Integration", "scope":"control"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = token["token"].as_str().unwrap().to_owned();
+    let response = client.post(format!("{base}/mcp")).bearer_auth(&token)
+        .header("Accept", "application/json, text/event-stream")
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"Integrated transports","version":"1"}}}))
+        .send().await.unwrap();
+    assert!(response.status().is_success());
+    let session = response.headers()["mcp-session-id"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let _ = response.text().await.unwrap();
+    assert!(
+        client
+            .post(format!("{base}/mcp"))
+            .bearer_auth(&token)
+            .header("Accept", "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", "2025-11-25")
+            .header("Mcp-Session-Id", &session)
+            .json(&json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+
+    let connection = connection(state.clone());
+    connection.authenticated.store(true, Ordering::Release);
+    let mut display = Display {
+        connection: connection.clone(),
+        announced: Arc::default(),
+    };
+    let mut websocket = format!("ws://{address}/integration/ws")
+        .into_client_request()
+        .unwrap();
+    websocket.headers_mut().insert(
+        "Authorization",
+        format!("Basic {}", STANDARD.encode("lightos:rdp-test-password"))
+            .parse()
+            .unwrap(),
+    );
+    websocket
+        .headers_mut()
+        .insert("Origin", origin.parse().unwrap());
+    let (mut browser, _) = tokio_tungstenite::connect_async(websocket).await.unwrap();
+    let ready = tokio::time::timeout(Duration::from_secs(5), browser.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(ready.to_text().unwrap().contains("\"type\":\"ready\""));
+    assert!(display.updates().await.is_err(), "browser must exclude RDP");
+    let move_call = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"mouse_move","arguments":{"x":10,"y":10}}});
+    assert_eq!(
+        rpc(&client, &base, &token, &session, move_call.clone()).await["result"]["isError"],
+        true,
+        "browser must exclude MCP input"
+    );
+    browser.close(None).await.unwrap();
+    let updates = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            match display.updates().await {
+                Ok(updates) => break updates,
+                Err(_) => tokio::task::yield_now().await,
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        rpc(&client, &base, &token, &session, move_call).await["result"]["isError"],
+        true,
+        "RDP must exclude MCP input"
+    );
+    frames.send_replace(Some(rdp_frame(320, 200, [230, 40, 60, 255])));
+    let info = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"desktop_info","arguments":{}}});
+    let info = rpc(&client, &base, &token, &session, info).await;
+    assert!(
+        info["result"]["content"].is_array() && info["result"]["isError"] != true,
+        "observation remains available: {info}"
+    );
+    drop(updates);
+    connection.deactivate().unwrap().release().await;
+
+    let drag = tokio::spawn({
+        let (client, base, token, session) =
+            (client.clone(), base.clone(), token.clone(), session.clone());
+        async move {
+            rpc(&client, &base, &token, &session, json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"mouse_drag","arguments":{"from_x":0,"from_y":0,"to_x":63,"to_y":47,"duration_ms":1000}}})).await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(3), drag_started.notified())
+        .await
+        .unwrap();
+    assert!(
+        display.updates().await.is_err(),
+        "MCP drag must exclude RDP"
+    );
+    assert!(
+        state.claim_rdp_control().is_err(),
+        "MCP drag must exclude browser control"
+    );
+    assert!(client.post(format!("{base}/mcp")).bearer_auth(&token)
+        .header("Accept", "application/json, text/event-stream").header("MCP-Protocol-Version", "2025-11-25").header("Mcp-Session-Id", &session)
+        .json(&json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7,"reason":"Integration handover"}}))
+        .send().await.unwrap().status().is_success());
+    let result = drag.await.unwrap();
+    assert!(
+        result.is_null() || result.get("error").is_some() || result["result"]["isError"] == true,
+        "canceled drag must not succeed: {result}"
+    );
+    state.claim_rdp_control().unwrap().release().await;
+    let updates = display.updates().await.unwrap();
+    drop(updates);
+    connection.deactivate().unwrap().release().await;
+    server.abort();
+    worker.abort();
+}

@@ -1,0 +1,99 @@
+[
+  {
+    "name": "asn1-rs-impl",
+    "version": "0.2.0",
+    "repository": "rusticata/asn1-rs",
+    "commit": "a20e5f7319c896737ad0f2557037817b91ad854f",
+    "files": [
+      {
+        "path": "asn1-rs-impl-0.2.0/LICENSE-APACHE",
+        "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+      },
+      {
+        "path": "asn1-rs-impl-0.2.0/LICENSE-MIT",
+        "sha256": "a5c61b93b6ee1d104af9920cf020ff3c7efe818e31fe562c72261847a728f513"
+      }
+    ],
+    "root_files": []
+  },
+  {
+    "name": "ironrdp-echo",
+    "version": "0.4.0",
+    "repository": "Devolutions/IronRDP",
+    "commit": "11a0810cfbbabd8b8023875a05e3041216d4b01b",
+    "files": [
+      {
+        "path": "ironrdp-echo-0.4.0/LICENSE-APACHE",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      },
+      {
+        "path": "ironrdp-echo-0.4.0/LICENSE-MIT",
+        "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+      }
+    ],
+    "root_files": []
+  },
+  {
+    "name": "rustcrypto-ff_derive",
+    "version": "0.14.0-rc.0",
+    "repository": "zkcrypto/ff",
+    "commit": "8417973539baabf561975144e0a68d166d0f9a95",
+    "files": [
+      {
+        "path": "rustcrypto-ff_derive-0.14.0-rc.0/LICENSE-APACHE",
+        "sha256": "3708458dee7f359ac6c9c5558023ed481be87e5372c43ebd7f2ca7ad23c12026"
+      },
+      {
+        "path": "rustcrypto-ff_derive-0.14.0-rc.0/LICENSE-MIT",
+        "sha256": "8d0c1d1d4b2bebf5b9211f0e883d5a482b7808f3ed31320da14ddee95811f4ef"
+      }
+    ],
+    "root_files": []
+  },
+  {
+    "name": "sse-stream",
+    "version": "0.2.4",
+    "repository": "4t145/sse-stream",
+    "commit": "92dcf45bf1917324e60378bddbc92de3ed258eb0",
+    "files": [
+      {
+        "path": "sse-stream-0.2.4/Cargo.toml.orig",
+        "sha256": "f591b3d4d3508fdaef988feafee0ffa675c78359566b90da127855c85f03d5dd"
+      },
+      {
+        "path": "sse-stream-0.2.4/LICENSE-APACHE",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      },
+      {
+        "path": "sse-stream-0.2.4/NOTICE",
+        "sha256": "44f87214489c861bd9e16daa1c5215fcd6a55ef351293cb7b9d3dc5266d5d671"
+      }
+    ],
+    "root_files": [
+      ".github",
+      ".gitignore",
+      "Cargo.toml",
+      "README.md",
+      "src",
+      "tests"
+    ],
+    "note": "No upstream license file at this revision; preserved published license declaration and standard Apache-2.0 text."
+  },
+  {
+    "name": "winscard",
+    "version": "0.3.3",
+    "repository": "devolutions/sspi-rs",
+    "commit": "fb5ce085e48c337b03968349f5e2e85c83959754",
+    "files": [
+      {
+        "path": "winscard-0.3.3/LICENSE-APACHE",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      },
+      {
+        "path": "winscard-0.3.3/LICENSE-MIT",
+        "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+      }
+    ],
+    "root_files": []
+  }
+]

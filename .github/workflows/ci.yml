@@ -81,7 +81,7 @@ jobs:
           cp "$jpeg_license" "dist/$package/licenses/libjpeg-turbo.md"
           cp "$wrapper_license" "dist/$package/licenses/turbojpeg.txt"
           cp web/dist/NOTICE.frontend.txt "dist/$package/licenses/frontend.txt"
-          python3 scripts/mcp-notices.py "dist/$package/licenses/mcp.txt"
+          python3 scripts/mcp-notices.py "dist/$package/licenses/protocol-dependencies.txt"
           openh264_license=$(find "$registry" -path '*/openh264-sys2-*/upstream/LICENSE' -print -quit)
           openh264_wrapper_notice=$(find "$registry" -path '*/openh264-0.9.9/README.md' -print -quit)
           test -s "$openh264_license" && test -s "$openh264_wrapper_notice"
