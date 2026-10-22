@@ -17,8 +17,8 @@ Architecture: platform-detect reads OS identity and installed desktop capabiliti
 ## Tasks
 - [x] 1. Add platform-detect crate; fixture coverage for Arch, EndeavourOS, Manjaro, Omarchy, missing installs and actual Lua verification. Integrate doctor diagnostics.
 - [x] 2. Add desktop-config crate; keep legacy fallback, add selective Lua entry with session state/PATH isolation; verify generated config against installed Hyprland without changing host files.
-- [ ] 3. Separate desktop owner from transport. Add desktop-session CLI, atomic metadata, validated attachment, owned cleanup regression and reattachment tests.
-- [ ] 4. Integrate session systemd template and transactional installer snapshots/rollback. Validate no session restart during upgrade/recovery, and preserve fixture-only staging.
+- [x] 3. Separate desktop owner from transport. Add desktop-session CLI, atomic metadata, validated attachment, owned cleanup regression and reattachment tests.
+- [x] 4. Integrate session systemd template and transactional installer snapshots/rollback. Validate no session restart during upgrade/recovery, and preserve fixture-only staging.
 - [ ] 5. Document migration and operational boundary; run workspace tests, fmt/clippy, installer fixtures and isolated real desktop reconnect test; obtain fresh review.
 
 ## Review focus
@@ -36,3 +36,7 @@ Architecture: platform-detect reads OS identity and installed desktop capabiliti
 - User refinement: Omarchy 4.x loads the actual installed/user Lua entry first, conf only when no Lua entry exists; no copied Omarchy bindings fallback. A DesktopInitializer trait selects GenericInitializer or OmarchyInitializer.
 - Native Lua validation passed against this machine. Real startup exposed a legacy IPC dispatcher incompatibility: Lua requires hl.dsp.exec_cmd; corrected and rerun.
 - User refinement: probes must check executable existence and distinguish missing prerequisites from unsupported capabilities; no silent fallback or skipped-success live tests.
+
+- Tasks 1–4: workspace tests and Clippy -D warnings passed; 40 installer and 13 compatibility fixtures passed. Native config verification passed; Ghostty survived two complete HTTP transport restarts with unchanged PID/signature, 225 native keybindings, no configuration errors.
+- First implementation committed/pushed as 47bcaa5 to feat/native-desktop-handoff. User authorized merge to main after local verification, local service update, and timely commits/pushes.
+- Independent read-only reviewer dispatched before merge/deployment; documentation and final deployment verification remain.

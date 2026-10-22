@@ -224,3 +224,33 @@ mod tests {
         assert!(OmarchyInstallation::at(user.path().to_owned()).is_none());
     }
 }
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn executable_probe_rejects_missing_non_executable_and_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("tool");
+        assert!(find_executable(&file).is_none());
+        std::fs::write(&file, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(find_executable(&file).is_none());
+        assert!(find_executable(dir.path()).is_none());
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(find_executable(&file), Some(file));
+        let error = verify_config(
+            &dir.path().join("missing"),
+            &dir.path().join("config.lua"),
+            dir.path(),
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("missing executable for configuration probe")
+        );
+    }
+}

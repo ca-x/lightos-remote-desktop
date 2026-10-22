@@ -185,21 +185,34 @@ For an already-running compositor, use `--wayland-socket /absolute/socket`.
 It must expose the required capture, seat and virtual-input protocols. Attach
 mode does not own that desktop and cannot resize it.
 
-The default `--desktop-shell auto` starts the installed Omarchy Shell when
-available, including the user's wallpaper, top bar and application menu.
-Super+Space opens applications, Super+Escape opens the root menu, Super+Return
-opens a terminal, and Super+1 through Super+5 switch workspaces. No terminal
-covers the wallpaper on startup. This is a separate desktop, not a mirror of
-the physical display. Theme and application data still belong to the same user.
+The default `--desktop-shell auto` detects the installed desktop independently
+of the distribution. On Omarchy 4.x it loads the user's native
+`~/.config/hypr/hyprland.lua`, or the installed Lua entry if the user has none.
+Only when no Lua entry exists does it try the native `.conf` configuration.
+Lua validation errors are reported; they do not select a different profile.
+Keybindings, themes and window rules come from that native configuration, rather
+than a bundled subset. The generated private entry skips the standard physical
+monitor/autostart and NVIDIA modules, isolates runtime/state/audio, and restores
+the session-local PATH after native settings. Host configs are never rewritten.
+Custom commands embedded directly in native Lua remain user-controlled code.
 
-Use `--desktop-shell minimal` for the terminal-only fallback, or
-`--desktop-shell omarchy` to require Omarchy. An explicit `--desktop-config FILE`
-or attached Wayland socket bypasses automatic shell startup. Remote app launch
-uses private session-local adapters, not UWSM or the host user systemd manager;
-only the `uwsm-app -- command [args...]` form is supported. We do not run
-Omarchy's host-session autostart, hardware provisioning or import the remote
-environment into the host session. Host network/polkit/power integrations are
-not guaranteed in this seatless session.
+Use `--desktop-shell minimal` for a generic terminal desktop, or
+`--desktop-shell omarchy` to require Omarchy. The generic profile checks for an
+installed terminal launcher and reports missing prerequisites. An explicit
+`--desktop-config FILE` or attached Wayland socket bypasses automatic shell
+startup. This is a separate desktop; theme and application data belong to the
+same user. Remote app launch uses a private `uwsm-app -- command [args...]`
+adapter and browser launcher, without importing the remote environment into the
+host user systemd manager.
+
+Installed services separate the long-lived
+`lightos-remote-desktop-session.service` (Hyprland, Shell, D-Bus, Xwayland and
+audio) from `lightos-remote-desktop.service` (HTTP, capture and input).
+Transport updates and restarts reconnect to a private, versioned session
+descriptor, preserving GUI windows. The first upgrade from the old combined
+service rebuilds the desktop once. Explicitly restarting the session service,
+a compositor crash, logout or reboot can still close applications.
+See [installation and session lifecycle](docs/install.md#persistent-desktop-session).
 
 ### Aquamarine compatibility
 

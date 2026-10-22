@@ -35,7 +35,8 @@ session separately. The installer copies only the selected application
 executable, never system dependencies or extracted smoke-test trees.
 
 With the default `LIGHTOS_REMOTE_DESKTOP_SHELL=auto`, an
-installed Omarchy Shell also requires `quickshell`, `gtk-launch` and `foot`.
+installed Omarchy Shell also requires `quickshell` and `gtk-launch`; terminal
+selection comes from the native configuration.
 It restores the user's wallpaper, bar and app menu without running the host
 Omarchy provisioning or importing remote variables into the host user manager.
 Use `LIGHTOS_REMOTE_DESKTOP_SHELL=minimal` for the terminal-only fallback.
@@ -306,3 +307,76 @@ activation helpers with mock systemd/probe/sleep boundaries to exercise live
 gate failures and recovery without executing a candidate or contacting host
 systemd. It does not claim to test the runtime HTTP implementation, real
 systemd activation or native desktop behavior.
+
+## Persistent desktop session
+
+Version 0.1.6 installs an independent `lightos-remote-desktop-session.service`
+and a `95-session.conf` transport drop-in. The session unit uses the same named
+non-root user as the existing service and retains normal `KillMode=control-group`
+cleanup. The transport requires the session service but the session has no
+`PartOf`/`BindsTo` relationship back to the transport. Updating or restarting the
+transport therefore leaves the desktop's cgroup alive. Both managed files are
+included in installer transaction snapshots and rollback.
+
+The owner uses `/run/lrd-session` (0700) and atomically publishes `session.json`
+(0600) after desktop startup. Attachment checks descriptor protocol, process
+identity/start time, file/socket ownership and the owner's exclusive lock.
+Missing descriptors wait up to 30 seconds for first startup. Invalid or
+incompatible descriptors fail visibly and never replace a live desktop.
+A transport update does not hot-reload the desktop owner's executable or config;
+those changes take effect on an explicit session restart.
+
+The first migration from the combined service terminates that old desktop once.
+Applications launched afterward survive transport updates. Rollback to a version
+before 0.1.6 cannot reconnect to the new descriptor; it creates its legacy desktop
+and does not expose windows retained by the independent session. Do not stop the
+session owner merely to roll back a transport: that closes its applications.
+
+```sh
+systemctl status lightos-remote-desktop.service lightos-remote-desktop-session.service
+# Reconnect transport while retaining GUI apps:
+sudo systemctl restart lightos-remote-desktop.service
+# Explicitly reset the desktop; this closes its applications:
+sudo systemctl restart lightos-remote-desktop-session.service
+```
+
+Standalone `serve` continues to own and clean up its desktop unless
+`--session-runtime DIR` is supplied. For manual lifecycle testing, start
+`desktop-session --runtime-dir DIR` separately and connect `serve --session-runtime DIR`.
+The owner needs a short absolute runtime path (maximum 28 bytes for Hyprland IPC).
+Attached physical desktop mode remains non-owning and does not resize the host.
+
+## Architecture and local verification
+
+`crates/platform-detect` reads distribution identity, resolves regular executable
+files and locates installed Omarchy configuration. `crates/desktop-config`
+renders the remote Lua entry or reads native conf includes, excluding host
+monitor/autostart directives. `src/desktop` exposes `DesktopInitializer`, with
+`GenericInitializer` and `OmarchyInitializer` producing a shared startup plan.
+Session ownership and descriptor handoff are separate from these strategies.
+No startup fetches GitHub configuration or maintains copied Omarchy keybindings.
+
+Native Lua source/require files stay referenced directly. Legacy conf includes
+are read into a private generated file at owner startup; subsequent changes
+require a session restart. Unknown include variables, include cycles and invalid
+configurations produce diagnostics rather than a silently different desktop.
+Standard Omarchy physical-monitor/autostart modules are omitted remotely; custom
+Lua outside those modules executes as configured by the user.
+
+```sh
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+bash tests/installer.sh
+bash scripts/test-install-compat.sh
+# Explicit host-dependent checks (never counted as passing when skipped):
+cargo test --test native_configuration -- --ignored --nocapture
+cargo test --test persistent_session -- --ignored --nocapture
+```
+
+The latter test discovers installed prerequisites and a supported GUI terminal
+before starting. Missing tools fail with the missing prerequisite. It creates its
+own desktop, maps a GUI terminal, restarts the HTTP process twice, and checks the
+same desktop signature/window PID and native bindings afterward. On the
+2026-10-22 Omarchy host it selected Ghostty, retained its PID through both
+reconnections, loaded 225 native bindings and reported no config errors. These
+checks do not prove all GUI applications, networking paths or media latency.
