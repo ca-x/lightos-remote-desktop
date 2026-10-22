@@ -37,3 +37,25 @@ configured per-frame budget while reducing FPS. RustDesk's native codecs,
 multi-viewer controller, UDP/NAT traversal and whole transport are not replicated.
 GPU zero-copy, hardware codecs and actual WAN/browser input-to-photon results
 remain separate work; synthetic shaped-link evidence is in verification.md.
+
+## RDP behavior (independent implementation)
+
+The same read-only RustDesk checkout was checked for RDP on 2026-10-22:
+
+- `src/ui_session_interface.rs:1989`: the RDP connection branch parses an
+  existing remote RDP port (3389 by default) and invokes port forwarding.
+- `src/port_forward.rs:18` and `:90`: binds a loopback TCP listener and launches
+  `mstsc` pointed at that local port. This carries an existing RDP server's
+  traffic; it does not convert RustDesk capture/video into RDP.
+- RustDesk's official advanced-settings documentation describes `enable-tunnel`
+  as enabling TCP tunneling. Its official comparison treats RustDesk and RDP as
+  different protocols. Primary documentation source:
+  `https://github.com/rustdesk/doc.rustdesk.com/blob/master/content/self-host/client-configuration/advanced-settings/_index.en.md`
+  and `https://github.com/rustdesk/doc.rustdesk.com/blob/master/v3/src/content/post/en/rustdesk-vs-rdp.md`.
+  The rendered rustdesk.com endpoint returned HTTP 403 in this environment, so
+  the official documentation repository was read directly.
+
+Our optional `rdp` feature independently implements an actual RDP server over
+our existing captured desktop using IronRDP 0.13 (MIT OR Apache-2.0), whose
+primary API documentation is `https://docs.rs/ironrdp-server/0.13.0/ironrdp_server/`.
+No RustDesk code is copied. See [RDP setup and verified scope](rdp.md).

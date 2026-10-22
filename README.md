@@ -10,6 +10,8 @@ does not embed CPython or invoke the original Selkies Python launcher.
   light/dark/system theme preferences, stored locally without reconnecting.
   These themes affect only the controls, not the captured desktop.
 - Authenticated same-origin WebSocket client with canvas display and reconnect.
+- Optional authenticated TLS RDP access to the same owned virtual desktop, off
+  by default with a separate loopback listener. See [RDP setup and limits](docs/rdp.md).
 - Drag the floating toolbar handle to dock on any screen edge; its position is
   saved in this browser. Click to open, or focus it and use Alt+arrow keys to
   dock left/right/top/bottom. The panel stays within the viewport.

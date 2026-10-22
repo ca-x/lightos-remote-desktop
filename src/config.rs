@@ -65,6 +65,8 @@ pub enum DesktopShell {
 
 #[derive(Clone, Parser)]
 pub struct Config {
+    #[command(flatten)]
+    pub rdp: crate::rdp::RdpConfig,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_ADDR", default_value = "0.0.0.0")]
     pub listen: IpAddr,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_PORT", default_value_t = 8766)]
@@ -157,6 +159,7 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
+        self.rdp.validate(self.wayland_socket.is_some())?;
         let (width, height) = self.dimensions()?;
         ensure!(
             (320..=3840).contains(&width) && (200..=2160).contains(&height),

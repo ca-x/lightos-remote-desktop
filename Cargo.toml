@@ -10,9 +10,14 @@ rust-version = "1.88"
 description = "A native Rust browser remote desktop for LightOS"
 
 [features]
+rdp = ["dep:async-trait", "dep:ironrdp-server", "dep:ironrdp-pdu", "dep:rustls-pemfile"]
 bundled-jpeg = ["media-codec/bundled-jpeg", "turbojpeg/cmake", "turbojpeg/require-simd"]
 
 [dependencies]
+async-trait = { version = "0.1", optional = true }
+ironrdp-server = { version = "0.13", default-features = false, optional = true }
+ironrdp-pdu = { version = "0.9", optional = true }
+rustls-pemfile = { version = "2", optional = true }
 stream-scheduler = { path = "crates/stream-scheduler" }
 media-codec = { path = "crates/media-codec" }
 display-control = { path = "crates/display-control" }

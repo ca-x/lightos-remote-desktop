@@ -913,7 +913,7 @@ fn run_input(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -959,6 +959,30 @@ mod tests {
         publish_frame(&backend.shared, frame, false);
         assert!(!backend.frames.has_changed().unwrap());
         assert!(backend.frame_is_fresh(Duration::from_secs(1)));
+    }
+
+    #[cfg(feature = "rdp")]
+    pub(crate) fn rdp_frame(width: u32, height: u32, color: [u8; 4]) -> Arc<Frame> {
+        Arc::new(Frame {
+            width,
+            height,
+            jpeg: OnceLock::new(),
+            pixels: color.repeat(width as usize * height as usize).into(),
+            captured_at: Instant::now(),
+        })
+    }
+
+    #[cfg(feature = "rdp")]
+    pub(crate) fn rdp_backend() -> (
+        Backend,
+        watch::Sender<Option<Arc<Frame>>>,
+        mpsc::Receiver<InputCommand>,
+    ) {
+        let mut backend = backend_with_frame(None);
+        let frames = backend.shared.frames.clone();
+        let (input, receiver) = mpsc::channel(128);
+        backend.input = input;
+        (backend, frames, receiver)
     }
 
     fn backend_with_frame(captured_at: Option<Instant>) -> Backend {

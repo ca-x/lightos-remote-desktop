@@ -122,6 +122,23 @@ impl AppState {
         }
     }
 
+    #[cfg(feature = "rdp")]
+    pub(crate) fn claim_rdp_control(&self) -> anyhow::Result<ControllerLease> {
+        anyhow::ensure!(
+            self.desktop == DesktopMode::Virtual,
+            "RDP cannot control a physical desktop"
+        );
+        anyhow::ensure!(
+            self.controller
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok(),
+            "a browser or RDP controller is already connected"
+        );
+        Ok(ControllerLease {
+            state: self.clone(),
+        })
+    }
+
     fn physical_socket(&self) -> anyhow::Result<std::path::PathBuf> {
         if let Some(socket) = &self.config.wayland_socket {
             return Ok(socket.clone());
@@ -474,12 +491,12 @@ pub fn origin_allowed(headers: &HeaderMap) -> bool {
             .is_some_and(|value| value == "cross-site")
 }
 
-struct ControllerLease {
+pub(crate) struct ControllerLease {
     state: AppState,
 }
 
 impl ControllerLease {
-    async fn release(self) {
+    pub(crate) async fn release(self) {
         // Worker joins must not block the async socket executor. The lease's
         // Drop keeps the controller gate until its input workers have stopped.
         let _ = tokio::task::spawn_blocking(move || drop(self)).await;

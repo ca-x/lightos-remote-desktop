@@ -45,3 +45,11 @@ are build-time tools, not target-machine services. The frontend build collects
 license notices from the installed production dependency graph into
 web/dist/NOTICE.frontend.txt; CI includes this as licenses/frontend.txt. Lucide's
 ISC/MIT notices must be retained, including inherited Feather attribution.
+
+The optional `rdp` feature uses IronRDP 0.13 and its protocol crates
+(MIT OR Apache-2.0), Tokio-rustls/rustls and the selected AWS-LC provider.
+It is excluded from default/release builds unless explicitly enabled. A
+distributor enabling RDP must inventory and retain notices for that additional
+locked dependency graph. RustDesk remains a read-only AGPL reference; no
+RustDesk source is copied. FreeRDP and Xvfb are external, opt-in interoperability
+test tools and are not linked into or shipped with the application.

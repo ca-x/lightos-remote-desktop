@@ -13,8 +13,15 @@ jobs:
       TURBOJPEG_STATIC: '1'
     steps:
       - uses: actions/checkout@v4
-      - name: Native dependencies
-        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libpulse-dev cmake nasm pkg-config ffmpeg
+      - name: Native and RDP test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libpulse-dev cmake nasm pkg-config ffmpeg xvfb libxtst6 python3 openssl
+          if apt-cache show freerdp3-x11 >/dev/null 2>&1; then
+            sudo apt-get install -y freerdp3-x11
+          else
+            sudo apt-get install -y freerdp2-x11
+          fi
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -28,6 +35,13 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo test --workspace --locked --features bundled-jpeg
       - run: cargo clippy --workspace --locked --features bundled-jpeg --all-targets -- -D warnings
+      - run: cargo test --workspace --locked --features bundled-jpeg,rdp
+      - run: cargo clippy --workspace --locked --features bundled-jpeg,rdp --all-targets -- -D warnings
+      - name: FreeRDP interoperability on a private Xvfb display
+        run: |
+          rdp_client=$(command -v xfreerdp3 || command -v xfreerdp)
+          rdp_xvfb=$(command -v Xvfb)
+          LRD_TEST_FREERDP="$rdp_client" LRD_TEST_XVFB="$rdp_xvfb" cargo test --locked --features bundled-jpeg,rdp freerdp_tcp_tls_bitmap_input_resize_reconnect_and_denials -- --ignored --nocapture
       - run: bash tests/installer.sh
       - run: bash scripts/test-install-compat.sh
   build:
