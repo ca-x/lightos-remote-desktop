@@ -25,7 +25,7 @@ Baseline: origin/main `050fbe10879b14a4305d3d9a1109a3bf5917acc2` (mobile control
 - [x] C. Add media-codec crate. Move existing native encoder and its cancellation/keyframe tests; move JPEG compression while retaining lazy frame cache. Add common factory, real frame capability tests and dynamic-quality honesty. Replace direct encoder usage in server; retain public video exports for benchmarks. Doctor/health distinguish compiled codecs from runtime probe results.
 - [x] D. Add stream-scheduler crate. Move ACK algorithm/regressions; encapsulate pending/window fields. Add Auto/LowLatency/Smooth policy, deterministic network-delay tests, first-frame/resize/codec-reset gates and stale cumulative ACK tests. Server retains input/control independence.
 - [x] E. Add encoding/strategy preferences and localized existing-style settings; default Auto, validate persisted values, restore on reconnect, preserve fallback preference. Isolate browser decode probe and test hardware-query failure/software fallback. Preserve all mobile and HiDPI tests.
-- [ ] F. Bump to 0.1.8. Update README and validation ledger. Run workspace, frontend, Clippy/fmt, installer fixtures, bundled-jpeg build/tests and explicit real native Lua/Ghostty resize/scale/reconnect tests. Independent read-only review, resolve blockers.
+- [x] F. Bump to 0.1.8. Update README and validation ledger. Run workspace, frontend, Clippy/fmt, installer fixtures, bundled-jpeg build/tests and explicit real native Lua/Ghostty resize/scale/reconnect tests. Independent read-only review, resolve blockers.
 - [ ] G. Commit/push, sync latest remote again before merging. Merge verified branch to main and push. Build reviewed binary, independent systemd installer task, verify installed version/health/config errors and unchanged owner/signature. Verify remote SHA; do not equate CI queued with passed or claim untested hardware/mobile-device/network performance.
 
 ## Acceptance
@@ -39,6 +39,6 @@ Implement Linux desktop backends, including GNOME/Mutter DisplayConfig, KDE/KScr
 ## Execution evidence
 
 - A: Latest baseline Rust workspace and frontend build/tests passed before adapting implementation.
-- B: Display crate includes scaled mode validation; 26 display tests pass. Real Lua resize/scale/Ghostty transport-handoff test passes. Added GNOME/KDE/wlroots/X11 adapters after explicit user scope extension; only Hyprland has real desktop evidence on this host.
+- B: Display crate includes scaled mode validation; 28 display tests pass. Real Lua resize/scale/Ghostty transport-handoff test passes. Added GNOME/KDE/wlroots/X11 adapters after explicit user scope extension; only Hyprland has real desktop evidence on this host.
 - C/D/E: Workspace and bundled-JPEG tests pass; frontend 80 Node +15 Vitest tests and production build pass. Clippy with denied warnings passes. Existing mature Rust libraries implement protocols/codecs; no RustDesk source copied.
-- Final review and deployment pending.
+- Final review: one Important Mutter global-scale bug and a physical Hyprland enumeration issue reproduced RED then fixed GREEN. Reviewer reread both fixes and found no remaining blockers. Added actual isolated zbus protocol roundtrip and release WebSocket H264/JPEG/strategy integration tests, both pass. No review findings deferred. Deployment pending.

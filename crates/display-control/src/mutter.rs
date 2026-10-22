@@ -159,7 +159,11 @@ fn configuration(
                 == Some(true)
         {
             ensure!(
-                state.2.iter().all(|l| l.2 == requested.scale),
+                state
+                    .2
+                    .iter()
+                    .filter(|l| !l.5.iter().any(|spec| spec.0 == name))
+                    .all(|l| l.2 == requested.scale),
                 "Mutter requires a global scale; refusing to alter other outputs"
             );
         }
@@ -305,6 +309,122 @@ mod tests {
         let (b, lb) = make("DP-2", 1280);
         (42, vec![a, b], vec![la, lb], Props::new())
     }
+    type ApplyCalls = std::sync::Arc<std::sync::Mutex<Vec<(u32, Vec<Applied>)>>>;
+    #[derive(Default)]
+    struct MockMutter {
+        applied: ApplyCalls,
+    }
+    #[zbus::interface(name = "org.gnome.Mutter.DisplayConfig")]
+    impl MockMutter {
+        #[zbus(property)]
+        fn apply_monitors_config_allowed(&self) -> bool {
+            true
+        }
+        fn get_current_state(&self) -> State {
+            let mut state = fixture();
+            if let Some((_, config)) = self
+                .applied
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|(method, _)| *method == 1)
+            {
+                for logical in config {
+                    let name = &logical.5[0].0;
+                    if let Some(monitor) = state.1.iter_mut().find(|m| m.0.0 == *name) {
+                        for mode in &mut monitor.1 {
+                            mode.6.insert(
+                                "is-current".into(),
+                                OwnedValue::from(mode.0 == logical.5[0].1),
+                            );
+                        }
+                    }
+                    if let Some(output) = state
+                        .2
+                        .iter_mut()
+                        .find(|o| o.5.iter().any(|s| s.0 == *name))
+                    {
+                        output.2 = logical.2;
+                    }
+                }
+            }
+            state
+        }
+        fn apply_monitors_config(
+            &self,
+            _serial: u32,
+            method: u32,
+            config: Vec<Applied>,
+            _properties: Props,
+        ) {
+            self.applied.lock().unwrap().push((method, config));
+        }
+    }
+    #[tokio::test]
+    #[ignore = "requires local dbus-daemon for an isolated mock DisplayConfig service"]
+    async fn typed_dbus_probe_and_temporary_apply_roundtrip() {
+        use std::process::{Command, Stdio};
+        struct Daemon(std::process::Child);
+        impl Drop for Daemon {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let bus_path = dir.path().join("bus");
+        let address = zbus::address::transport::Unix::new(
+            zbus::address::transport::UnixSocket::File(bus_path.clone()),
+        )
+        .to_string();
+        let _daemon = Daemon(
+            Command::new(
+                command::executable("dbus-daemon")
+                    .expect("missing dbus-daemon; no bus test was run"),
+            )
+            .args(["--session", "--nofork", "--address", &address])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+        );
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !bus_path.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let mock = MockMutter::default();
+        let calls = mock.applied.clone();
+        let _service = zbus::connection::Builder::address(address.as_str())
+            .unwrap()
+            .name(SERVICE)
+            .unwrap()
+            .serve_at("/org/gnome/Mutter/DisplayConfig", mock)
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let display = MutterDisplay::new(SessionTarget {
+            bus_address: Some(address),
+            ..Default::default()
+        });
+        let capability = display.capabilities().await;
+        assert!(capability.resize, "{capability:?}");
+        assert!(calls.lock().unwrap().is_empty());
+        let mode = DisplayMode {
+            width: 800,
+            height: 600,
+            scale: 2.0,
+        };
+        assert_eq!(display.resize(Some("DP-1"), mode, 30).await.unwrap(), mode);
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.iter().map(|c| c.0).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(calls[1].1[1].0, 1280);
+        assert_eq!(calls[1].1[1].5[0].1, "old");
+    }
     #[test]
     fn native_state_preserves_other_outputs_and_uses_supported_scaled_mode() {
         let state = fixture();
@@ -389,6 +509,29 @@ mod tests {
                 30
             )
             .is_err()
+        );
+    }
+    #[test]
+    fn global_scale_allows_selected_monitor_change_when_other_outputs_already_match() {
+        let mode = DisplayMode {
+            width: 800,
+            height: 600,
+            scale: 2.0,
+        };
+        let mut state = fixture();
+        state
+            .3
+            .insert("global-scale-required".into(), OwnedValue::from(true));
+        state.2[1].2 = 2.0;
+        let config = configuration(&state, "DP-1", mode, 30)
+            .expect("other logical output already matches requested global scale");
+        assert_eq!(config[0].2, 2.0);
+        assert_eq!(config[1].2, 2.0);
+        state.1.truncate(1);
+        state.2.truncate(1);
+        assert_eq!(
+            configuration(&state, "DP-1", mode, 30).expect("no other outputs to alter")[0].2,
+            2.0
         );
     }
     #[test]

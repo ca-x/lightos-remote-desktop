@@ -54,6 +54,11 @@ impl DisplayBackend {
         };
         let fallback_socket = target.wayland_socket.clone();
         let controller: Arc<dyn DisplayController> = match backend {
+            Self::Hyprland if !owned && signature.is_none() => Arc::new(WaylandDisplay::new(
+                target
+                    .wayland_socket
+                    .ok_or_else(|| anyhow::anyhow!("missing Wayland socket"))?,
+            )),
             Self::Hyprland => Arc::new(HyprlandDisplay::new(
                 target
                     .wayland_socket
@@ -144,6 +149,30 @@ impl DisplayController for ReadOnly {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn explicit_hyprland_readonly_query_does_not_require_owned_signature() {
+        let target = SessionTarget {
+            wayland_socket: Some("/nonexistent/physical/wayland".into()),
+            ..Default::default()
+        };
+        let controller=DisplayBackend::Hyprland.controller(target,DesktopEnvironment::Hyprland,None,false)
+            .expect("read-only output discovery needs a Wayland socket, not a private Hyprland signature");
+        assert!(!controller.capabilities().await.resize);
+        assert!(
+            controller
+                .resize(
+                    None,
+                    DisplayMode {
+                        width: 800,
+                        height: 600,
+                        scale: 1.0
+                    },
+                    30
+                )
+                .await
+                .is_err()
+        );
+    }
     #[tokio::test]
     async fn physical_authorization_blocks_every_backend_before_any_probe_or_write() {
         for backend in [

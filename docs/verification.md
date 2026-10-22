@@ -24,8 +24,16 @@ survived, 225 native bindings were active, and configerrors was empty.
 GNOME, KDE, wlroots and X11 adapters have not been exercised against real desktop
 sessions on this Hyprland host. Their fixture/probe tests are not real desktop
 validation. No hardware codec, additional OS, WAN throughput or end-to-end latency
-claim follows from this extraction. Independent final review and local deployment
-are recorded below when performed.
+claim follows from this extraction. Independent review found a Mutter global-scale overrestriction and explicit
+Hyprland physical-query signature restriction. Both regressions failed before
+fixes and passed afterward; the reviewer confirmed no remaining blocker.
+An isolated mock Mutter DisplayConfig service also passed actual zbus read-only
+probe and verify/temporary-apply roundtrips. A release candidate attached to the
+existing owner passed real H.264 configuration/keyframe negotiation, JPEG image
+decoding and all three scheduling strategy reports over WebSocket at 2560x1440.
+The candidate served JavaScript identical to the production frontend build.
+These are protocol tests, not browser-render or other-desktop validation.
+Local deployment is recorded below when performed.
 
 
 Date: 2026-10-22 (machine local date). This records a verified initial native
