@@ -12,6 +12,10 @@ does not embed CPython or invoke the original Selkies Python launcher.
 - Authenticated same-origin WebSocket client with canvas display and reconnect.
 - Optional authenticated TLS RDP access to the same owned virtual desktop, off
   by default with a separate loopback listener. See [RDP setup and limits](docs/rdp.md).
+- Optional MCP Streamable HTTP endpoint with separate observe/control tokens,
+  one-time token creation/revocation in the tools panel, and screenshot/mouse/
+  keyboard tools over the existing owned desktop. Disabled by default; see
+  [MCP access and Cua compatibility](docs/mcp.md).
 - Drag the floating toolbar handle to dock on any screen edge; its position is
   saved in this browser. Click to open, or focus it and use Alt+arrow keys to
   dock left/right/top/bottom. The panel stays within the viewport.

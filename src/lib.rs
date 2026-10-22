@@ -4,6 +4,7 @@ pub mod config;
 pub mod desktop;
 pub mod handoff;
 pub mod install;
+pub mod mcp;
 pub mod rdp;
 pub mod server;
 pub mod session;

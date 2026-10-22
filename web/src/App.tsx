@@ -3,6 +3,7 @@ import { Button, Field, Input, Label, Popover, PopoverButton, PopoverPanel, Sele
 import { Cable, Clipboard, Expand, Keyboard, Maximize, Menu, Minimize, MoreVertical, RefreshCw, Settings2, Volume2, VolumeX, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { createClient } from "./client";
+import { McpSettings } from "./McpSettings";
 import { MOBILE_ROWS, type MobileShortcut } from "./mobile";
 import type { ControlState } from "./types";
 import i18n, { translateClient } from "./i18n";
@@ -157,6 +158,7 @@ function Workspace({ open, close }: { open: boolean; close: (focusable?: HTMLEle
             <div className="clipboard-actions"><Button id="send-text" type="button" disabled={!controls.ready}>{t("sendText")}</Button><Button id="clipboard-get" type="button" disabled={!controls.ready}>{t("getClipboard")}</Button><Button id="clipboard-set" type="button" disabled={!controls.ready}>{t("setClipboard")}</Button><Button id="paste-local" type="button" disabled={!controls.ready}>{t("pasteLocal")}</Button></div>
           </Field>
         </details>
+        <McpSettings visible={open} />
         <details id="preferences-section"><summary>{t("preferences")}</summary>
           <Field className="preference-field"><Label htmlFor="language">{t("language")}</Label><Select id="language" value={language} onChange={(event) => { const value = event.target.value as LanguagePreference; savePreference(languageKey, value); setLanguage(value); }}><option value="system">{t("browser")}</option><option value="zh">简体中文</option><option value="en">English</option></Select></Field>
           <Field className="preference-field"><Label htmlFor="theme">{t("theme")}</Label><Select id="theme" value={theme} onChange={(event) => { const value = event.target.value as ThemePreference; savePreference(themeKey, value); setTheme(value); }}><option value="system">{t("system")}</option><option value="light">{t("light")}</option><option value="dark">{t("dark")}</option></Select></Field>
