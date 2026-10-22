@@ -12,8 +12,14 @@ The installer does not build, download, install packages, edit the original unit
 or remove the Python launcher or `/opt/lightos/remote-desktop` payload. Use a
 reviewed local release executable. Native video negotiates H.264/WebCodecs with
 SIMD JPEG fallback over WebSocket, **not hardware/zero-copy performance parity**.
-H.264 needs FFmpeg with libx264 and browser HTTPS/localhost support. Audio, clipboard, Unicode,
+H.264 uses source-built OpenH264 and needs browser HTTPS/localhost support. Audio, clipboard, Unicode,
 resize and disconnect cleanup require separate real desktop verification.
+
+Downloaded executables embed the compiled React frontend; do not install Node.js
+or run a web development server on the target. When compiling from source, run
+`npm ci && npm run build` before Cargo. CI follows this order and includes
+frontend license notices in release archives. The appearance section remembers
+language/theme locally and never changes the remote desktop's own theme.
 
 Native capture uses standard Wayland protocols/libwayshot, with **Cage/wlroots**
 as the parent compositor for nested Hyprland. Install the system `cage` and

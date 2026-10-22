@@ -5,6 +5,10 @@ does not embed CPython or invoke the original Selkies Python launcher.
 
 ## Current implementation
 
+- Embedded React/TypeScript frontend with Headless UI and Lucide React icons.
+  The appearance section offers Chinese/English/browser language and
+  light/dark/system theme preferences, stored locally without reconnecting.
+  These themes affect only the controls, not the captured desktop.
 - Authenticated same-origin WebSocket client with canvas display and reconnect.
 - Drag the floating toolbar handle to dock on any screen edge; its position is
   saved in this browser. Click to open, or focus it and use Alt+arrow keys to
@@ -57,6 +61,21 @@ GPU capture and remote cursor-shape streaming are not implemented.
 
 ## Build and test
 
+Node.js 24.15+ (24 LTS) or 26+ is required only when building from source. Build the locked frontend
+before Rust so the executable embeds its HTML, JavaScript, CSS and gzip assets:
+
+```sh
+npm ci
+npm run build
+npm test
+cargo test --locked --features bundled-jpeg
+cargo build --release --locked --features bundled-jpeg
+```
+
+The installed executable needs neither Node.js nor a frontend directory/server.
+`npm run dev` previews the UI only; use the Rust server for authenticated desktop
+and WebSocket integration. Assets use relative URLs under the existing prefix.
+
 The toolbar's desktop-source selector switches between the persistent virtual
 desktop and an existing same-user Wayland desktop. Physical mode lists active
 outputs and captures/controls one selected monitor, without changing its resolution.
@@ -64,7 +83,9 @@ No physical session means an unavailable option, not a new physical login.
 Physical audio is not yet supported. See `docs/desktop-switching.md` for discovery,
 nonstandard socket configuration and protocol requirements.
 
-GitHub Actions tests every push/PR, then builds a Linux x86_64 archive and
+GitHub Actions first runs npm ci, frontend typecheck/build/tests, then Rust and
+installer checks. Both test and release-build jobs build the frontend before
+compiling Rust. It then builds a Linux x86_64 archive and
 SHA256 checksum (also available through `workflow_dispatch`). A `v*` tag
 publishes these files to GitHub Releases. Release builds use Ubuntu 22.04 and
 bundle the SIMD JPEG library; Wayland, xkbcommon and glibc remain system libraries.
@@ -111,13 +132,15 @@ The current standalone
 desktop backend requires access to `/dev/dri/renderD128` for GLES rendering.
 
 ```sh
+npm ci
+npm run build
 cargo build --release --locked
 cargo fmt --check
 cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 bash tests/installer.sh
 bash scripts/test-install-compat.sh
-node --test tests/frontend.mjs
+npm test
 ```
 
 The ten-second startup timeout test is explicit:

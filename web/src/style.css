@@ -1,0 +1,68 @@
+:root { font-family: system-ui, sans-serif; color-scheme: dark; --surface: #202228; --control: #292c33; --field: #17191e; --text: #eef0f5; --muted: #acb2bf; --border: #3c414c; --accent: #96b5f6; --selected: #31435f; --shadow: 0 8px 30px #0004; --ease-out: cubic-bezier(0.23, 1, 0.32, 1); }
+:root[data-theme="light"] { color-scheme: light; --surface: #fafbfc; --control: #f0f2f5; --field: #fff; --text: #202632; --muted: #596475; --border: #ced4de; --accent: #2458bd; --selected: #dce8fd; --shadow: 0 8px 30px #172c4c26; }
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #101115; }
+body { color: var(--text); }
+[hidden] { display: none !important; }
+#viewport { width: 100vw; height: 100dvh; overflow: auto; background: #101115; }
+#desktop { display: block; width: auto; height: auto; max-width: none; max-height: none; touch-action: none; }
+#viewport.fit { display: flex; align-items: center; justify-content: center; overflow: hidden; }
+#viewport.fit #desktop { width: min(100vw, calc(100dvh * var(--desktop-aspect, 1.777778))); height: auto; max-height: 100dvh; object-fit: contain; }
+#viewport:fullscreen { width: 100vw; height: 100dvh; }
+#tools { position: fixed; z-index: 10; left: var(--tool-x, calc(100vw - 52px)); top: var(--tool-y, 50%); width: 40px; height: 48px; pointer-events: none; }
+button, input, textarea, select { font: inherit; }
+button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--control); color: inherit; cursor: pointer; font-size: 12px; }
+button:disabled { opacity: .45; cursor: default; }
+.tool-handle { pointer-events: auto; touch-action: none; user-select: none; cursor: grab; width: 40px; height: 48px; padding: 0; background: var(--surface); box-shadow: var(--shadow); }
+.tool-handle:active { cursor: grabbing; }
+.panel { position: fixed; left: var(--panel-x, 12px); top: var(--panel-y, 12px); pointer-events: none; width: 340px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow-y: auto; overscroll-behavior: contain; padding: 16px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); opacity: 0; visibility: hidden; transform: scale(.97); transform-origin: var(--panel-origin, right center); transition: opacity 125ms var(--ease-out), transform 125ms var(--ease-out), visibility 0s 125ms; }
+.panel.is-open { pointer-events: auto; opacity: 1; visibility: visible; transform: scale(1); transition: opacity 160ms var(--ease-out), transform 160ms var(--ease-out), visibility 0s; }
+.panel-heading, .connection-state, .desktop-heading, footer { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.panel-heading { margin-bottom: 10px; }
+h1 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: -.02em; }
+h1 span { margin-left: 5px; color: var(--muted); font-size: 12px; font-weight: 400; letter-spacing: 0; }
+.icon-button { width: 44px; min-height: 44px; flex-shrink: 0; padding: 10px; }
+#tools-close, #connection { width: 36px; min-height: 36px; padding: 6px; border-color: transparent; background: transparent; }
+.icon-button[aria-pressed="true"] { background: var(--selected); border-color: var(--accent); color: var(--accent); }
+.connection-state { justify-content: flex-start; font-size: 12px; color: var(--muted); }
+.connection-state #connection { margin-left: auto; }
+.connection-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+.connection-dot.online { background: #24a173; }
+.toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.primary-controls { margin: 10px 0; gap: 7px; }
+.desktop-controls { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.desktop-heading { margin-bottom: 4px; }
+.quiet-button { padding: 4px 6px; min-height: 32px; background: transparent; }
+#monitor-controls { margin-top: 10px; }
+label, legend { font-size: 12px; }
+p { margin: 8px 0 0; font-size: 12px; line-height: 1.6; color: var(--muted); overflow-wrap: anywhere; }
+.telemetry { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--field); }
+.telemetry p { margin: 0; font-size: 11px; font-variant-numeric: tabular-nums; }
+#message { margin-bottom: 12px; }
+details { border-top: 1px solid var(--border); padding: 12px 0; }
+summary { cursor: pointer; font-size: 12px; font-weight: 550; }
+input, textarea, select { padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--field); color: var(--text); font-size: 12px; }
+select { display: block; width: 100%; min-height: 36px; margin-top: 6px; }
+input[type="checkbox"] { accent-color: var(--accent); }
+#shortcut-modifiers { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; margin: 12px 0; border: 1px solid var(--border); border-radius: 6px; }
+#keyboard-capture { width: 100%; margin-top: 12px; }
+#keyboard-capture[aria-pressed="true"] { border-color: var(--accent); }
+#send-shortcut { width: 100%; margin-top: 10px; }
+.fit-control { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
+.resolution-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.resolution-grid input { display: block; width: 100%; min-width: 0; margin-top: 5px; }
+#apply-size { grid-column: 1 / -1; }
+.text-controls { display: grid; gap: 8px; padding-top: 12px; }
+textarea { width: 100%; min-height: 70px; max-height: 25dvh; resize: vertical; }
+.clipboard-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.preference-field { margin-top: 12px; }
+footer { font-size: 10px; color: var(--muted); padding-top: 12px; }
+#software-version { font-variant-numeric: tabular-nums; }
+#help { font-size: 11px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#desktop:focus-visible { outline-offset: -2px; }
+[data-input="keyboard"] .panel { transition: none; }
+@media (hover: hover) and (pointer: fine) { button:hover:not(:disabled) { border-color: var(--accent); } }
+@media (prefers-reduced-motion: reduce) { .panel, .panel.is-open { transform: none; transition: opacity 125ms var(--ease-out); } }
+@media (max-width: 420px) { .panel { padding: 12px; } .primary-controls { gap: 4px; } .icon-button { width: 40px; } }
+@media (pointer: coarse) { button, select { min-height: 44px; } .icon-button, .tool-handle { min-width: 44px; } }

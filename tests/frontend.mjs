@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { stripTypeScriptTypes } from "node:module";
 
-const source = readFileSync(new URL("../web/app.js", import.meta.url), "utf8");
-const html = readFileSync(new URL("../web/index.html", import.meta.url), "utf8");
+const source = stripTypeScriptTypes(readFileSync(new URL("../web/src/client.ts", import.meta.url), "utf8"))
+  .replace(/^export /gm, "") + "\nconst client = createClient(clientOptions);";
+const html = readFileSync(new URL("../web/src/App.tsx", import.meta.url), "utf8");
+const builtHtml = readFileSync(new URL("../web/dist/index.html", import.meta.url), "utf8");
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 test("toolbar displays the server version without accepting malformed values", () => {
@@ -19,7 +22,7 @@ test("toolbar displays the server version without accepting malformed values", (
   assert.equal(app.nodes["software-version"].textContent, "v0.1.2");
 });
 
-function harness(pathname = "/", storage = new Map()) {
+function harness(pathname = "/", storage = new Map(), clientOptions = {}) {
   class Target {
     handlers = new Map();
     disabled = false;
@@ -39,7 +42,7 @@ function harness(pathname = "/", storage = new Map()) {
       options?.signal?.cleanups.push(() => this.handlers.get(name).delete(callback));
     }
     fire(name, properties = {}) {
-      const event = { target: this, type: name, preventDefault() { this.defaultPrevented = true; }, ...properties };
+      const event = { target: this, type: name, preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() {}, ...properties };
       for (const callback of this.handlers.get(name) || []) callback(event);
       return event;
     }
@@ -124,7 +127,7 @@ function harness(pathname = "/", storage = new Map()) {
   }
   window.AudioContext = AudioContext;
   const navigator = { clipboard: { readText: async () => "local text" } };
-  const context = vm.createContext({ document, window, navigator, AbortController, WebSocket,
+  const context = vm.createContext({ document, window, navigator, AbortController, WebSocket, clientOptions,
     URL, location: { href: `https://desktop.test${pathname}`, pathname, protocol: "https:" },
     ArrayBuffer, Uint8Array, DataView, TextEncoder, Blob, performance: { now: () => now },
     localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
@@ -163,6 +166,48 @@ const desktopChoices = [
   { mode: "virtual", label: "虚拟桌面", available: true },
   { mode: "physical", label: "物理桌面", available: true },
 ];
+
+test("React receives control snapshots without owning frame presentation", () => {
+  const states = [];
+  const app = harness("/", new Map(), { onControls: (state) => states.push(state) });
+  app.ready();
+  assert.equal(states.at(-1).ready, true);
+  app.nodes.connection.fire("click");
+  assert.equal(states.at(-1).ready, false);
+  assert.equal(states.at(-1).wanted, false);
+});
+
+test("changing UI language refreshes text and desktop choices without reconnecting", () => {
+  let prefix = "";
+  const app = harness("/", new Map(), { translate: (value) => prefix + value });
+  const socket = app.sockets[0];
+  socket.open();
+  desktopReady(socket);
+  prefix = "translated:";
+  app.run("client.refreshLanguage()");
+  assert.equal(app.nodes.state.textContent, "translated:Connected");
+  assert.equal(app.nodes["desktop-source"].children[0].textContent, "translated:虚拟桌面");
+  assert.equal(app.sockets.length, 1);
+  assert.equal(socket.readyState, 1);
+});
+
+test("toolbar requests delegate to the Headless UI owner", () => {
+  let open = false;
+  const requests = [];
+  const app = harness("/", new Map(), {
+    onToolsOpen: (wanted, focus) => { open = wanted; requests.push({ wanted, focus }); },
+    isToolsOpen: () => open,
+  });
+  app.ready();
+  app.fireKey("Escape", { ctrlKey: true, altKey: true, shiftKey: true });
+  assert.equal(open, true);
+  assert.equal(requests.at(-1).focus, false);
+  app.nodes["tools-close"].fire("click");
+  assert.equal(open, false);
+  app.run("client.destroy()");
+  app.paint();
+  assert.equal(app.sockets[0].readyState, 2);
+});
 const physicalOutputs = [
   { name: "DP-1", description: "主显示器", width: 1920, height: 1080, x: 0, y: 0, scale: 1 },
   { name: "HDMI A&2", description: "副显示器", width: 2560, height: 1440, x: 1920, y: 0, scale: 1.5 },
@@ -612,6 +657,25 @@ test("display mode icons switch fit, 1:1 and fullscreen, restoring the prior win
   assert.match(app.nodes.message.textContent, /denied/);
 });
 
+test("fullscreen temporarily follows browser resolution after actual-size mode, including Escape exit", async () => {
+  const app = harness();
+  const socket = app.ready();
+  app.nodes["auto-resolution"].checked = true;
+  app.nodes["mode-actual"].fire("click");
+  await flush();
+  app.nodes.viewport.clientWidth = 1920;
+  app.nodes.viewport.clientHeight = 1080;
+  app.nodes.fullscreen.fire("click");
+  await flush();
+  assert.equal(app.nodes["auto-resolution"].checked, true);
+  app.tick();
+  assert.deepEqual(socket.sent.at(-1), { type: "resize", width: 1920, height: 1080 });
+  await app.document.exitFullscreen();
+  assert.equal(app.nodes["auto-resolution"].checked, false);
+  assert.equal(app.nodes.viewport.classList.contains("fit"), false);
+  assert.equal(app.timers.size, 0);
+});
+
 test("H.264 waits for codec setup, acknowledges rendered frames and closes stale decoders", async () => {
   const app = harness();
   const decoders = [];
@@ -746,8 +810,8 @@ test("nested gateway prefix is preserved for WebSocket and asset URLs", () => {
   const pathname = "/remote-desktop/test-opaque-path/";
   const app = harness(pathname);
   assert.equal(app.sockets[0].url, "wss://desktop.test/remote-desktop/test-opaque-path/ws?desktop=virtual");
-  assert.match(html, /href="style\.css"/);
-  assert.match(html, /src="app\.js"/);
+  assert.match(builtHtml, /href="\.\/style\.css"/);
+  assert.match(builtHtml, /src="\.\/app\.js"/);
   for (const asset of ["style.css", "app.js"]) {
     assert.equal(new URL(asset, `https://desktop.test${pathname}`).pathname, `${pathname}${asset}`);
   }

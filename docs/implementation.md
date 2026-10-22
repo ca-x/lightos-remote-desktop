@@ -78,7 +78,7 @@ Backend::stop(): signals its owned thread; never modifies global environment.
 
 ## Acceptance and verification
 
-1. cargo test; cargo fmt --check; cargo clippy --all-targets -- -D warnings.
+1. npm ci; npm run build; npm test; cargo test; cargo fmt --check; cargo clippy --all-targets -- -D warnings.
 2. Installer shell syntax and sandbox tests prove backup, unchanged secrets,
    idempotence, rollback and no activation before explicit install.
 3. Start candidate on a separate port/runtime directory. Capture a real frame,

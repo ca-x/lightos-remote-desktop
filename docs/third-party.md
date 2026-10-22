@@ -32,3 +32,10 @@ a patent/legal clearance guarantee. Distributors must assess their own obligatio
 Native audio uses libpulse-binding (MIT/Apache-2.0) and dynamically linked
 libpulse; system libpulse and its transitive dependencies retain their licenses.
 FFmpeg is only an optional development/test decoder, not a runtime dependency.
+
+The embedded frontend uses React/React DOM, Headless UI, Lucide React, i18next
+and react-i18next, with exact resolutions in package-lock.json. Vite/TypeScript
+are build-time tools, not target-machine services. The frontend build collects
+license notices from the installed production dependency graph into
+web/dist/NOTICE.frontend.txt; CI includes this as licenses/frontend.txt. Lucide's
+ISC/MIT notices must be retained, including inherited Feather attribution.

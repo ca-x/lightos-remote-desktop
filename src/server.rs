@@ -135,16 +135,25 @@ pub fn router(state: AppState) -> Router {
     let desktop = Router::new()
         .route(
             "/app.js",
-            get(|| async {
+            get(|headers: HeaderMap| async move {
                 asset(
-                    include_str!("../web/app.js"),
+                    &headers,
+                    include_str!("../web/dist/app.js"),
+                    include_bytes!("../web/dist/app.js.gz"),
                     "text/javascript; charset=utf-8",
                 )
             }),
         )
         .route(
             "/style.css",
-            get(|| async { asset(include_str!("../web/style.css"), "text/css; charset=utf-8") }),
+            get(|headers: HeaderMap| async move {
+                asset(
+                    &headers,
+                    include_str!("../web/dist/style.css"),
+                    include_bytes!("../web/dist/style.css.gz"),
+                    "text/css; charset=utf-8",
+                )
+            }),
         )
         .route("/ws", get(upgrade))
         .route("/desktops", get(desktops));
@@ -170,8 +179,50 @@ fn mount_desktop<State: Clone + Send + Sync + 'static>(
         .route(&format!("{prefix}/"), get(index))
 }
 
-fn asset(content: &'static str, mime: &'static str) -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, mime)], content)
+fn accepts_gzip(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value.split(',').any(|entry| {
+                let mut parts = entry.trim().split(';');
+                if !parts
+                    .next()
+                    .is_some_and(|name| name.trim().eq_ignore_ascii_case("gzip"))
+                {
+                    return false;
+                }
+                parts.all(|parameter| match parameter.trim().split_once('=') {
+                    Some((name, quality)) if name.trim().eq_ignore_ascii_case("q") => quality
+                        .trim()
+                        .parse::<f32>()
+                        .is_ok_and(|quality| quality > 0.0 && quality <= 1.0),
+                    _ => true,
+                })
+            })
+        })
+}
+
+fn asset(
+    headers: &HeaderMap,
+    content: &'static str,
+    compressed: &'static [u8],
+    mime: &'static str,
+) -> Response {
+    let compressed_response = accepts_gzip(headers);
+    let mut response = if compressed_response {
+        compressed.into_response()
+    } else {
+        content.into_response()
+    };
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, mime.parse().unwrap());
+    headers.insert(header::CACHE_CONTROL, "no-cache".parse().unwrap());
+    headers.insert(header::VARY, "Accept-Encoding".parse().unwrap());
+    if compressed_response {
+        headers.insert(header::CONTENT_ENCODING, "gzip".parse().unwrap());
+    }
+    response
 }
 
 async fn index(OriginalUri(uri): OriginalUri) -> Response {
@@ -183,7 +234,8 @@ async fn index(OriginalUri(uri): OriginalUri) -> Response {
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
             (header::CACHE_CONTROL, "no-store"),
         ],
-        include_str!("../web/index.html").replace("__LIGHTOS_VERSION__", env!("CARGO_PKG_VERSION")),
+        include_str!("../web/dist/index.html")
+            .replace("__LIGHTOS_VERSION__", env!("CARGO_PKG_VERSION")),
     )
         .into_response()
 }
@@ -992,6 +1044,63 @@ mod tests {
         assert!(credentials_match(&headers, "user", "secret:one"));
         assert!(!credentials_match(&headers, "other", "secret:one"));
         assert!(!credentials_match(&headers, "user", "wrong"));
+    }
+
+    #[test]
+    fn gzip_negotiation_respects_quality_and_raw_clients() {
+        let mut headers = HeaderMap::new();
+        assert!(!accepts_gzip(&headers));
+        for value in ["gzip", "br, gzip;q=0.5", "GZIP; Q=1"] {
+            headers.insert(header::ACCEPT_ENCODING, value.parse().unwrap());
+            assert!(accepts_gzip(&headers), "{value}");
+        }
+        for value in [
+            "br",
+            "gzip;q=0",
+            "gzip;Q=0",
+            "gzip;q=invalid",
+            "gzip;q=2",
+            "gzip;q=NaN",
+        ] {
+            headers.insert(header::ACCEPT_ENCODING, value.parse().unwrap());
+            assert!(!accepts_gzip(&headers), "{value}");
+        }
+    }
+
+    #[tokio::test]
+    async fn embedded_asset_selects_encoding_without_cache_mixups() {
+        let mut headers = HeaderMap::new();
+        let raw = asset(
+            &headers,
+            "raw",
+            b"compressed",
+            "text/javascript; charset=utf-8",
+        );
+        assert!(!raw.headers().contains_key(header::CONTENT_ENCODING));
+        assert_eq!(raw.headers()[header::VARY], "Accept-Encoding");
+        assert_eq!(raw.headers()[header::CACHE_CONTROL], "no-cache");
+        assert_eq!(
+            axum::body::to_bytes(raw.into_body(), 128)
+                .await
+                .unwrap()
+                .as_ref(),
+            b"raw"
+        );
+        headers.insert(header::ACCEPT_ENCODING, "gzip".parse().unwrap());
+        let compressed = asset(
+            &headers,
+            "raw",
+            b"compressed",
+            "text/javascript; charset=utf-8",
+        );
+        assert_eq!(compressed.headers()[header::CONTENT_ENCODING], "gzip");
+        assert_eq!(
+            axum::body::to_bytes(compressed.into_body(), 128)
+                .await
+                .unwrap()
+                .as_ref(),
+            b"compressed"
+        );
     }
 
     #[test]

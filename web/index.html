@@ -1,103 +1,14 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>LightOS 远程桌面</title>
-  <link rel="stylesheet" href="style.css">
-  <script src="app.js" defer></script>
+  <meta name="lightos-version" content="__LIGHTOS_VERSION__">
+  <title>LightOS Remote Desktop</title>
+  <script type="module" src="./src/main.tsx"></script>
 </head>
 <body>
-  <svg class="icon-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-    <symbol id="icon-menu" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></symbol>
-    <symbol id="icon-fit" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/></symbol>
-    <symbol id="icon-actual" viewBox="0 0 24 24"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M14 15H9v-5M16 3h5v5M21 3 9 15"/></symbol>
-    <symbol id="icon-fullscreen" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></symbol>
-    <symbol id="icon-volume" viewBox="0 0 24 24"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298zM16 9a5 5 0 0 1 0 6M19.364 18.364a9 9 0 0 0 0-12.728"/></symbol>
-    <symbol id="icon-muted" viewBox="0 0 24 24"><path d="M11 4.702a.7.7 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.7.7 0 0 0 11 19.298zM16.5 14.5l5-5M16.5 9.5l5 5"/></symbol>
-    <symbol id="icon-clipboard" viewBox="0 0 24 24"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></symbol>
-    <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M14 17H5M19 7h-9"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></symbol>
-    <symbol id="icon-connection" viewBox="0 0 24 24"><path d="M12 22v-5M15 8V2M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1zM9 8V2"/></symbol>
-    <symbol id="icon-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
-  </svg>
-  <main id="viewport" class="fit" aria-label="Remote desktop viewport">
-    <canvas id="desktop" width="1280" height="720" tabindex="0" aria-label="Remote desktop. Focus here to send keyboard and pointer input." aria-describedby="help"></canvas>
-    <aside id="tools" aria-label="远程桌面工具栏">
-      <button id="tools-toggle" class="tool-handle" type="button" aria-label="打开桌面工具栏" title="点击打开 · 拖动吸附四边 · Alt+方向键移动" aria-controls="tool-panel" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#icon-menu"/></svg></button>
-      <section id="tool-panel" hidden aria-label="桌面控制">
-        <div class="panel-heading">
-          <h1>远程桌面</h1>
-          <button id="tools-close" type="button" aria-label="收起工具栏" title="收起"><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg></button>
-        </div>
-        <div class="connection-state">
-          <span id="state" role="status" aria-live="polite">Disconnected</span>
-          <button id="connection" class="icon-button" type="button" aria-label="断开连接" title="断开连接" data-tip="断开连接"><svg class="icon" aria-hidden="true"><use href="#icon-connection"/></svg></button>
-        </div>
-        <div class="toolbar primary-controls">
-          <button id="mode-fit" class="icon-button" type="button" aria-pressed="true" aria-label="适应窗口" title="适应窗口" data-tip="适应窗口"><svg class="icon" aria-hidden="true"><use href="#icon-fit"/></svg></button>
-          <button id="mode-actual" class="icon-button" type="button" aria-pressed="false" aria-label="按设置大小显示（1:1）" title="按设置大小显示（1:1）" data-tip="原始大小 · 1:1"><svg class="icon" aria-hidden="true"><use href="#icon-actual"/></svg></button>
-          <button id="fullscreen" class="icon-button" type="button" aria-pressed="false" aria-label="全屏" title="全屏" data-tip="全屏"><svg class="icon" aria-hidden="true"><use href="#icon-fullscreen"/></svg></button>
-          <button id="audio" class="icon-button" type="button" aria-pressed="false" aria-label="开启声音" title="开启声音" data-tip="开启声音" disabled><svg class="icon" aria-hidden="true"><use id="audio-icon" href="#icon-muted"/></svg></button>
-          <button id="clipboard-toggle" class="icon-button" type="button" aria-label="文字与剪贴板" title="文字与剪贴板" data-tip="文字与剪贴板"><svg class="icon" aria-hidden="true"><use href="#icon-clipboard"/></svg></button>
-          <button id="settings-toggle" class="icon-button" type="button" aria-label="分辨率设置" title="分辨率设置" data-tip="分辨率设置"><svg class="icon" aria-hidden="true"><use href="#icon-settings"/></svg></button>
-        </div>
-        <section id="desktop-controls" class="desktop-controls" hidden aria-label="桌面来源">
-          <div class="desktop-heading">
-            <label for="desktop-source">桌面来源</label>
-            <button id="refresh-desktops" type="button" title="刷新物理会话与显示器列表，不切换桌面" aria-label="刷新桌面与显示器列表">刷新</button>
-          </div>
-          <select id="desktop-source" title="切换虚拟或物理桌面" aria-label="切换桌面来源" aria-describedby="desktop-status" disabled></select>
-          <div id="monitor-controls" hidden>
-            <label for="monitor-source">物理显示器</label>
-            <select id="monitor-source" title="选择一块物理显示器" aria-label="选择物理显示器" aria-describedby="desktop-status" disabled></select>
-          </div>
-          <p id="desktop-status" role="status" aria-live="polite"></p>
-        </section>
-        <p id="display-mode" aria-live="polite">适应窗口</p>
-        <p id="performance" title="FPS 为最近一秒实际绘制帧数，静止桌面不重复发送。RTT 为同一 WebSocket 的应用层往返时间，包含排队，不等于操作到画面的端到端延迟。">-- FPS · RTT -- ms</p>
-        <p id="video-details">等待画面</p>
-        <p id="software-version" title="LightOS Remote Desktop 软件版本">v__LIGHTOS_VERSION__</p>
-        <p id="message" role="status" aria-live="polite">Connecting. Authentication uses your browser’s sign-in dialog.</p>
-        <details id="keyboard-section">
-          <summary>键盘捕获与组合键</summary>
-          <button id="keyboard-capture" type="button" aria-pressed="false" disabled>全屏捕获键盘</button>
-          <p id="keyboard-state">全屏时尝试捕获所有可用按键，不针对特定快捷键。系统保留键可能仍无法捕获；长按 Esc 可退出浏览器全屏。</p>
-          <fieldset id="shortcut-modifiers">
-            <legend>发送任意组合键到远程</legend>
-            <label><input id="shortcut-ctrl" type="checkbox"> Ctrl</label>
-            <label><input id="shortcut-alt" type="checkbox"> Alt</label>
-            <label><input id="shortcut-shift" type="checkbox"> Shift</label>
-            <label><input id="shortcut-super" type="checkbox"> Super</label>
-          </fieldset>
-          <label class="shortcut-key-label" for="shortcut-key">主键</label>
-          <select id="shortcut-key" aria-label="远程组合键主键"></select>
-          <button id="send-shortcut" type="button" disabled>发送组合键</button>
-        </details>
-        <details id="settings-section">
-          <summary>画面与分辨率</summary>
-          <label class="fit-control"><input id="auto-resolution" type="checkbox" checked> 跟随浏览器窗口分辨率</label>
-          <form id="resize" class="toolbar" aria-label="Remote desktop resolution">
-            <label>宽 <input id="width" type="number" min="320" max="3840" step="1" value="1280" required></label>
-            <label>高 <input id="height" type="number" min="200" max="2160" step="1" value="720" required></label>
-            <button id="apply-size" type="submit" disabled>调整分辨率</button>
-          </form>
-        </details>
-        <details id="clipboard-section">
-          <summary>文字与剪贴板</summary>
-          <section class="text-controls" aria-label="Text and clipboard">
-            <label for="text">中文输入 / 剪贴板</label>
-            <textarea id="text" rows="2" spellcheck="false" autocomplete="off" aria-describedby="help"></textarea>
-            <div class="toolbar">
-              <button id="send-text" type="button" disabled>发送文字</button>
-              <button id="clipboard-get" type="button" disabled>读取远程剪贴板</button>
-              <button id="clipboard-set" type="button" disabled>写入远程剪贴板</button>
-              <button id="paste-local" type="button" disabled>粘贴本地文字</button>
-            </div>
-          </section>
-        </details>
-        <p id="help">点击桌面即可控制。虚拟桌面中 Super+Space 打开应用，Super+Enter 打开终端（Super 即 Windows 键）；物理桌面遵循本机会话的快捷键。Ctrl+Alt+Shift+Esc 打开工具栏。中文可在文字框中输入后发送，最多 16 KiB；剪贴板只在点击时读取。切换来源不会关闭虚拟桌面。</p>
-      </section>
-    </aside>
-  </main>
+  <div id="root"></div>
+  <noscript>LightOS Remote Desktop v__LIGHTOS_VERSION__ requires JavaScript.</noscript>
 </body>
 </html>
