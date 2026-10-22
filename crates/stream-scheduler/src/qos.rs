@@ -110,9 +110,11 @@ impl AdaptiveRate {
         if self.delays.len() == FLOOR_WINDOW {
             let low = *self.delays.iter().min().unwrap();
             let high = *self.delays.iter().max().unwrap();
-            // A settled new path may replace an old minimum. A growing queue
-            // cannot: its recent range must first become stable.
-            if high.saturating_sub(low) <= Duration::from_millis(20) {
+            let older_min = *self.delays.iter().take(FLOOR_WINDOW / 2).min().unwrap();
+            let recent_min = *self.delays.iter().skip(FLOOR_WINDOW / 2).min().unwrap();
+            // A settled new path may replace an old minimum. Even a slow
+            // growing queue must not be absorbed into the path baseline.
+            if high.saturating_sub(low) <= Duration::from_millis(20) && recent_min <= older_min {
                 let floor = self.baseline.unwrap();
                 self.baseline =
                     Some(floor + low.saturating_sub(floor).min(Duration::from_millis(25)));
@@ -159,7 +161,7 @@ impl AdaptiveRate {
             self.startup = false;
             self.good = 0;
             self.bad = self.bad.saturating_add(1);
-            if self.excess >= Duration::from_secs(1) {
+            if self.excess >= Duration::from_secs(1) && self.bad >= 2 {
                 self.reduce_fps(now, true);
                 return;
             }

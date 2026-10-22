@@ -35,7 +35,7 @@ fn one_spike_and_invalid_or_duplicate_acks_cannot_cut_rate() {
     let mut clock = Instant::now();
     warm(&mut flow, &mut clock);
     let target = flow.target();
-    sample(&mut flow, 6, &mut clock, 600);
+    sample(&mut flow, 6, &mut clock, 1200);
     assert_eq!(flow.target(), target);
     for _ in 0..10 {
         flow.acknowledge(Some(6), clock);
@@ -231,4 +231,57 @@ fn strategies_have_different_queue_tolerance_and_quality_first_survives_stalls()
     }
     assert_eq!(flow.target().quality_percent, 100);
     assert_eq!(flow.target().fps, 2);
+}
+
+#[test]
+fn slowly_rising_queue_is_not_learned_as_a_new_path_floor() {
+    let mut flow = flow(SchedulingStrategy::Auto, 30);
+    let mut clock = Instant::now();
+    warm(&mut flow, &mut clock);
+    for step in 1..=1000 {
+        sample(&mut flow, 5 + step, &mut clock, 20 + step);
+    }
+    assert_eq!(flow.qos_summary()["baseline_ms"], 20.0);
+    assert!(flow.target().fps < 30);
+    assert!(flow.target().quality_percent < 100);
+}
+
+#[test]
+fn confirmed_severe_delay_brakes_fps_without_waiting_for_a_stall() {
+    let mut flow = flow(SchedulingStrategy::Auto, 30);
+    let mut clock = Instant::now();
+    warm(&mut flow, &mut clock);
+    sample(&mut flow, 6, &mut clock, 1200);
+    assert_eq!(flow.target().fps, 30);
+    sample(&mut flow, 7, &mut clock, 1200);
+    assert_eq!(flow.target().fps, 15);
+}
+
+#[test]
+fn strategy_changes_and_native_skips_request_one_paced_refresh() {
+    let mut flow = flow(SchedulingStrategy::Auto, 30);
+    let now = Instant::now();
+    flow.begin_frame((800, 600));
+    flow.frame_started(now);
+    assert!(!flow.refresh_requested());
+    flow.frame_skipped();
+    assert!(flow.refresh_requested());
+    assert_eq!(flow.in_flight(), 0);
+    assert!(flow.next_frame_at().unwrap() >= now + Duration::from_millis(60));
+    flow.frame_started(now + Duration::from_secs(1));
+    assert!(!flow.refresh_requested());
+    flow.sent(1, now + Duration::from_secs(1));
+    flow.acknowledge(Some(1), now + Duration::from_millis(1020));
+    flow.tick(now + Duration::from_secs(20));
+    assert!(
+        !flow.refresh_requested(),
+        "ACKs and idle ticks must not refresh static frames"
+    );
+    flow.configure(true, true, SchedulingStrategy::QualityFirst);
+    assert!(
+        flow.refresh_requested(),
+        "a new strategy must update a static image"
+    );
+    flow.frame_started(now + Duration::from_secs(21));
+    assert!(!flow.refresh_requested());
 }

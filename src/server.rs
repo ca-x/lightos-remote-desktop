@@ -689,7 +689,6 @@ async fn connection(
         .any(|c| c.codec == VideoCodec::H264 && c.available && c.dynamic_bitrate);
     let mut audio = None;
     let mut audio_buffer = vec![0_u8; 3840];
-    let mut first_frame = true;
     let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
     let mut qos_ticks = tokio::time::interval(Duration::from_millis(250));
     let mut applied_rate = None;
@@ -705,12 +704,9 @@ async fn connection(
     let transmit = async {
         loop {
             let frame_deadline = pacing.borrow().next_frame_at();
+            let refresh_requested = pacing.borrow().refresh_requested();
             let outgoing = tokio::select! {
-                changed = async {
-                    if let Some(deadline) = frame_deadline { tokio::time::sleep_until(deadline.into()).await; }
-                    if !first_frame { frames.changed().await } else { Ok(()) }
-                }, if !pacing.borrow().waiting() => {
-                    first_frame = false;
+                changed = wait_for_video_frame(&mut frames, refresh_requested, frame_deadline), if !pacing.borrow().waiting() => {
                     if changed.is_err() { break; }
                     let frame = frames.borrow_and_update().clone();
                     let Some(frame) = frame else { break; };
@@ -737,7 +733,9 @@ async fn connection(
                             Ok(encoded) => {
                                 if encoded.data.is_empty() {
                                     // OpenH264 skipped this raw input to honor its
-                                    // bitrate. No predictive frame was produced.
+                                    // bitrate. Retry the latest raw capture after
+                                    // pacing, including when the desktop is static.
+                                    pacing_tx.send_modify(FrameScheduler::frame_skipped);
                                     encode_samples.record(encode_started.elapsed());
                                     continue;
                                 }
@@ -834,7 +832,7 @@ async fn connection(
                                 && value.get("type").and_then(|kind| kind.as_str()) == Some("video")
                             {
                                 h264 = value.get("codec").and_then(|codec| codec.as_str()) == Some("h264") && pacing.borrow().sequenced() && video_codecs.contains(&VideoCodec::H264);
-                                encoder.take(); codec = None; first_frame = true;
+                                encoder.take(); codec = None;
                                 pacing_tx.send_modify(|flow| {
                                     flow.reset();
                                     flow.set_quality_scalable(if h264 { h264_dynamic_rate } else { state.config.quality > 20 });
@@ -912,6 +910,23 @@ fn jpeg_quality(configured: u8, percent: u32) -> u8 {
     configured
         .saturating_sub(((100 - percent.min(100)) / 2) as u8)
         .max(configured.min(20))
+}
+
+// Wait before reading the latest capture so stale raw frames are discarded.
+// Refreshes (policy changes, native skips) also work without a pixel notification.
+async fn wait_for_video_frame<T>(
+    frames: &mut watch::Receiver<T>,
+    refresh: bool,
+    deadline: Option<Instant>,
+) -> Result<(), watch::error::RecvError> {
+    if let Some(deadline) = deadline {
+        tokio::time::sleep_until(deadline.into()).await;
+    }
+    if refresh {
+        Ok(())
+    } else {
+        frames.changed().await
+    }
 }
 
 async fn receive_commands(
@@ -1113,6 +1128,62 @@ fn error_message(message: &str) -> Message {
 mod tests {
     use super::*;
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn static_frames_refresh_after_policy_change_or_native_skip_with_pacing() {
+        let (captures, mut frames) = watch::channel(1_u32);
+        let mut flow = FrameScheduler::new(30).unwrap();
+        flow.configure(true, true, SchedulingStrategy::Auto);
+        flow.frame_started(Instant::now());
+        assert!(
+            timeout(
+                Duration::from_millis(15),
+                wait_for_video_frame(&mut frames, flow.refresh_requested(), None,)
+            )
+            .await
+            .is_err(),
+            "a static desktop must stay idle"
+        );
+        flow.configure(true, true, SchedulingStrategy::QualityFirst);
+        timeout(
+            Duration::from_millis(100),
+            wait_for_video_frame(&mut frames, flow.refresh_requested(), flow.next_frame_at()),
+        )
+        .await
+        .expect("strategy must refresh without a new capture")
+        .unwrap();
+        flow.begin_frame((800, 600));
+        let started = Instant::now();
+        flow.frame_started(started);
+        flow.frame_skipped();
+        let deadline = flow.next_frame_at().unwrap();
+        assert!(
+            timeout(
+                Duration::from_millis(15),
+                wait_for_video_frame(&mut frames, flow.refresh_requested(), Some(deadline),)
+            )
+            .await
+            .is_err(),
+            "native skip retries must honor pacing"
+        );
+        // A newer raw capture arriving during pacing must replace the old one.
+        captures.send_replace(2);
+        wait_for_video_frame(&mut frames, flow.refresh_requested(), Some(deadline))
+            .await
+            .unwrap();
+        assert!(Instant::now() >= deadline);
+        assert_eq!(*frames.borrow_and_update(), 2);
+        flow.frame_started(Instant::now());
+        assert!(
+            timeout(
+                Duration::from_millis(15),
+                wait_for_video_frame(&mut frames, flow.refresh_requested(), None,)
+            )
+            .await
+            .is_err(),
+            "one refresh must not repeatedly encode a static image"
+        );
+    }
 
     #[tokio::test]
     async fn input_is_delivered_while_control_writer_is_not_draining() {

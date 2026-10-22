@@ -61,6 +61,7 @@ pub struct FrameScheduler {
     qos: AdaptiveRate,
     last_sent: Option<Instant>,
     last_started: Option<Instant>,
+    refresh_requested: bool,
 }
 
 impl Default for FrameScheduler {
@@ -77,6 +78,7 @@ impl Default for FrameScheduler {
             qos: AdaptiveRate::new(30, SchedulingStrategy::Auto),
             last_sent: None,
             last_started: None,
+            refresh_requested: true,
         }
     }
 }
@@ -128,8 +130,17 @@ impl FrameScheduler {
             }
         }
     }
+    pub fn refresh_requested(&self) -> bool {
+        self.refresh_requested
+    }
     pub fn frame_started(&mut self, now: Instant) {
         self.last_started = Some(now);
+        self.refresh_requested = false;
+    }
+    /// A skipped raw input produced no access unit. Retry the latest capture
+    /// at the next pacing deadline even if its pixels have stopped changing.
+    pub fn frame_skipped(&mut self) {
+        self.refresh_requested = true;
     }
     pub fn next_frame_at(&self) -> Option<Instant> {
         self.last_started
@@ -164,6 +175,7 @@ impl FrameScheduler {
         self.dimensions = None;
         self.last_sent = None;
         self.last_started = None;
+        self.refresh_requested = true;
         self.qos.reset(self.strategy);
     }
 
