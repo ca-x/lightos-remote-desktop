@@ -26,5 +26,14 @@ independent input processing, unchanged-image suppression, a local browser curso
 and SIMD JPEG. The added H.264/WebCodecs path preserves prediction dependencies:
 drop unencoded capture frames, not arbitrary encoded P-frames. Resolution changes
 and reconnects use a fresh encoder/keyframe. Browser WebCodecs support is
-checked, with JPEG retained when it is unavailable. Adaptive bitrate and GPU
-zero-copy are distinct follow-on work, not achieved merely by enabling H.264.
+checked, with JPEG retained when it is unavailable. Version0.1.9 independently implements the relevant QoS principles: an ACK-delay
+baseline with settled-floor aging, fresh feedback and consecutive congestion
+confirmation, budget-before-FPS cuts, conservative startup/recovery and stall
+braking. Thresholds/cooldowns and manual policies are application-specific.
+OpenH264 runtime bitrate/FPS updates are implemented through its generated Rust
+bindings and checked with native readback; native raw skips produce no access
+unit and are never sent as an empty predictive packet. Quality first keeps the
+configured per-frame budget while reducing FPS. RustDesk's native codecs,
+multi-viewer controller, UDP/NAT traversal and whole transport are not replicated.
+GPU zero-copy, hardware codecs and actual WAN/browser input-to-photon results
+remain separate work; synthetic shaped-link evidence is in verification.md.

@@ -44,22 +44,38 @@ same trait without distribution checks or edits to the WebSocket server.
 `media-codec` owns `EncoderFactory` and `VideoEncoder`, current OpenH264 and
 TurboJPEG implementations and real test-frame availability probes. Metadata
 states backend, hardware usage, availability/failure and dynamic-quality
-support. Software OpenH264 does not claim dynamic quality or hardware encoding.
+support, including a separately verified dynamic-bitrate flag. Software OpenH264
+supports runtime bitrate/FPS updates with native option readback and preserves
+its prediction chain; it does not claim a CRF-quality control or hardware encoding.
+Its native rate controller may skip a raw input before generating an access unit.
 The capture frame retains its lazy shared JPEG cache. `web/src/video-codec.ts`
 probes browser WebCodecs decoding support; decoder cancellation/generation and
 rendering remain in the client. An encoder being compiled does not prove it
 works, and server support alone does not prove browser decoding support.
 
-`stream-scheduler` owns per-connection render ACK accounting and deterministic
-latency-based window policy. It has no socket, compositor or encoder dependency.
-Auto preserves the existing 1–3 frame algorithm. Low latency holds one frame;
-Smooth permits three after the first render ACK. All strategies begin with one
-frame and reset on codec/dimension changes. Legacy clients stay at one in flight.
-This is scheduling, not adaptive bitrate or measured WAN optimization.
+`stream-scheduler` owns per-connection render ACK accounting, credit windows and
+an independent adaptive rate policy. It has no socket/compositor/codec dependency.
+The existing Auto window remains1–3 frames; Low latency holds one, Smooth permits
+three, and Quality first uses the Auto window. All begin at one credit and reset
+on codec/dimension changes. Legacy clients stay at one in flight and fixed rates.
 
-The existing toolbar has persistent encoding (Auto/H.264/JPEG) and scheduling
-(Auto/Low latency/Smooth) preferences. Auto is the default. Unsupported H.264
-falls back to JPEG while retaining the user's preference for a later reconnect.
+For sequenced clients the new QoS controller learns an ACK-delay floor, confirms
+excess delay using spaced fresh samples, cuts encoder budget before ordinary FPS
+cuts, and recovers with cooldowns. A sent-frame stall brakes FPS; an idle screen
+does not. Capture encoding is paced before encoding, including native skips.
+H.264 receives a real bitrate/FPS update without a forced encoder restart; JPEG
+uses the configured TurboJPEG quality. Quality first preserves the configured
+per-frame budget and reduces FPS, scaling H.264 total bitrate proportionally.
+This is a budget policy, not a lossless or fixed perceptual-quality guarantee.
+
+The toolbar has persistent encoding (Auto/H.264/JPEG) and scheduling
+(Auto/Low latency/Smooth/Quality first) preferences. Auto is the default.
+Unsupported H.264 falls back to JPEG while retaining the user's preference for
+reconnect. Reconnect continues with a jittered capped backoff while wanted, waits
+when offline and resumes online; a silent visible connection is replaced after
+30s. Manual disconnect cancels retries; explicit desktop-switch release still
+has its original failure boundary. See the adaptive-streaming spec/plan and
+verification receipt for measured conditions and limitations.
 Mobile gestures, IME controls, high-density sizing and logical-dimension limits
 continue to use the latest mobile baseline.
 

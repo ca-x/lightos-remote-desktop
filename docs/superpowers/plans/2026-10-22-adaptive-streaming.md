@@ -68,8 +68,8 @@
 
 **Files:** update `Cargo.toml`, `Cargo.lock`, `docs/runtime-platforms.md`, `docs/rustdesk-reference.md`, `docs/verification.md`, plan status.
 
-- [ ] Run normal/bundled workspace tests, clippy/fmt, frontend tests/build and installer fixtures.
-- [ ] Run native Ghostty/resize/handoff, real codec/protocol checks and final A/B evidence.
-- [ ] Request one independent whole-branch review; fix blockers with regression evidence.
+- [x] Run normal/bundled workspace tests, clippy/fmt, frontend tests/build and installer fixtures.
+- [x] Run native Ghostty/resize/handoff, real codec/protocol checks and final A/B evidence.
+- [x] Request one independent whole-branch review; fix blockers with regression evidence.
 - [ ] Bump0.1.9; commit/push; fetch latest main, reconcile/reverify if changed, merge/push main.
 - [ ] Install tested binary via independent installer; confirm digest, health, unchanged owner/signature and existing GUI application PIDs. Record limitations and deployment receipt; push docs and save durable memory.

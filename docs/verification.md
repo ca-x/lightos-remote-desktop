@@ -500,3 +500,66 @@ is statically bundled; remaining native system dependencies were resolved.
 Tagged `v*` builds have a release-publishing job; no tag/release is claimed to
 have been created solely by this verification. Subsequent H.264 changes require
 their own final CI run.
+
+
+## Adaptive streaming 0.1.9 (2026-10-22)
+
+The independently implemented QoS controller follows the RustDesk reference
+principles documented in `rustdesk-reference.md`; it is not a replacement of the
+whole RustDesk transport. Actual OpenH264 bitrate/FPS updates have native readback,
+and every emitted predictive frame remains ordered. Quality first preserves the
+configured per-frame budget and trades FPS for bandwidth. The browser persists
+this choice and retries wanted connections with capped jittered backoff,
+offline/online handling and visible-connection liveness detection.
+
+Review reproduced a slowly rising delay floor (1 ms per fresh sample), a single
+1200 ms spike cutting FPS, a skipped final capture remaining stale, and a static
+image failing to refresh on policy changes. The fixes require a settled,
+non-rising half-window minimum, confirmation of severe feedback, and a single
+paced refresh request after native skips or resets. Regression checks failed
+under the old behavior and passed after the fixes; independent rereview found no
+remaining Critical or Important issue in those fixes.
+
+Fresh local verification: ordinary and bundled workspaces each passed 120 tests
+with 16 explicit host-dependent tests ignored; Clippy all targets with warnings
+denied and formatting passed. Frontend 84 Node tests plus 15 Vitest tests and the
+production asset build passed. Installer 40 and compatibility 13 mocked behaviors
+passed. Explicit installed-native Lua and two-transport-generation Ghostty tests
+passed: one signature and GUI PID 3556747 survived, 225 bindings and no config
+errors. A separate release-binary WebSocket check negotiated all four strategies,
+verified actual H264 rate metadata and decoded JPEG. Deterministic static-watch
+coverage, rather than residual wire traffic, proves the static refresh behavior.
+
+The same private 1280x720 Omarchy desktop with FFplay testsrc2 at 30 FPS was measured
+through a userspace proxy limited to 98304 bytes/s downstream. Each run includes
+4 s clean, 12 s constrained, 8 s recovery, 4 s paused downstream and 8 s restored. ACKs
+represent complete packet reception, not actual browser decode or drawing.
+Application ping is also not an input-to-photon measurement. Full receipts,
+including older candidate runs, are in
+`benchmarks/2026-10-22-adaptive-streaming.json`.
+
+| Case | Constrained received FPS | Application ping P95 | Whole-run server CPU |
+| --- | ---: | ---: | ---: |
+| Installed 0.1.8 baseline, run 1 |8.42|347ms|26.9%|
+| Installed 0.1.8 baseline, run 2 |8.25|394ms|29.1%|
+| Reviewed 0.1.9 Auto |11.25|278ms|27.7%|
+| Reviewed 0.1.9 Quality first |8.25|372ms|26.1%|
+
+Every successful run kept the connection and decoded the accumulated H264 with
+FFmpeg `-xerror`, without JPEG fallback. Both baseline and candidate survived the
+pause, so these results do not prove a lower disconnect rate. CPU differences are
+small and uncontrolled. Conservative startup/recovery lowers the 4 s clean and 8 s
+recovery means: the reviewed Auto run averaged 26.25 FPS clean and 25 FPS recovery;
+its final restored settled window reached 29.33 FPS. Quality first retained 100%
+budget in native rate reports; perceptual image quality was not measured.
+
+Reproduce only on an isolated desktop with installed native prerequisites:
+
+```sh
+python3 scripts/benchmark-adaptive.py --binary baseline=/path/to/0.1.8 --binary candidate=target/release/lightos-remote-desktop --output-dir /tmp/lrd-adaptive-results --strategy auto
+python3 scripts/benchmark-adaptive.py --binary candidate=target/release/lightos-remote-desktop --output-dir /tmp/lrd-quality-results --strategy quality_first
+```
+
+The release still uses software OpenH264/TurboJPEG. Hardware codecs, actual WAN
+and browser end-to-end latency, and complete GNOME/KDE/X11/Windows/macOS desktop
+sessions have not been validated by this change.

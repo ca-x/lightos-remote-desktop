@@ -77,6 +77,7 @@ async fn adaptive_stream_over_a_shaped_link() {
     let mut frame_id = None;
     let mut frames = [0_u64; 5];
     let mut bytes = [0_u64; 5];
+    let mut frames_per_second = [0_u64; 36];
     let mut delays: [Vec<f64>; 5] = Default::default();
     let mut metrics = Vec::new();
     let mut access_units = Vec::new();
@@ -119,6 +120,7 @@ async fn adaptive_stream_over_a_shaped_link() {
                         if packet.first()==Some(&3) {
                             assert!(h264 && packet.len()>10);
                             frames[phase(t)] += 1;
+                            frames_per_second[(t as usize).min(35)] += 1;
                             bytes[phase(t)] += packet.len() as u64;
                             keyframes += u32::from(packet[1]==1);
                             access_units.extend_from_slice(&packet[10..]);
@@ -143,7 +145,10 @@ async fn adaptive_stream_over_a_shaped_link() {
         "restored",
     ];
     let phases: Vec<_>=(0..5).map(|i| json!({"phase":names[i],"frames":frames[i],"fps":frames[i] as f64/durations[i],"bytes":bytes[i],"mbps":bytes[i] as f64*8.0/durations[i]/1e6,"ping_p50_ms":percentile(&mut delays[i],50),"ping_p95_ms":percentile(&mut delays[i],95)})).collect();
-    let result = json!({"version":ready["version"],"strategy":strategy,"closed":closed,"elapsed_s":start.elapsed().as_secs_f64(),"keyframes":keyframes,"phases":phases,"samples":metrics});
+    let result = json!({"version":ready["version"],"strategy":strategy,"closed":closed,"elapsed_s":start.elapsed().as_secs_f64(),"keyframes":keyframes,"phases":phases,"frames_per_second":frames_per_second.as_slice(),
+        "settled_clean_fps":frames_per_second[2..4].iter().sum::<u64>() as f64/2.0,
+        "settled_recovery_fps":frames_per_second[22..24].iter().sum::<u64>() as f64/2.0,
+        "settled_restored_fps":frames_per_second[33..36].iter().sum::<u64>() as f64/3.0,"samples":metrics});
     std::fs::write(&result_path, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     println!(
         "{result_path}: {}",

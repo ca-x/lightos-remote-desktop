@@ -1,0 +1,639 @@
+{
+  "date_utc": "2026-10-22",
+  "conditions": {
+    "resolution": "1280x720",
+    "source": "ffplay testsrc2 30FPS in a private native Omarchy session",
+    "downstream_cap_bytes_per_second": 98304,
+    "phases_seconds": {
+      "clean": 4,
+      "constrained": 12,
+      "recovery": 8,
+      "downstream_interruption": 4,
+      "restored": 8
+    },
+    "ack": "complete packet ACK, no browser decoder/render timing"
+  },
+  "baseline_sha256": "0fe587ae7130b372c2126aeeaf5841d1be0113577401825b1551c6cb5b872ba2",
+  "runs": {
+    "baseline_run1": {
+      "closed": false,
+      "elapsed_s": 36.001385028,
+      "keyframes": 6,
+      "phases": [
+        {
+          "bytes": 1358103,
+          "fps": 29.75,
+          "frames": 119,
+          "mbps": 2.716206,
+          "phase": "clean",
+          "ping_p50_ms": 4.994993,
+          "ping_p95_ms": 10.977781
+        },
+        {
+          "bytes": 1162954,
+          "fps": 8.416666666666666,
+          "frames": 101,
+          "mbps": 0.7753026666666666,
+          "phase": "constrained",
+          "ping_p50_ms": 270.15321,
+          "ping_p95_ms": 347.22882300000003
+        },
+        {
+          "bytes": 2716946,
+          "fps": 29.625,
+          "frames": 237,
+          "mbps": 2.716946,
+          "phase": "recovery",
+          "ping_p50_ms": 10.243626,
+          "ping_p95_ms": 32.703886000000004
+        },
+        {
+          "bytes": 11463,
+          "fps": 0.25,
+          "frames": 1,
+          "mbps": 0.022926,
+          "phase": "interruption",
+          "ping_p50_ms": 1991.304114,
+          "ping_p95_ms": 3990.5469609999996
+        },
+        {
+          "bytes": 2673644,
+          "fps": 29.125,
+          "frames": 233,
+          "mbps": 2.673644,
+          "phase": "restored",
+          "ping_p50_ms": 9.865881,
+          "ping_p95_ms": 16.934876000000003
+        }
+      ],
+      "strategy": "auto",
+      "version": "0.1.8",
+      "server_cpu_percent": 26.872798215415372,
+      "downstream_cap_bytes_per_second": 98304
+    },
+    "auto_run1": {
+      "closed": false,
+      "elapsed_s": 36.0010617,
+      "keyframes": 6,
+      "phases": [
+        {
+          "bytes": 1237860,
+          "fps": 27.0,
+          "frames": 108,
+          "mbps": 2.47572,
+          "phase": "clean",
+          "ping_p50_ms": 4.004613,
+          "ping_p95_ms": 33.374928999999995
+        },
+        {
+          "bytes": 1144581,
+          "fps": 11.25,
+          "frames": 135,
+          "mbps": 0.763054,
+          "phase": "constrained",
+          "ping_p50_ms": 178.381463,
+          "ping_p95_ms": 284.328122
+        },
+        {
+          "bytes": 1793749,
+          "fps": 24.125,
+          "frames": 193,
+          "mbps": 1.793749,
+          "phase": "recovery",
+          "ping_p50_ms": 26.056214,
+          "ping_p95_ms": 43.626773
+        },
+        {
+          "bytes": 11329,
+          "fps": 0.25,
+          "frames": 1,
+          "mbps": 0.022658,
+          "phase": "interruption",
+          "ping_p50_ms": 1993.0561710000002,
+          "ping_p95_ms": 3993.0888879999998
+        },
+        {
+          "bytes": 2008564,
+          "fps": 24.25,
+          "frames": 194,
+          "mbps": 2.008564,
+          "phase": "restored",
+          "ping_p50_ms": 28.457710000000002,
+          "ping_p95_ms": 35.538703
+        }
+      ],
+      "strategy": "auto",
+      "version": "0.1.8",
+      "server_cpu_percent": 26.41640471552509,
+      "downstream_cap_bytes_per_second": 98304
+    },
+    "baseline_run2": {
+      "closed": false,
+      "elapsed_s": 36.001840888,
+      "keyframes": 6,
+      "phases": [
+        {
+          "bytes": 1378021,
+          "fps": 30.0,
+          "frames": 120,
+          "mbps": 2.756042,
+          "phase": "clean",
+          "ping_p50_ms": 2.712504,
+          "ping_p95_ms": 30.802912
+        },
+        {
+          "bytes": 1137995,
+          "fps": 8.25,
+          "frames": 99,
+          "mbps": 0.7586633333333334,
+          "phase": "constrained",
+          "ping_p50_ms": 309.36655,
+          "ping_p95_ms": 394.048297
+        },
+        {
+          "bytes": 2687447,
+          "fps": 29.25,
+          "frames": 234,
+          "mbps": 2.687447,
+          "phase": "recovery",
+          "ping_p50_ms": 19.796151000000002,
+          "ping_p95_ms": 30.074353000000002
+        },
+        {
+          "bytes": 11252,
+          "fps": 0.25,
+          "frames": 1,
+          "mbps": 0.022504,
+          "phase": "interruption",
+          "ping_p50_ms": 1993.5822210000001,
+          "ping_p95_ms": 3993.261929
+        },
+        {
+          "bytes": 2752060,
+          "fps": 30.0,
+          "frames": 240,
+          "mbps": 2.75206,
+          "phase": "restored",
+          "ping_p50_ms": 4.255293,
+          "ping_p95_ms": 34.240736
+        }
+      ],
+      "strategy": "auto",
+      "version": "0.1.8",
+      "server_cpu_percent": 29.085032375638686,
+      "downstream_cap_bytes_per_second": 98304
+    },
+    "auto_run2": {
+      "closed": false,
+      "elapsed_s": 36.003593562,
+      "keyframes": 6,
+      "phases": [
+        {
+          "bytes": 1243055,
+          "fps": 27.0,
+          "frames": 108,
+          "mbps": 2.48611,
+          "phase": "clean",
+          "ping_p50_ms": 2.773794,
+          "ping_p95_ms": 12.429649
+        },
+        {
+          "bytes": 1132609,
+          "fps": 11.416666666666666,
+          "frames": 137,
+          "mbps": 0.7550726666666666,
+          "phase": "constrained",
+          "ping_p50_ms": 170.966326,
+          "ping_p95_ms": 251.249552
+        },
+        {
+          "bytes": 1847725,
+          "fps": 25.0,
+          "frames": 200,
+          "mbps": 1.847725,
+          "phase": "recovery",
+          "ping_p50_ms": 24.151626999999998,
+          "ping_p95_ms": 41.535035
+        },
+        {
+          "bytes": 11212,
+          "fps": 0.25,
+          "frames": 1,
+          "mbps": 0.022424,
+          "phase": "interruption",
+          "ping_p50_ms": 1993.3754669999998,
+          "ping_p95_ms": 3993.789691
+        },
+        {
+          "bytes": 1976195,
+          "fps": 24.0,
+          "frames": 192,
+          "mbps": 1.976195,
+          "phase": "restored",
+          "ping_p50_ms": 10.423363,
+          "ping_p95_ms": 32.498356
+        }
+      ],
+      "strategy": "auto",
+      "version": "0.1.9",
+      "server_cpu_percent": 27.89924802707332,
+      "downstream_cap_bytes_per_second": 98304
+    },
+    "quality_first": {
+      "closed": false,
+      "elapsed_s": 36.001356682,
+      "frames_per_second": [
+        21,
+        29,
+        29,
+        29,
+        7,
+        6,
+        11,
+        9,
+        8,
+        8,
+        7,
+        9,
+        9,
+        8,
+        8,
+        8,
+        8,
+        10,
+        29,
+        29,
+        29,
+        28,
+        29,
+        28,
+        0,
+        0,
+        0,
+        1,
+        8,
+        16,
+        29,
+        28,
+        27,
+        28,
+        29,
+        29
+      ],
+      "keyframes": 5,
+      "phases": [
+        {
+          "bytes": 1243565,
+          "fps": 27.0,
+          "frames": 108,
+          "mbps": 2.48713,
+          "phase": "clean",
+          "ping_p50_ms": 7.496905,
+          "ping_p95_ms": 16.813011999999997
+        },
+        {
+          "bytes": 1126147,
+          "fps": 8.166666666666666,
+          "frames": 98,
+          "mbps": 0.7507646666666666,
+          "phase": "constrained",
+          "ping_p50_ms": 273.030034,
+          "ping_p95_ms": 396.984545
+        },
+        {
+          "bytes": 2182958,
+          "fps": 23.75,
+          "frames": 190,
+          "mbps": 2.182958,
+          "phase": "recovery",
+          "ping_p50_ms": 14.749683,
+          "ping_p95_ms": 36.848308
+        },
+        {
+          "bytes": 11425,
+          "fps": 0.25,
+          "frames": 1,
+          "mbps": 0.02285,
+          "phase": "interruption",
+          "ping_p50_ms": 1994.1226629999999,
+          "ping_p95_ms": 3994.552499
+        },
+        {
+          "bytes": 2222175,
+          "fps": 24.25,
+          "frames": 194,
+          "mbps": 2.222175,
+          "phase": "restored",
+          "ping_p50_ms": 2.48525,
+          "ping_p95_ms": 19.105855000000002
+        }
+      ],
+      "settled_clean_fps": 29.0,
+      "settled_recovery_fps": 28.5,
+      "settled_restored_fps": 28.666666666666668,
+      "strategy": "quality_first",
+      "version": "0.1.9",
+      "server_cpu_percent": 28.03312004651271,
+      "downstream_cap_bytes_per_second": 98304
+    },
+    "auto_settled": {
+      "closed": false,
+      "elapsed_s": 36.000911432,
+      "frames_per_second": [
+        22,
+        29,
+        28,
+        29,
+        7,
+        6,
+        11,
+        11,
+        12,
+        12,
+        13,
+        12,
+        13,
+        12,
+        13,
+        13,
+        10,
+        15,
+        25,
+        29,
+        29,
+        29,
+        29,
+        29,
+        0,
+        0,
+        0,
+        2,
+        6,
+        15,
+        27,
+        29,
+        29,
+        29,
+        28,
+        28
+      ],
+      "keyframes": 6,
+      "phases": [
+        {
+          "bytes": 1237661,
+          "fps": 27.0,
+          "frames": 108,
+          "mbps": 2.475322,
+          "phase": "clean",
+          "ping_p50_ms": 9.323349,
+          "ping_p95_ms": 31.221718
+        },
+        {
+          "bytes": 1144186,
+          "fps": 11.25,
+          "frames": 135,
+          "mbps": 0.7627906666666666,
+          "phase": "constrained",
+          "ping_p50_ms": 191.700935,
+          "ping_p95_ms": 280.817272
+        },
+        {
+          "bytes": 1809969,
+          "fps": 24.375,
+          "frames": 195,
+          "mbps": 1.809969,
+          "phase": "recovery",
+          "ping_p50_ms": 7.842788,
+          "ping_p95_ms": 36.038573
+        },
+        {
+          "bytes": 23647,
+          "fps": 0.5,
+          "frames": 2,
+          "mbps": 0.047294,
+          "phase": "interruption",
+          "ping_p50_ms": 1987.403094,
+          "ping_p95_ms": 3987.906281
+        },
+        {
+          "bytes": 1973486,
+          "fps": 23.875,
+          "frames": 191,
+          "mbps": 1.973486,
+          "phase": "restored",
+          "ping_p50_ms": 26.632169,
+          "ping_p95_ms": 40.194055999999996
+        }
+      ],
+      "settled_clean_fps": 28.5,
+      "settled_recovery_fps": 29.0,
+      "settled_restored_fps": 28.333333333333332,
+      "strategy": "auto",
+      "version": "0.1.9",
+      "server_cpu_percent": 27.24979300403151,
+      "downstream_cap_bytes_per_second": 98304
+    },
+    "auto_reviewed": {
+      "closed": false,
+      "elapsed_s": 36.000448401,
+      "frames_per_second": [
+        20,
+        29,
+        28,
+        28,
+        7,
+        8,
+        11,
+        11,
+        13,
+        13,
+        13,
+        13,
+        12,
+        12,
+        12,
+        10,
+        14,
+        17,
+        27,
+        29,
+        29,
+        29,
+        29,
+        26,
+        0,
+        0,
+        0,
+        1,
+        6,
+        16,
+        26,
+        29,
+        29,
+        29,
+        29,
+        30
+      ],
+      "keyframes": 6,
+      "phases": [
+        {
+          "bytes": 1198648,
+          "fps": 26.25,
+          "frames": 105,
+          "mbps": 2.397296,
+          "phase": "clean",
+          "ping_p50_ms": 2.916619,
+          "ping_p95_ms": 26.743556
+        },
+        {
+          "bytes": 1097335,
+          "fps": 11.25,
+          "frames": 135,
+          "mbps": 0.7315566666666666,
+          "phase": "constrained",
+          "ping_p50_ms": 131.67802600000002,
+          "ping_p95_ms": 278.165349
+        },
+        {
+          "bytes": 1884691,
+          "fps": 25.0,
+          "frames": 200,
+          "mbps": 1.884691,
+          "phase": "recovery",
+          "ping_p50_ms": 19.510162,
+          "ping_p95_ms": 23.9043
+        },
+        {
+          "bytes": 12034,
+          "fps": 0.25,
+          "frames": 1,
+          "mbps": 0.024068,
+          "phase": "interruption",
+          "ping_p50_ms": 1993.2603279999998,
+          "ping_p95_ms": 3993.7912149999997
+        },
+        {
+          "bytes": 2001882,
+          "fps": 24.25,
+          "frames": 194,
+          "mbps": 2.001882,
+          "phase": "restored",
+          "ping_p50_ms": 0.49143400000000004,
+          "ping_p95_ms": 1.9657749999999998
+        }
+      ],
+      "settled_clean_fps": 28.0,
+      "settled_recovery_fps": 27.5,
+      "settled_restored_fps": 29.333333333333332,
+      "strategy": "auto",
+      "version": "0.1.9",
+      "server_cpu_percent": 27.654030250259165,
+      "downstream_cap_bytes_per_second": 98304
+    },
+    "quality_first_reviewed": {
+      "closed": false,
+      "elapsed_s": 36.001722643,
+      "frames_per_second": [
+        21,
+        29,
+        29,
+        28,
+        7,
+        7,
+        10,
+        8,
+        8,
+        9,
+        8,
+        8,
+        9,
+        8,
+        8,
+        9,
+        7,
+        8,
+        28,
+        29,
+        29,
+        29,
+        29,
+        29,
+        0,
+        0,
+        0,
+        1,
+        8,
+        14,
+        29,
+        26,
+        24,
+        29,
+        29,
+        29
+      ],
+      "keyframes": 5,
+      "phases": [
+        {
+          "bytes": 1228080,
+          "fps": 26.75,
+          "frames": 107,
+          "mbps": 2.45616,
+          "phase": "clean",
+          "ping_p50_ms": 5.579072,
+          "ping_p95_ms": 29.612546
+        },
+        {
+          "bytes": 1142519,
+          "fps": 8.25,
+          "frames": 99,
+          "mbps": 0.7616793333333334,
+          "phase": "constrained",
+          "ping_p50_ms": 283.296161,
+          "ping_p95_ms": 372.181357
+        },
+        {
+          "bytes": 2151196,
+          "fps": 23.5,
+          "frames": 188,
+          "mbps": 2.151196,
+          "phase": "recovery",
+          "ping_p50_ms": 8.713181,
+          "ping_p95_ms": 15.146669999999999
+        },
+        {
+          "bytes": 10738,
+          "fps": 0.25,
+          "frames": 1,
+          "mbps": 0.021476,
+          "phase": "interruption",
+          "ping_p50_ms": 1992.5542950000001,
+          "ping_p95_ms": 3992.810843
+        },
+        {
+          "bytes": 2153617,
+          "fps": 23.5,
+          "frames": 188,
+          "mbps": 2.153617,
+          "phase": "restored",
+          "ping_p50_ms": 3.103024,
+          "ping_p95_ms": 22.783157
+        }
+      ],
+      "settled_clean_fps": 28.5,
+      "settled_recovery_fps": 29.0,
+      "settled_restored_fps": 29.0,
+      "strategy": "quality_first",
+      "version": "0.1.9",
+      "server_cpu_percent": 26.100318397384825,
+      "downstream_cap_bytes_per_second": 98304,
+      "rate_samples": 35,
+      "observed_quality_percent": [
+        100
+      ],
+      "observed_bits_per_frame": [
+        92160
+      ]
+    }
+  },
+  "reviewed_candidate_sha256": "d25573508a17affb9003203265394ba02a5155c9dc5bda53011b31e6bd1dd79c"
+}
