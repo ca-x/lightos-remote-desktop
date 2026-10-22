@@ -25,8 +25,9 @@ use display_control::{
 };
 use futures_util::{SinkExt, Stream, StreamExt, stream::SplitSink};
 use media_codec::{
-    CodecCapability, EncoderFactory, EncoderRate, EncoderSettings, SoftwareEncoders, VideoCodec,
-    VideoEncoder,
+    BackendPreference, CodecCapability, EncoderBackend, EncoderFactory, EncoderRate,
+    EncoderSettings, HardwareEncoders, SoftwareEncoders, VideoCodec, VideoEncoder,
+    choose_h264_backend,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -676,7 +677,12 @@ async fn connection(
     let display_capabilities = state.displays.capabilities().await;
     let codec_capabilities = state
         .codec_capabilities
-        .get_or_init(|| SoftwareEncoders.probe())
+        .get_or_init(|| async {
+            let hardware = HardwareEncoders::discover();
+            let (mut caps, native) = tokio::join!(SoftwareEncoders.probe(), hardware.probe());
+            caps.extend(native);
+            caps
+        })
         .await;
     let video_codecs: Vec<_> = codec_capabilities
         .iter()
@@ -684,7 +690,7 @@ async fn connection(
         .map(|c| c.codec)
         .collect();
     let ready = Message::Text(
-        json!({"type":"ready","control_release":true,"resize_scale":display_capabilities.resize_scale,"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":"embedded","audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktops":state.desktop_options(),"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
+        json!({"type":"ready","backend_selection":true,"video_request_ids":true,"control_release":true,"resize_scale":display_capabilities.resize_scale,"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":"embedded","audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktops":state.desktop_options(),"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
 
             .to_string()
             .into(),
@@ -701,7 +707,7 @@ async fn connection(
         "desktop ready sent"
     );
     pacing_tx.send_modify(|flow| flow.set_quality_scalable(state.config.quality > 20));
-    let h264_dynamic_rate = codec_capabilities
+    let mut h264_dynamic_rate = codec_capabilities
         .iter()
         .any(|c| c.codec == VideoCodec::H264 && c.available && c.dynamic_bitrate);
     let mut audio = None;
@@ -710,7 +716,13 @@ async fn connection(
     let mut qos_ticks = tokio::time::interval(Duration::from_millis(250));
     let mut applied_rate = None;
     let mut applied_jpeg_quality = None;
+    let hardware = HardwareEncoders::discover();
+    let mut backend_preference = BackendPreference::Auto;
+    let mut excluded_backends = Vec::new();
+    let mut selected_backend: Option<EncoderBackend> = None;
+    let mut fallback_reason: Option<String> = None;
     let mut h264 = false;
+    let mut video_request_id = None;
     let mut encoder: Option<Box<dyn VideoEncoder>> = None;
     let mut codec = None;
     let video_started = std::time::Instant::now();
@@ -735,7 +747,9 @@ async fn connection(
                     if h264 {
                         let result = async {
                             if encoder.as_ref().is_none_or(|encoder| encoder.dimensions() != (frame.width, frame.height)) {
-                                encoder = Some(SoftwareEncoders.create(VideoCodec::H264, EncoderSettings {width:frame.width,height:frame.height,fps:state.config.fps,quality:state.config.quality})?);
+                                let settings = EncoderSettings {width:frame.width,height:frame.height,fps:state.config.fps,quality:state.config.quality};
+                                let backend = selected_backend.ok_or_else(|| anyhow::anyhow!("no validated H264 backend"))?;
+                                encoder = Some(if backend.is_hardware() { hardware.create(backend, settings)? } else { SoftwareEncoders.create(VideoCodec::H264, settings)? });
                                 codec = None;
                             }
                             let encoder = encoder.as_mut().ok_or_else(|| anyhow::anyhow!("encoder missing"))?;
@@ -758,7 +772,7 @@ async fn connection(
                                 }
                                 if let Some(configuration) = encoded.codec
                                     && codec.as_ref() != Some(&configuration) {
-                                        let message = Message::Text(json!({"type":"video_config","codec":configuration,"width":frame.width,"height":frame.height}).to_string().into());
+                                        let message = Message::Text(json!({"type":"video_config","request_id":video_request_id,"codec":configuration,"width":frame.width,"height":frame.height,"backend":selected_backend.map(EncoderBackend::id),"fallback_reason":fallback_reason}).to_string().into());
                                         if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(message)).await, Ok(Ok(()))) { break; }
                                         codec = Some(configuration);
                                 }
@@ -769,12 +783,17 @@ async fn connection(
                                 packet = Some(bytes);
                             }
                             Err(error) => {
-                                tracing::warn!(%error, "H.264 unavailable; falling back to JPEG");
-                                pacing_tx.send_modify(FrameScheduler::reset);
-                                encoder.take(); h264 = false; codec = None;
+                                tracing::warn!(%error, ?selected_backend, "H264 backend failed; selecting fallback");
+                                if let Some(backend) = selected_backend.take() { excluded_backends.push(backend); }
+                                fallback_reason = Some(format!("{error:#}"));
+                                selected_backend = choose_h264_backend(backend_preference, codec_capabilities, &excluded_backends);
+                                h264 = selected_backend.is_some();
+                                h264_dynamic_rate = selected_backend.is_some_and(|backend| codec_capabilities.iter().any(|cap| cap.backend == backend.id() && cap.available && cap.dynamic_bitrate));
+                                pacing_tx.send_modify(|flow| { flow.reset(); flow.set_quality_scalable(if h264 { h264_dynamic_rate } else { state.config.quality > 20 }); });
+                                encoder.take(); codec = None;
                                 applied_rate = None;
-                                pacing_tx.send_modify(|flow| flow.set_quality_scalable(state.config.quality > 20));
-                                let message = Message::Text(json!({"type":"video_config","codec":"jpeg"}).to_string().into());
+                                if h264 { continue; }
+                                let message = Message::Text(json!({"type":"video_config","request_id":video_request_id,"codec":"jpeg","backend":"turbojpeg","fallback_reason":fallback_reason}).to_string().into());
                                 if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(message)).await, Ok(Ok(()))) { break; }
                             }
                         }
@@ -840,7 +859,7 @@ async fn connection(
                                 let message = Message::Text(json!({"type":"pong","id":id,"video_metrics":{
                                     "ack":flow.ack_summary(),"encode":encode_samples.summary(),"send":send_samples.summary(),
                                     "in_flight":flow.in_flight(),"window":flow.window(),"strategy":flow.strategy(),
-                                    "qos":flow.qos_summary(),"encoder_rate":applied_rate,"jpeg_quality":applied_jpeg_quality
+                                    "qos":flow.qos_summary(),"encoder_backend":selected_backend.map(EncoderBackend::id).unwrap_or("turbojpeg"),"fallback_reason":fallback_reason,"encoder_rate":applied_rate,"jpeg_quality":applied_jpeg_quality
                                 }}).to_string().into());
                                 drop(flow);
                                 Some(message)
@@ -848,7 +867,23 @@ async fn connection(
                             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
                                 && value.get("type").and_then(|kind| kind.as_str()) == Some("video")
                             {
-                                h264 = value.get("codec").and_then(|codec| codec.as_str()) == Some("h264") && pacing.borrow().sequenced() && video_codecs.contains(&VideoCodec::H264);
+                                video_request_id = value.get("request_id").and_then(|id| id.as_u64()).filter(|id| (1..=9_007_199_254_740_991).contains(id));
+                                fallback_reason = None;
+                                if let Some(preference) = value.get("backend").and_then(|v| serde_json::from_value(v.clone()).ok()) { backend_preference = preference; }
+                                if let Some(rejected) = value.get("rejected_backend").and_then(|v| v.as_str())
+                                    && let Some(active) = selected_backend
+                                    && active.id() == rejected {
+                                        if !excluded_backends.contains(&active) { excluded_backends.push(active); }
+                                        fallback_reason = Some(format!("Browser rejected {rejected} H264 profile"));
+                                }
+                                selected_backend = choose_h264_backend(backend_preference, codec_capabilities, &excluded_backends);
+                                if let Some(requested) = backend_preference.requested_backend()
+                                    && selected_backend != Some(requested) {
+                                        fallback_reason = Some(codec_capabilities.iter().find(|cap| cap.backend == requested.id()).and_then(|cap| cap.reason.clone()).unwrap_or_else(|| format!("{} unavailable for this connection", requested.id())));
+                                }
+                                h264 = value.get("codec").and_then(|codec| codec.as_str()) == Some("h264") && pacing.borrow().sequenced() && selected_backend.is_some();
+                                if !h264 { selected_backend = None; }
+                                h264_dynamic_rate = selected_backend.is_some_and(|backend| codec_capabilities.iter().any(|cap| cap.backend == backend.id() && cap.available && cap.dynamic_bitrate));
                                 encoder.take(); codec = None;
                                 pacing_tx.send_modify(|flow| {
                                     flow.reset();
@@ -856,7 +891,7 @@ async fn connection(
                                 });
                                 applied_rate = None; applied_jpeg_quality = None;
                                 if !h264 {
-                                    let message = Message::Text(json!({"type":"video_config","codec":"jpeg"}).to_string().into());
+                                    let message = Message::Text(json!({"type":"video_config","request_id":video_request_id,"codec":"jpeg","backend":"turbojpeg","fallback_reason":fallback_reason}).to_string().into());
                                     if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(message)).await, Ok(Ok(()))) { break; }
                                 }
                                 continue;

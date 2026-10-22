@@ -93,6 +93,7 @@ jobs:
           ldd "dist/$package/lightos-remote-desktop" | tee "dist/$package/dependencies.txt"
           if grep -q 'libturbojpeg\|not found' "dist/$package/dependencies.txt"; then exit 1; fi
           if readelf -d "dist/$package/lightos-remote-desktop" | grep -q 'NEEDED.*libopus'; then exit 1; fi
+          if readelf -d "dist/$package/lightos-remote-desktop" | grep -Eq 'NEEDED.*lib(avcodec|avformat|avutil|swscale)'; then exit 1; fi
           "dist/$package/lightos-remote-desktop" --help
           tar -C dist -czf "dist/$package.tar.gz" "$package"
           (cd dist && sha256sum "$package.tar.gz" > "$package.tar.gz.sha256")
@@ -103,16 +104,63 @@ jobs:
             dist/*.tar.gz
             dist/*.sha256
           if-no-files-found: error
+  native-codec:
+    runs-on: ubuntu-24.04
+    env:
+      TURBOJPEG_SOURCE: vendor
+      TURBOJPEG_STATIC: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native FFmpeg and binding dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          pkg-config clang libclang-dev cmake nasm
+          libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Test actual native encoding, conversion and decoding
+        run: cargo test -p media-codec-ffmpeg --locked --features native,media-codec/bundled-jpeg
+      - name: Check native worker
+        run: cargo clippy -p media-codec-ffmpeg --locked --features native,media-codec/bundled-jpeg --all-targets -- -D warnings
+      - name: Build optional worker
+        run: cargo build -p media-codec-ffmpeg --release --locked --features native,media-codec/bundled-jpeg
+      - name: Package ABI-specific optional worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          package=lightos-codec-ffmpeg-linux-x86_64-ubuntu-24.04
+          mkdir -p "dist/$package/licenses"
+          cp target/release/lightos-codec-ffmpeg "dist/$package/"
+          cp docs/hardware-encoding.md "dist/$package/README.md"
+          registry="${CARGO_HOME:-$HOME/.cargo}/registry/src"
+          wrapper_license=$(find "$registry" -path '*/ffmpeg-next-9.0.0/LICENSE' -print -quit)
+          test -s "$wrapper_license"
+          cp "$wrapper_license" "dist/$package/licenses/ffmpeg-next.txt"
+          cp docs/licenses/ffmpeg-runtime.txt "dist/$package/licenses/ffmpeg-runtime.txt"
+          ldd "dist/$package/lightos-codec-ffmpeg" | tee "dist/$package/dependencies.txt"
+          if grep -q 'not found' "dist/$package/dependencies.txt"; then exit 1; fi
+          pkg-config --modversion libavcodec libavformat libavutil libswscale > "dist/$package/ffmpeg-abi.txt"
+          tar -C dist -czf "dist/$package.tar.gz" "$package"
+          (cd dist && sha256sum "$package.tar.gz" > "$package.tar.gz.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lightos-codec-ffmpeg-linux-x86_64-ubuntu-24.04
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, native-codec]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: lightos-remote-desktop-linux-x86_64
+          pattern: lightos-*
+          merge-multiple: true
           path: dist
       - name: Publish release assets
         env:

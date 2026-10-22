@@ -1,0 +1,27 @@
+[package]
+name = "media-codec-ffmpeg"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[features]
+native = ["dep:ffmpeg-next"]
+
+[[bin]]
+name = "lightos-codec-ffmpeg"
+path = "src/main.rs"
+required-features = ["native"]
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+ffmpeg-next = { version = "9", optional = true, default-features = false, features = ["codec", "format", "software-scaling"] }
+futures-util = { version = "0.3", features = ["sink"] }
+media-codec = { path = "../media-codec" }
+tokio = { version = "1", features = ["rt", "macros", "io-std", "io-util"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+
+[[test]]
+name = "worker"
+path = "tests/worker.rs"
+required-features = ["native"]

@@ -574,3 +574,33 @@ owner PID3137346, desktop signature and process start stayed unchanged. v2rayN
 PID3194041 also retained its process start; compositor configerrors is empty.
 The install backup is `/var/lib/lightos-remote-desktop/transaction.H5xySayyco`.
 This is the tested Arch-host build, not the portable Ubuntu-built release asset.
+
+
+## Optional hardware encoding (candidate, before integration)
+
+The optional native worker was compiled against this Arch host's FFmpeg9 ABI
+(libavcodec63, libavutil61, libswscale10) using temporary extracted Clang headers
+and libclang; no system packages, driver permissions or user groups were changed.
+The portable core does not link FFmpeg. Normal and bundled software workspace
+suites passed (126 tests,16 explicitly ignored); native worker tests validate
+AVCC-to-Annex-B, RGBA color channels, eight decoded frames and an IDR rate restart.
+The color regression fails with BGRA substitution and passes with RGBA. Bounded
+worker tests cover missing/malformed/hanging workers, version/trailing data and
+process reaping. Strict all-target native Clippy and frontend tests/build passed
+(86 Node,15 Vitest); installer43 and compatibility13 behaviors passed.
+
+Actual unprivileged host probes reported NVENC initialization denied, VA-API
+renderD128 initialization I/O failure, AMF initialization failure and VideoToolbox
+unsupported on Linux. None was advertised as usable hardware. These are negative
+device results, not GPU performance measurements.
+
+An isolated native Omarchy owner and two disposable transport bundles passed real
+WebSocket negotiation. One bundle used the actual worker; the other used the
+explicit `media-codec/examples/failing-worker.rs` fixture to simulate a driver
+that disappears after a successful probe. All failed hardware candidates were
+excluded and the stream reached OpenH264 before JPEG; manual backend choices,
+IDR refresh, actual backend/fallback metadata, profile rejection, software/JPEG
+frames and four scheduling policies passed. The fixture is not distributed as
+a native encoder. Logs are `/tmp/lrd-hw-{runtime,native-test,workspace-tests,
+bundled-tests,native-clippy,frontend-green,installer-green,compat}.log` on this
+machine. The final integrated version has a separate receipt below when verified.

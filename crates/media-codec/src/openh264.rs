@@ -114,7 +114,7 @@ impl H264Encoder {
                         }
                         initialized = true;
                         applied = request.rate;
-                        let (key, codec) = annex_b_info(&data);
+                        let (key, codec) = h264_packet_info(&data);
                         Ok(EncodedFrame { data, key, codec })
                     })();
                     let failed = result.is_err();
@@ -273,7 +273,7 @@ fn read_native_rate(encoder: &mut Encoder) -> Result<EncoderRate> {
     })
 }
 
-fn annex_b_info(data: &[u8]) -> (bool, Option<String>) {
+pub fn h264_packet_info(data: &[u8]) -> (bool, Option<String>) {
     let mut key = false;
     let mut codec = None;
     for index in 0..data.len().saturating_sub(3) {
@@ -303,10 +303,11 @@ mod tests {
 
     #[test]
     fn annex_b_detects_codec_and_idr_without_assuming_start_code_length() {
-        let (key, codec) = annex_b_info(&[0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f, 0, 0, 1, 0x65, 10]);
+        let (key, codec) =
+            h264_packet_info(&[0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f, 0, 0, 1, 0x65, 10]);
         assert!(key);
         assert_eq!(codec.as_deref(), Some("avc1.42c01f"));
-        assert_eq!(annex_b_info(&[0, 0, 1, 0x41, 10]), (false, None));
+        assert_eq!(h264_packet_info(&[0, 0, 1, 0x41, 10]), (false, None));
     }
 
     #[tokio::test]

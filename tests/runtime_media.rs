@@ -67,7 +67,8 @@ async fn real_encoders_and_scheduling_choices_negotiate_over_websocket() {
             .as_array()
             .unwrap()
             .iter()
-            .all(|c| c["available"] == true && c["hardware"] == false)
+            .filter(|c| c["hardware"] == false)
+            .all(|c| c["available"] == true)
     );
     for (index, strategy) in ["auto", "low_latency", "smooth", "quality_first"]
         .into_iter()
@@ -152,6 +153,49 @@ async fn real_encoders_and_scheduling_choices_negotiate_over_websocket() {
             .unwrap()
             > 0
     );
+    for backend in ["software", "nvenc", "vaapi", "amf", "videotoolbox"] {
+        socket
+            .send(Message::Text(
+                json!({"type":"video","codec":"h264","backend":backend})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let config = receive_until!(
+            |m: &Message| matches!(m, Message::Text(text) if serde_json::from_str::<Value>(text).unwrap()["codec"].as_str().is_some_and(|c| c.starts_with("avc1.")))
+        );
+        let Message::Text(config) = config else {
+            unreachable!()
+        };
+        let config: Value = serde_json::from_str(&config).unwrap();
+        assert!(
+            config["backend"].is_string(),
+            "actual encoder must be observable: {config}"
+        );
+        if backend == "software" {
+            assert_eq!(config["backend"], "openh264");
+        }
+        let packet = receive_until!(
+            |m: &Message| matches!(m,Message::Binary(bytes) if bytes.first()==Some(&3))
+        );
+        let Message::Binary(packet) = packet else {
+            unreachable!()
+        };
+        assert_eq!(packet[1], 1, "backend changes must start with IDR");
+    }
+    // The active software profile is explicitly rejected. The exhausted
+    // connection must move to JPEG rather than retrying OpenH264 forever.
+    socket.send(Message::Text(json!({"type":"video","codec":"h264","backend":"software","rejected_backend":"openh264"}).to_string().into())).await.unwrap();
+    let fallback = receive_until!(
+        |m: &Message| matches!(m,Message::Text(text) if serde_json::from_str::<Value>(text).unwrap()["codec"]=="jpeg")
+    );
+    let Message::Text(fallback) = fallback else {
+        unreachable!()
+    };
+    let fallback: Value = serde_json::from_str(&fallback).unwrap();
+    assert_eq!(fallback["backend"], "turbojpeg");
+    assert!(fallback["fallback_reason"].is_string());
     socket
         .send(Message::Text(
             json!({"type":"video","codec":"jpeg"}).to_string().into(),

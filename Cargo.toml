@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/platform-detect", "crates/desktop-config", "crates/display-control", "crates/media-codec", "crates/stream-scheduler"]
+members = ["crates/platform-detect", "crates/desktop-config", "crates/display-control", "crates/media-codec", "crates/stream-scheduler", "crates/media-codec-ffmpeg"]
 resolver = "3"
 
 [package]

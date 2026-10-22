@@ -3,8 +3,9 @@ import { initReactI18next } from "react-i18next";
 import { languageKey, languages, readPreference, resolveLanguage } from "./preferences";
 
 const en = {
+  encoderBackend: "H.264 encoder", softwareEncoding: "Software (OpenH264)",
   streamSettings: "Video & streaming", videoCodec: "Video encoding", streamStrategy: "Streaming strategy", automatic: "Automatic", lowLatency: "Low latency", smooth: "Smoothness", qualityFirst: "Quality first",
-  streamHelp: "Automatic negotiates video support and adjusts buffering from render acknowledgements. An unavailable codec falls back to JPEG; your preference is saved.",
+  streamHelp: "Automatic negotiates video support and adjusts buffering from render acknowledgements. Auto tries validated hardware, then software H.264 and JPEG. Your choices are saved.",
   title: "Remote desktop", viewport: "Remote desktop viewport", canvas: "Remote desktop. Focus here to send keyboard and pointer input.",
   open: "Open desktop tools", close: "Close desktop tools", fit: "Fit window", actual: "Actual size", fullscreen: "Fullscreen", audioOn: "Enable audio", audioOff: "Mute audio",
   clipboard: "Text & clipboard", settings: "Display settings", source: "Desktop source", monitor: "Physical monitor", refresh: "Refresh", refreshTip: "Refresh sessions and monitors without switching desktops",
@@ -23,8 +24,9 @@ const en = {
   touchHelp: "Tap to click, drag with one finger, hold to right-click, and scroll with two fingers. Use the leftmost keyboard button to show or hide the keyboard. Highlighted modifiers apply to the next key.",
 };
 const zh: Record<keyof typeof en, string> = {
+  encoderBackend: "H.264 编码后端", softwareEncoding: "软件编码（OpenH264）",
   streamSettings: "视频与传输", videoCodec: "视频编码", streamStrategy: "传输策略", automatic: "自动", lowLatency: "低延迟优先", smooth: "流畅优先", qualityFirst: "清晰优先",
-  streamHelp: "自动模式协商编码能力，并根据画面确认调整缓冲。不支持的编码会回退为 JPEG，保留你的选择。",
+  streamHelp: "自动模式根据画面确认调整缓冲，依次尝试实测可用的硬件编码、软件 H.264 和 JPEG，并保存你的选择。",
   title: "远程桌面", viewport: "远程桌面视口", canvas: "远程桌面，聚焦此处发送键盘和鼠标输入。",
   open: "打开桌面工具栏", close: "收起桌面工具栏", fit: "适应窗口", actual: "原始大小", fullscreen: "全屏", audioOn: "开启声音", audioOff: "关闭声音",
   clipboard: "文字与剪贴板", settings: "画面设置", source: "桌面来源", monitor: "物理显示器", refresh: "刷新", refreshTip: "刷新会话和显示器列表，不切换桌面",

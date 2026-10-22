@@ -158,13 +158,28 @@ else
         session_contents=${session_contents//@USER@/$runtime_user}
     fi
     [[ -f $template ]] || fail 'missing systemd override template'
-    digest=$(sha256sum -- "$binary"); digest=${digest%% *}
+    binary_digest=$(sha256sum -- "$binary"); binary_digest=${binary_digest%% *}
+    digest=$binary_digest
+    worker=${binary%/*}/lightos-codec-ffmpeg
+    worker_digest=
+    if exists "$worker"; then
+        [[ -f $worker && -x $worker && ! -L $worker ]] || fail 'optional codec worker must be a regular executable'
+        worker_digest=$(sha256sum -- "$worker"); worker_digest=${worker_digest%% *}
+        digest=$(printf 'codec-worker-v1\n%s\n%s\n' "$binary_digest" "$worker_digest" | sha256sum); digest=${digest%% *}
+    fi
     release=$base/releases/$digest
     [[ ! -L $release ]] || fail 'release directory must not be a symlink'
     if exists "$release"; then
         [[ -f $release/lightos-remote-desktop && ! -L $release/lightos-remote-desktop ]] || fail 'invalid existing release'
         actual=$(sha256sum -- "$release/lightos-remote-desktop"); actual=${actual%% *}
-        [[ $actual == "$digest" ]] || fail 'existing release checksum mismatch'
+        [[ $actual == "$binary_digest" ]] || fail 'existing release checksum mismatch'
+        if [[ -n $worker_digest ]]; then
+            [[ -f $release/lightos-codec-ffmpeg && ! -L $release/lightos-codec-ffmpeg ]] || fail 'existing release codec worker missing'
+            actual=$(sha256sum -- "$release/lightos-codec-ffmpeg"); actual=${actual%% *}
+            [[ $actual == "$worker_digest" ]] || fail 'existing release codec worker checksum mismatch'
+        else
+            ! exists "$release/lightos-codec-ffmpeg" || fail 'unexpected worker in software-only release'
+        fi
     fi
 fi
 if ((activate && !rollback)); then
@@ -210,7 +225,12 @@ if [[ ! -d $release ]]; then
     staging=$(mktemp -d "$base/releases/.release.XXXXXX")
     install -m 0755 -- "$binary" "$staging/lightos-remote-desktop"
     actual=$(sha256sum -- "$staging/lightos-remote-desktop"); actual=${actual%% *}
-    [[ $actual == "$digest" ]] || fail 'binary changed while copying'
+    [[ $actual == "$binary_digest" ]] || fail 'binary changed while copying'
+    if [[ -n $worker_digest ]]; then
+        install -m 0755 -- "$worker" "$staging/lightos-codec-ffmpeg"
+        actual=$(sha256sum -- "$staging/lightos-codec-ffmpeg"); actual=${actual%% *}
+        [[ $actual == "$worker_digest" ]] || fail 'codec worker changed while copying'
+    fi
     chmod 0755 "$staging"
     mv -T -- "$staging" "$release"
 fi
