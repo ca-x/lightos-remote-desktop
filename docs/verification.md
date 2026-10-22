@@ -563,3 +563,14 @@ python3 scripts/benchmark-adaptive.py --binary candidate=target/release/lightos-
 The release still uses software OpenH264/TurboJPEG. Hardware codecs, actual WAN
 and browser end-to-end latency, and complete GNOME/KDE/X11/Windows/macOS desktop
 sessions have not been validated by this change.
+
+
+Local upgrade receipt: an independent `systemd-run` installer exited0 and
+installed the tested host-built0.1.9 binary with SHA256
+`d25573508a17affb9003203265394ba02a5155c9dc5bda53011b31e6bd1dd79c`.
+Transport PID3594533 is active with zero restarts; authenticated WebSocket
+handshake and health confirm ready=true and completed H264/JPEG probes. Persistent
+owner PID3137346, desktop signature and process start stayed unchanged. v2rayN
+PID3194041 also retained its process start; compositor configerrors is empty.
+The install backup is `/var/lib/lightos-remote-desktop/transaction.H5xySayyco`.
+This is the tested Arch-host build, not the portable Ubuntu-built release asset.
