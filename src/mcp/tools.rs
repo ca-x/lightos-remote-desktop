@@ -1,10 +1,11 @@
 use std::{
+    borrow::Cow,
     future::Future,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Result, ensure};
@@ -12,7 +13,10 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use rmcp::{
     ErrorData, RoleServer, ServerHandler,
     handler::server::wrapper::Parameters,
-    model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo},
+    model::{
+        CallToolResult, ContentBlock, Implementation, ProtocolVersion, ServerCapabilities,
+        ServerInfo,
+    },
     service::RequestContext,
     tool, tool_handler, tool_router,
 };
@@ -22,7 +26,7 @@ use serde_json::json;
 use tokio::sync::{mpsc, watch};
 
 use super::store::{Principal, Scope, TokenStore};
-use crate::wayland::{Backend, Frame, InputCommand};
+use crate::wayland::{Backend, Frame, InputCommand, InputGuard};
 
 const DEADLINE: Duration = Duration::from_secs(5);
 const MAX_FRAME_AGE: Duration = Duration::from_secs(3);
@@ -34,6 +38,8 @@ pub(super) struct Desktop {
     pub(super) controller: Arc<AtomicBool>,
     pub(super) owned: bool,
     pub(super) release_input: Arc<dyn Fn() -> bool + Send + Sync>,
+    #[cfg(test)]
+    pub(super) text_probe: Option<Arc<crate::wayland::TextProbe>>,
 }
 
 impl Desktop {
@@ -43,6 +49,8 @@ impl Desktop {
             input: backend.input.clone(),
             controller,
             owned,
+            #[cfg(test)]
+            text_probe: None,
             release_input: Arc::new(move || {
                 let released = backend.release_input();
                 if !released {
@@ -71,7 +79,7 @@ impl Desktop {
         Ok(frame)
     }
 
-    fn acquire(&self) -> Result<ControlLease> {
+    fn acquire(&self, principal: &Principal) -> Result<ControlLease> {
         ensure!(
             self.owned,
             "MCP control is restricted to the owned virtual desktop; physical desktops are read-only"
@@ -83,28 +91,48 @@ impl Desktop {
                     "Desktop busy; Disconnect the browser controller before using MCP input"
                 )
             })?;
-        Ok(ControlLease(Some(self.clone())))
+        let guard = InputGuard::new(
+            principal.cancellation.child_token(),
+            Instant::now() + DEADLINE,
+        );
+        #[cfg(test)]
+        let guard = InputGuard {
+            probe: self.text_probe.clone(),
+            ..guard
+        };
+        Ok(ControlLease {
+            desktop: Some(self.clone()),
+            guard,
+        })
     }
 
-    async fn send(&self, principal: &Principal, command: InputCommand) -> Result<()> {
-        ensure!(
-            !principal.cancellation.is_cancelled(),
-            "MCP token disabled or revoked"
-        );
+    async fn send(&self, lease: &ControlLease, command: InputCommand) -> Result<()> {
+        ensure!(lease.guard.active(), "MCP token disabled or revoked");
         command.validate()?;
+        let text = matches!(command, InputCommand::Text { .. });
         self.input
-            .send(command)
+            .send(InputCommand::Guarded {
+                command: Box::new(command),
+                guard: lease.guard.clone(),
+            })
             .await
-            .map_err(|_| anyhow::anyhow!("Desktop input unavailable"))
+            .map_err(|_| anyhow::anyhow!("Desktop input unavailable"))?;
+        if text {
+            lease.guard.text_done.notified().await;
+        }
+        Ok(())
     }
 }
 
 // The gate stays held until the existing input worker has acknowledged releasing
 // its keys/buttons (or has been stopped). Drop also handles canceled HTTP calls.
-struct ControlLease(Option<Desktop>);
+struct ControlLease {
+    desktop: Option<Desktop>,
+    guard: InputGuard,
+}
 impl ControlLease {
     async fn release(mut self) -> Result<()> {
-        if let Some(desktop) = self.0.take() {
+        if let Some(desktop) = self.desktop.take() {
             ensure!(
                 tokio::task::spawn_blocking(move || release(desktop)).await?,
                 "Desktop input cleanup was not acknowledged; the input worker was stopped"
@@ -120,7 +148,8 @@ fn release(desktop: Desktop) -> bool {
 }
 impl Drop for ControlLease {
     fn drop(&mut self) {
-        if let Some(desktop) = self.0.take() {
+        self.guard.cancellation.cancel();
+        if let Some(desktop) = self.desktop.take() {
             tokio::task::spawn_blocking(move || release(desktop));
         }
     }
@@ -247,6 +276,12 @@ impl DesktopTools {
         F: FnOnce(Principal) -> Fut,
         Fut: Future<Output = Result<CallToolResult>>,
     {
+        let http_cancellation = context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<super::transport::HttpCancellation>())
+            .map(|c| c.0.clone())
+            .unwrap_or_default();
         let principal = context
             .extensions
             .get::<axum::http::request::Parts>()
@@ -263,6 +298,7 @@ impl DesktopTools {
             biased;
             _ = cancellation.cancelled() => Ok(tool_error("MCP token disabled or revoked")),
             _ = context.ct.cancelled() => Ok(tool_error("MCP request canceled")),
+            _ = http_cancellation.cancelled() => Ok(tool_error("MCP HTTP request disconnected")),
             result = tokio::time::timeout(DEADLINE, action(principal.clone())) => {
                 if !self.store.authorized(&principal, scope) { return Ok(tool_error("MCP token disabled or revoked")); }
                 Ok(match result {
@@ -282,9 +318,9 @@ impl DesktopTools {
         for command in &commands {
             command.validate()?;
         }
-        let lease = self.desktop.acquire()?;
+        let lease = self.desktop.acquire(&principal)?;
         for command in commands {
-            self.desktop.send(&principal, command).await?;
+            self.desktop.send(&lease, command).await?;
         }
         lease.release().await?;
         Ok(CallToolResult::success(vec![ContentBlock::text(
@@ -431,11 +467,11 @@ impl DesktopTools {
                 y: drag.to_y,
             }
             .command(&frame)?;
-            let lease = self.desktop.acquire()?;
-            self.desktop.send(&p, from).await?;
+            let lease = self.desktop.acquire(&p)?;
+            self.desktop.send(&lease, from).await?;
             self.desktop
                 .send(
-                    &p,
+                    &lease,
                     InputCommand::Button {
                         button: drag.button.code(),
                         pressed: true,
@@ -453,7 +489,7 @@ impl DesktopTools {
                 let from_y = drag.from_y as f64 / (frame.height - 1) as f64;
                 self.desktop
                     .send(
-                        &p,
+                        &lease,
                         InputCommand::Move {
                             x: from_x + (x - from_x) * ratio,
                             y: from_y + (y - from_y) * ratio,
@@ -463,7 +499,7 @@ impl DesktopTools {
             }
             self.desktop
                 .send(
-                    &p,
+                    &lease,
                     InputCommand::Button {
                         button: drag.button.code(),
                         pressed: false,
@@ -557,10 +593,19 @@ impl DesktopTools {
 
 #[tool_handler]
 impl ServerHandler for DesktopTools {
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Owned(vec![
+            ProtocolVersion::V_2025_11_25,
+            ProtocolVersion::V_2025_06_18,
+            ProtocolVersion::V_2025_03_26,
+        ])
+    }
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("lightos-remote-desktop", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Observe the screenshot before acting. Mouse coordinates are screenshot pixels. Input requires a control token and exclusive access to the owned virtual desktop; Disconnect the browser to hand over input. Physical desktops are read-only. This server has no shell or agent inference runtime.")
+            .with_instructions("Observe the screenshot before acting. Mouse coordinates are screenshot pixels. Input requires a control token and exclusive access to the owned virtual desktop; Disconnect the browser to hand over input. Physical desktops are read-only. This server has no shell or agent inference runtime.");
+        info.protocol_version = ProtocolVersion::V_2025_11_25;
+        info
     }
 }
 
@@ -579,6 +624,7 @@ mod tests {
             controller: controller.clone(),
             owned: true,
             release_input: Arc::new(|| false),
+            text_probe: None,
         };
         let directory = tempfile::tempdir().unwrap();
         let tools = DesktopTools::new(

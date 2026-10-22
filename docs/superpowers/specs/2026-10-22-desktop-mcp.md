@@ -6,11 +6,11 @@ Expose the current remote desktop to MCP clients for visual inspection and bound
 
 ## Scope and assumptions
 
-- The endpoint is `<app-subfolder>/mcp`, using the official Rust `rmcp` SDK's stateless Streamable HTTP transport. Existing reverse proxies and TLS termination remain applicable. No additional listener or compositor starts.
+- The endpoint is `<app-subfolder>/mcp`, using the official Rust `rmcp` SDK's token-bound Streamable HTTP sessions. Existing reverse proxies and TLS termination remain applicable. No additional listener or compositor starts.
 - The default is disabled. Browser management endpoints require existing Basic authentication and same-origin `Origin`/fetch-site checks. MCP accepts only its own bearer tokens, with optional same-origin browser requests and no CORS allowance.
 - Tokens have `observe` or `control` scope (`control` also permits observation). Creation is the only response containing the plaintext token; list/status responses expose only ID, name, scope, and creation time. The server uses OS randomness and SHA-256 from maintained crates, stores only hashes, and does not log secrets.
 - Application-specific state is a private atomic JSON file under `$XDG_STATE_HOME/lightos-remote-desktop/mcp.json` (or `$HOME/.local/state/lightos-remote-desktop/mcp.json`). `--mcp-settings` / `LIGHTOS_REMOTE_DESKTOP_MCP_SETTINGS` selects an explicit absolute file. No existing service environment or desktop configuration is rewritten. Read/write errors fail closed for MCP without preventing normal browser desktop startup.
-- Every HTTP request and every tool call validates current enable/revocation state. Disabling/revoking cancels outstanding actions. The transport has no reusable server sessions, so no session bypasses bearer validation.
+- Every HTTP request and every tool call validates current enable/revocation state. Disabling/revoking cancels outstanding actions. SDK sessions are isolated per authenticated token. Every HTTP request retains bearer validation; disable/revoke closes sessions, and re-enable requires fresh initialization.
 - Capture reuses the existing fresh Wayland frame/JPEG path. Coordinates are whole pixels of that screenshot, mapped to the existing normalized pointer input. Resolution, output scale, mobile input, and IME behavior stay in the existing paths.
 - Control targets only the application's owned virtual desktop. Attached physical desktops are observation-only over MCP. Each action acquires the existing controller gate; users can Disconnect the browser to hand over input. No shell, command execution, desktop selection, host settings mutation, clipboard, or resolution mutation tool is exposed.
 
@@ -38,3 +38,9 @@ Commands use `CARGO_HOME=/tmp/lrd-mcp-cargo` (registry symlink to the existing c
 ## Boundaries
 
 Always: reuse capture/input/auth/controller validation; keep secrets out of URLs/logs; document limitations. Ask only for genuinely new scope. Never: change main/tag/version, deploy, edit host Omarchy config, restart the desktop owner or v2rayN, copy AGPL RustDesk code, or expose arbitrary execution.
+
+Review correction: use SDK token-bound sessions so separate HTTP cancellation
+notifications reach their original request. Newer initialize offers negotiate
+to a supported 2025 session protocol. Internal queued input retains cancellation
+and an absolute deadline; the Unicode worker checks both before batches/keys,
+restores its base keymap, and acknowledges release before the gate is available.

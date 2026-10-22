@@ -1,6 +1,7 @@
 //! Opt-in MCP transport and authenticated browser management for the owned desktop.
 mod store;
 mod tools;
+mod transport;
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -13,13 +14,10 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
-use rmcp::transport::streamable_http_server::{
-    StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
-};
 use serde::Deserialize;
 
 pub use store::{Scope, TokenInfo, TokenStore};
-use tools::{Desktop, DesktopTools};
+use tools::Desktop;
 
 use crate::{config::Config, server::origin_allowed, wayland::Backend};
 
@@ -47,21 +45,7 @@ pub(crate) fn transport(
 }
 
 fn transport_with_desktop(store: Arc<TokenStore>, desktop: Desktop) -> Router {
-    let tool_store = store.clone();
-    let mut config = StreamableHttpServerConfig::default();
-    config.legacy_session_mode = false;
-    config.json_response = true;
-    config.max_request_body_bytes = 64 * 1024;
-    // Bearer authentication and same-origin checks guard arbitrary proxy hosts.
-    config.allowed_hosts.clear();
-    let service = StreamableHttpService::new(
-        move || Ok(DesktopTools::new(tool_store.clone(), desktop.clone())),
-        Arc::new(NeverSessionManager::default()),
-        config,
-    );
-    Router::new()
-        .route_service("/mcp", service)
-        .layer(middleware::from_fn_with_state(store, authenticate))
+    transport::router(store, desktop)
 }
 
 async fn authenticate(

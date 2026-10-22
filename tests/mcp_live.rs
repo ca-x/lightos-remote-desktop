@@ -29,6 +29,17 @@ impl Drop for Candidate {
     }
 }
 
+async fn rpc_result(response: reqwest::Response) -> Value {
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let text = response.text().await.unwrap();
+    let json = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .next_back()
+        .unwrap_or(&text);
+    serde_json::from_str(json).unwrap()
+}
+
 #[tokio::test]
 #[ignore = "starts a dedicated virtual desktop; requires Hyprland/cage and private Aquamarine; never touches installed services"]
 async fn native_mcp_uses_real_capture_input_and_authenticated_prefixed_management() {
@@ -166,16 +177,36 @@ async fn native_mcp_uses_real_capture_input_and_authenticated_prefixed_managemen
             .status(),
         200
     );
-    let rpc = |name: &str, args: Value| {
-        client.post(format!("{base}/mcp")).bearer_auth(token).header("Accept","application/json, text/event-stream").header("MCP-Protocol-Version","2025-06-18").json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":args}}))
-    };
-    let response: Value = rpc("screenshot", json!({}))
-        .send()
-        .await
+    let init=client.post(format!("{base}/mcp")).bearer_auth(token)
+        .header("Accept","application/json, text/event-stream").header("MCP-Protocol-Version","2026-07-28")
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"Native modern client","version":"1"}}})).send().await.unwrap();
+    assert_eq!(init.status(), 200);
+    let session_id = init.headers()["mcp-session-id"]
+        .to_str()
         .unwrap()
-        .json()
-        .await
-        .unwrap();
+        .to_owned();
+    assert_eq!(
+        rpc_result(init).await["result"]["protocolVersion"],
+        "2025-11-25"
+    );
+    assert_eq!(
+        client
+            .post(format!("{base}/mcp"))
+            .bearer_auth(token)
+            .header("Accept", "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", "2025-11-25")
+            .header("Mcp-Session-Id", &session_id)
+            .json(&json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        202
+    );
+    let rpc = |name: &str, args: Value| {
+        client.post(format!("{base}/mcp")).bearer_auth(token).header("Accept","application/json, text/event-stream").header("MCP-Protocol-Version","2025-11-25").header("Mcp-Session-Id",&session_id).json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":args}}))
+    };
+    let response: Value = rpc_result(rpc("screenshot", json!({})).send().await.unwrap()).await;
     assert_eq!(response["result"]["isError"], false, "{response}");
     let jpeg = STANDARD
         .decode(response["result"]["content"][1]["data"].as_str().unwrap())
@@ -191,13 +222,13 @@ async fn native_mcp_uses_real_capture_input_and_authenticated_prefixed_managemen
         )
     );
     assert!(image.width() >= 320 && image.height() >= 200);
-    let moved: Value = rpc("mouse_move", json!({"x":200,"y":150}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let moved: Value = rpc_result(
+        rpc("mouse_move", json!({"x":200,"y":150}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
     assert_eq!(moved["result"]["isError"], false, "{moved}");
     let signature = fs::read_dir(runtime.join("hypr"))
         .unwrap()
@@ -220,13 +251,13 @@ async fn native_mcp_uses_real_capture_input_and_authenticated_prefixed_managemen
             && (cursor["y"].as_i64().unwrap() - 150).abs() <= 2,
         "{cursor}"
     );
-    let typed: Value = rpc("type_text", json!({"text":"中文 native MCP\n"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let typed: Value = rpc_result(
+        rpc("type_text", json!({"text":"中文 native MCP\n"}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
     assert_eq!(typed["result"]["isError"], false, "{typed}");
     assert_eq!(
         manage(

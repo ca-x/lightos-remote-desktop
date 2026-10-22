@@ -1,8 +1,9 @@
 use std::os::unix::fs::PermissionsExt;
 use std::{
+    collections::HashMap,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -37,6 +38,8 @@ struct Harness {
     url: String,
     server: JoinHandle<()>,
     worker: JoinHandle<()>,
+    sessions: Mutex<HashMap<String, String>>,
+    typed: Arc<AtomicUsize>,
 }
 impl Drop for Harness {
     fn drop(&mut self) {
@@ -49,6 +52,13 @@ impl Harness {
         Self::with_release_hold(owned, None).await
     }
     async fn with_release_hold(owned: bool, hold: Option<std::sync::mpsc::Receiver<()>>) -> Self {
+        Self::with_worker_options(owned, hold, false).await
+    }
+    async fn with_worker_options(
+        owned: bool,
+        hold: Option<std::sync::mpsc::Receiver<()>>,
+        slow_text: bool,
+    ) -> Self {
         let hold = Mutex::new(hold);
         let directory = tempfile::Builder::new()
             .permissions(std::fs::Permissions::from_mode(0o700))
@@ -59,14 +69,31 @@ impl Harness {
         let (input, mut commands) = mpsc::channel::<InputCommand>(128);
         let observed = Arc::new(Mutex::new(Vec::new()));
         let observed_worker = observed.clone();
+        let typed = Arc::new(AtomicUsize::new(0));
+        let worker_typed = typed.clone();
         let worker = tokio::spawn(async move {
             while let Some(command) = commands.recv().await {
+                let Some((command, guard)) = command.into_active() else {
+                    continue;
+                };
                 match command {
                     InputCommand::ReleaseSync { done } => {
                         observed_worker.lock().unwrap().push(InputCommand::Release);
                         let _ = done.send(());
                     }
+                    InputCommand::Text { text } if slow_text => {
+                        for _ in text.chars() {
+                            if guard.as_ref().is_some_and(|g| !g.active()) {
+                                break;
+                            }
+                            worker_typed.fetch_add(1, Ordering::AcqRel);
+                            tokio::time::sleep(Duration::from_millis(2)).await;
+                        }
+                    }
                     command => observed_worker.lock().unwrap().push(command),
+                }
+                if let Some(guard) = guard {
+                    guard.text_done.notify_one();
                 }
             }
         });
@@ -77,6 +104,7 @@ impl Harness {
             input,
             controller: controller.clone(),
             owned,
+            text_probe: None,
             release_input: Arc::new(move || {
                 if let Some(receiver) = hold.lock().unwrap().take() {
                     receiver.recv_timeout(Duration::from_secs(8)).unwrap();
@@ -117,6 +145,8 @@ impl Harness {
             url,
             server,
             worker,
+            sessions: Mutex::new(HashMap::new()),
+            typed,
         }
     }
     async fn manage(&self, method: Method, path: &str, body: Option<Value>) -> reqwest::Response {
@@ -141,6 +171,10 @@ impl Harness {
             .await;
         assert_eq!(response.status(), StatusCode::CREATED);
         let result: Value = response.json().await.unwrap();
+        self.sessions
+            .lock()
+            .unwrap()
+            .insert(result["token"].as_str().unwrap().to_owned(), String::new());
         (
             result["token"].as_str().unwrap().to_owned(),
             result["info"]["id"].as_str().unwrap().to_owned(),
@@ -153,14 +187,41 @@ impl Harness {
                 .status(),
             StatusCode::OK
         );
+        let tokens: Vec<_> = self.sessions.lock().unwrap().keys().cloned().collect();
+        for token in tokens {
+            self.rpc(&token, "initialize", json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"Test client","version":"1"}})).await;
+            assert_eq!(
+                self.rpc_request(
+                    &token,
+                    json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+                )
+                .send()
+                .await
+                .unwrap()
+                .status(),
+                StatusCode::ACCEPTED
+            );
+        }
     }
     fn rpc_request(&self, bearer: &str, value: Value) -> reqwest::RequestBuilder {
-        self.client
+        let mut request = self
+            .client
             .post(format!("{}mcp", self.url))
             .bearer_auth(bearer)
             .header("Accept", "application/json, text/event-stream")
             .header("MCP-Protocol-Version", "2025-06-18")
-            .json(&value)
+            .json(&value);
+        if value["method"] != "initialize"
+            && let Some(session) = self
+                .sessions
+                .lock()
+                .unwrap()
+                .get(bearer)
+                .filter(|s| !s.is_empty())
+        {
+            request = request.header("Mcp-Session-Id", session);
+        }
+        request
     }
     async fn rpc(&self, bearer: &str, method: &str, params: Value) -> Value {
         let response = self
@@ -172,7 +233,12 @@ impl Harness {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(!response.headers().contains_key("mcp-session-id"));
+        if let Some(session) = response.headers().get("mcp-session-id") {
+            self.sessions
+                .lock()
+                .unwrap()
+                .insert(bearer.to_owned(), session.to_str().unwrap().to_owned());
+        }
         let text = response.text().await.unwrap();
         let json_text = text
             .lines()
@@ -499,10 +565,15 @@ async fn revoke_and_disable_cancel_inflight_drag_and_release_controller() {
         let (token, id) = h.create(Scope::Control).await;
         h.enable().await;
         let request=h.rpc_request(&token,json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mouse_drag","arguments":{"from_x":0,"from_y":0,"to_x":63,"to_y":47,"duration_ms":1000}}}));
-        let action =
-            tokio::spawn(
-                async move { request.send().await.unwrap().json::<Value>().await.unwrap() },
-            );
+        let action = tokio::spawn(async move {
+            request
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap_or_default()
+        });
         tokio::time::timeout(Duration::from_secs(2), async {
             while !h
                 .input
@@ -528,7 +599,7 @@ async fn revoke_and_disable_cancel_inflight_drag_and_release_controller() {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(result["result"]["isError"], true);
+        assert!(!result.contains("Drag applied"));
         tokio::time::timeout(Duration::from_secs(1), async {
             while h.controller.load(Ordering::Acquire) {
                 tokio::task::yield_now().await;
@@ -574,7 +645,7 @@ async fn disconnected_http_call_releases_held_input() {
     let (token, _) = h.create(Scope::Control).await;
     h.enable().await;
     let request=h.rpc_request(&token,json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mouse_drag","arguments":{"from_x":0,"from_y":0,"to_x":63,"to_y":47,"duration_ms":1000}}})).timeout(Duration::from_millis(100));
-    let action = tokio::spawn(async move { request.send().await });
+    let action = tokio::spawn(async move { request.send().await.unwrap().bytes().await });
     tokio::time::timeout(Duration::from_secs(1), async {
         while !h
             .input
@@ -627,4 +698,464 @@ async fn tool_deadline_does_not_release_the_gate_before_worker_cleanup() {
         h.input.lock().unwrap().last(),
         Some(InputCommand::Release)
     ));
+}
+
+#[tokio::test]
+async fn cancellation_notification_stops_a_drag_on_another_http_request() {
+    let h = Harness::new(true).await;
+    let (token, _) = h.create(Scope::Control).await;
+    let (other, _) = h.create(Scope::Observe).await;
+    h.enable().await;
+    let request = h.rpc_request(&token, json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"mouse_drag","arguments":{"from_x":0,"from_y":0,"to_x":63,"to_y":47,"duration_ms":1000}}}));
+    let action = tokio::spawn(async move { request.send().await.unwrap().text().await });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !h
+            .input
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| matches!(c, InputCommand::Button { pressed: true, .. }))
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let notification = json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7,"reason":"User cancelled"}});
+    assert_eq!(
+        h.rpc_request(&other, notification.clone())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::ACCEPTED
+    );
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    assert!(
+        h.controller.load(Ordering::Acquire),
+        "another token cannot cancel this request ID"
+    );
+    assert_eq!(
+        h.rpc_request(&token, notification)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::ACCEPTED
+    );
+    tokio::time::timeout(Duration::from_millis(400), async {
+        while h.controller.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("notifications/cancelled must release input before the original drag finishes");
+    let text = action.await.unwrap().unwrap_or_default();
+    assert!(!text.contains("Drag applied"));
+    assert!(matches!(
+        h.input.lock().unwrap().last(),
+        Some(InputCommand::Release)
+    ));
+}
+
+#[tokio::test]
+async fn text_worker_stops_after_revoke_disable_disconnect_and_deadline() {
+    for mode in ["revoke", "disable", "disconnect", "deadline"] {
+        let h = Harness::with_worker_options(true, None, true).await;
+        let (token, id) = h.create(Scope::Control).await;
+        h.enable().await;
+        let mut request = h.rpc_request(&token, json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"type_text","arguments":{"text":"x".repeat(4096)}}}));
+        if mode == "disconnect" {
+            request = request.timeout(Duration::from_millis(100));
+        }
+        let action = tokio::spawn(async move {
+            match request.send().await {
+                Ok(r) => {
+                    let _ = r.bytes().await;
+                }
+                Err(e) => assert!(e.is_timeout()),
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while h.typed.load(Ordering::Acquire) < 8 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        match mode {
+            "revoke" => {
+                assert!(
+                    h.manage(Method::DELETE, &format!("api/mcp/tokens/{id}"), None)
+                        .await
+                        .status()
+                        .is_success()
+                );
+            }
+            "disable" => {
+                assert!(
+                    h.manage(Method::PUT, "api/mcp", Some(json!({"enabled":false})))
+                        .await
+                        .status()
+                        .is_success()
+                );
+            }
+            _ => {}
+        }
+        if matches!(mode, "disconnect" | "deadline") {
+            action.await.unwrap();
+        } else {
+            action.abort();
+        }
+        let before = h.typed.load(Ordering::Acquire);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let after = h.typed.load(Ordering::Acquire);
+        assert!(
+            after <= before + 1,
+            "{mode}: queued text kept typing ({before} -> {after})"
+        );
+        assert!(after < 4096);
+        tokio::time::timeout(Duration::from_millis(400), async {
+            while h.controller.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("worker must acknowledge release after stopping text");
+        assert!(matches!(
+            h.input.lock().unwrap().last(),
+            Some(InputCommand::Release)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn modern_initialize_negotiates_a_token_bound_session_that_cannot_revive() {
+    let h = Harness::new(true).await;
+    let (token, id) = h.create(Scope::Control).await;
+    let (other, _) = h.create(Scope::Observe).await;
+    h.enable().await;
+    for with_header in [false, true] {
+        let mut request = h.client.post(format!("{}mcp", h.url)).bearer_auth(&token)
+            .header("Accept", "application/json, text/event-stream")
+            .json(&json!({"jsonrpc":"2.0","id":9,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"Modern client","version":"1"}}}));
+        if with_header {
+            request = request.header("Mcp-Protocol-Version", "2026-07-28");
+        }
+        let response = request.send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let session = response.headers()["mcp-session-id"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let initialized = rpc_value(&response.text().await.unwrap());
+        assert_eq!(initialized["result"]["protocolVersion"], "2025-11-25");
+        let request = |bearer: &str, value: Value| {
+            h.client
+                .post(format!("{}mcp", h.url))
+                .bearer_auth(bearer)
+                .header("Accept", "application/json, text/event-stream")
+                .header("Mcp-Protocol-Version", "2025-11-25")
+                .header("Mcp-Session-Id", &session)
+                .json(&value)
+        };
+        assert_eq!(
+            request(
+                &token,
+                json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+            )
+            .send()
+            .await
+            .unwrap()
+            .status(),
+            StatusCode::ACCEPTED
+        );
+        let list = json!({"jsonrpc":"2.0","id":10,"method":"tools/list","params":{}});
+        let response = request(&token, list.clone()).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(rpc_value(&response.text().await.unwrap())["result"]["tools"].is_array());
+        assert_eq!(
+            request(&other, list.clone()).send().await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            h.client
+                .post(format!("{}mcp", h.url))
+                .header("Mcp-Session-Id", &session)
+                .json(&list)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert!(
+            h.manage(Method::PUT, "api/mcp", Some(json!({"enabled":false})))
+                .await
+                .status()
+                .is_success()
+        );
+        assert_eq!(
+            request(&token, list.clone()).send().await.unwrap().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        h.enable().await;
+        assert_eq!(
+            request(&token, list).send().await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert!(
+        h.manage(Method::DELETE, &format!("api/mcp/tokens/{id}"), None)
+            .await
+            .status()
+            .is_success()
+    );
+    assert_eq!(
+        h.rpc_request(
+            &token,
+            json!({"jsonrpc":"2.0","id":11,"method":"tools/list"})
+        )
+        .send()
+        .await
+        .unwrap()
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+fn rpc_value(text: &str) -> Value {
+    let text = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .next_back()
+        .unwrap_or(text);
+    serde_json::from_str(text).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "starts only its own native compositor; requires Hyprland/cage and private Aquamarine"]
+async fn native_text_revocation_between_batches_restores_keymap_and_skips_queued_input() {
+    use crate::{
+        config::Config,
+        session::Session,
+        wayland::{Backend, InputGuard, TextProbe},
+    };
+    use clap::Parser;
+    let directory = tempfile::Builder::new()
+        .prefix("mc.")
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let mut config = Config::try_parse_from([
+        "test",
+        "--password",
+        "isolated-mcp-native-test",
+        "--desktop-shell",
+        "minimal",
+        "--audio",
+        "false",
+    ])
+    .unwrap();
+    config.wayland_socket = None;
+    config.session_runtime = None;
+    config.runtime_dir = Some(directory.path().join("r"));
+    config.aquamarine_dir = std::env::var_os("LIGHTOS_TEST_AQUAMARINE_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::fs::read_dir("/usr/local/lib/lightos-remote-desktop/compat")
+                .ok()?
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .find(|p| p.join("libaquamarine.so.14").is_file())
+        });
+    let session = Session::start(&config).unwrap();
+    let backend = Arc::new(Backend::start(session.socket.clone(), 30, 85).unwrap());
+    let store = Arc::new(TokenStore::open(Some(directory.path().join("mcp.json"))));
+    let created = store.create("Native cancellation", Scope::Control).unwrap();
+    store.set_enabled(true).unwrap();
+    let controller = Arc::new(AtomicBool::new(false));
+    let (first_batch, first) = std::sync::mpsc::sync_channel(1);
+    let (resume, resumed) = std::sync::mpsc::channel();
+    let probe = Arc::new(TextProbe {
+        characters: AtomicUsize::new(0),
+        batches: AtomicUsize::new(0),
+        restored: AtomicBool::new(false),
+        first_batch,
+        resume: Mutex::new(resumed),
+    });
+    let mut desktop = Desktop::new(backend.clone(), controller.clone(), true);
+    desktop.text_probe = Some(probe.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let server = tokio::spawn(
+        axum::serve(listener, transport_with_desktop(store.clone(), desktop)).into_future(),
+    );
+    let client = Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .unwrap();
+    let init=client.post(&url).bearer_auth(&created.token).header("Accept","application/json, text/event-stream").header("Mcp-Protocol-Version","2025-06-18").json(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"Native cancel","version":"1"}}})).send().await.unwrap();
+    let session_id = init.headers()["mcp-session-id"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(rpc_value(&init.text().await.unwrap())["result"].is_object());
+    let request = |body: Value| {
+        client
+            .post(&url)
+            .bearer_auth(&created.token)
+            .header("Accept", "application/json, text/event-stream")
+            .header("Mcp-Protocol-Version", "2025-06-18")
+            .header("Mcp-Session-Id", &session_id)
+            .json(&body)
+    };
+    assert_eq!(
+        request(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::ACCEPTED
+    );
+    let typing = request(
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"type_text","arguments":{"text":"x".repeat(4096)}}}),
+    );
+    let action = tokio::spawn(async move {
+        let _ = typing.send().await.unwrap().bytes().await;
+    });
+    tokio::task::spawn_blocking(move || first.recv_timeout(Duration::from_secs(3)).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(probe.characters.load(Ordering::Acquire), 128);
+    for expired in [false, true] {
+        let cancelled = tokio_util::sync::CancellationToken::new();
+        if !expired {
+            cancelled.cancel();
+        }
+        let mut guard = InputGuard::new(
+            cancelled,
+            if expired {
+                Instant::now() - Duration::from_secs(1)
+            } else {
+                Instant::now() + Duration::from_secs(5)
+            },
+        );
+        guard.probe = Some(probe.clone());
+        backend
+            .input
+            .send(InputCommand::Guarded {
+                command: Box::new(InputCommand::Text {
+                    text: "must never be typed".into(),
+                }),
+                guard,
+            })
+            .await
+            .unwrap();
+    }
+    assert!(store.revoke(&created.info.id).unwrap());
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    assert!(
+        controller.load(Ordering::Acquire),
+        "controller must remain held while the worker is paused before cleanup"
+    );
+    resume.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while controller.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        probe.characters.load(Ordering::Acquire),
+        128,
+        "revoked/expired input emitted more Unicode keys"
+    );
+    assert_eq!(probe.batches.load(Ordering::Acquire), 1);
+    assert!(
+        probe.restored.load(Ordering::Acquire),
+        "base keymap must be restored before release acknowledgement"
+    );
+    assert!(
+        backend.frame_is_fresh(Duration::from_secs(3)),
+        "capture remains alive"
+    );
+    let released = backend.clone();
+    assert!(
+        tokio::task::spawn_blocking(move || released.release_input())
+            .await
+            .unwrap(),
+        "native input worker remains usable"
+    );
+    action.await.unwrap();
+    server.abort();
+    backend.stop();
+    drop(session);
+}
+
+#[tokio::test]
+async fn sdk_sessions_are_bounded_and_foreign_delete_cannot_close_them() {
+    let h = Harness::new(true).await;
+    let (token, _) = h.create(Scope::Control).await;
+    let (other, _) = h.create(Scope::Observe).await;
+    h.enable().await;
+    let initialize = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"Bounded client","version":"1"}}});
+    for _ in 0..7 {
+        let response = h
+            .rpc_request(&token, initialize.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        h.sessions.lock().unwrap().insert(
+            token.clone(),
+            response.headers()["mcp-session-id"]
+                .to_str()
+                .unwrap()
+                .to_owned(),
+        );
+        let _ = response.bytes().await.unwrap();
+        assert_eq!(
+            h.rpc_request(
+                &token,
+                json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+            )
+            .send()
+            .await
+            .unwrap()
+            .status(),
+            StatusCode::ACCEPTED
+        );
+    }
+    assert_eq!(
+        h.rpc_request(&token, initialize.clone())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let session = h.sessions.lock().unwrap()[&token].clone();
+    let delete = |bearer: &str| {
+        h.client
+            .delete(format!("{}mcp", h.url))
+            .bearer_auth(bearer)
+            .header("Mcp-Protocol-Version", "2025-06-18")
+            .header("Mcp-Session-Id", &session)
+    };
+    assert_eq!(
+        delete(&other).send().await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+    assert!(delete(&token).send().await.unwrap().status().is_success());
+    assert_eq!(
+        h.rpc_request(&token, initialize)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
 }

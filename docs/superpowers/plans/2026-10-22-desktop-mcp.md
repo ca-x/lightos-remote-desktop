@@ -4,7 +4,7 @@
 
 **Goal:** Add an opt-in, scoped, revocable MCP desktop endpoint and browser settings.
 
-**Architecture:** A focused `src/mcp/` module owns private token persistence, HTTP management/authentication and official `rmcp` tool handling. `server::AppState` passes only its existing capture/input/controller/desktop boundary to that module. Stateless Streamable HTTP keeps token authorization on every request and avoids durable protocol sessions.
+**Architecture:** A focused `src/mcp/` module owns private token persistence, HTTP management/authentication and official `rmcp` tool handling. `server::AppState` passes only its existing capture/input/controller/desktop boundary to that module. SDK Streamable HTTP sessions are isolated per authenticated token, while every HTTP request validates current bearer authorization.
 
 **Tech Stack:** Rust/Axum/Tokio, official rmcp 3.1.2 (MSRV 1.88), rand OS randomness, sha2, React/Headless UI/i18next.
 
@@ -69,3 +69,22 @@ component and the pinned upstream SDK license. The build job explicitly selects
 Python 3.12 for `tomllib`; MCP adds no system library or target-machine service
 dependency. The isolated browser session and candidate process were stopped and
 their private temporary runtime removed.
+
+Independent review found that stateless SDK handling ignored cancellation
+notifications and queued Unicode text lost the request cancellation state.
+Follow-up regressions reproduce both failures. SDK sessions now route separate
+HTTP cancellation requests; supported versions are negotiated during initialize.
+Internal guarded commands retain cancellation/deadlines through worker execution,
+including Unicode batches and key pairs. A native test pauses the actual first
+batch and verifies revoke, queued-command rejection, keymap restoration, release
+acknowledgment and continued capture.
+
+Follow-up verification passed: normal and bundled locked workspace suites
+(136 passed each, including 16 MCP tests; 18 native/fixture tests ignored),
+formatting, bundled all-target Clippy with warnings denied, frontend build,
+84 Node plus 19 Vitest tests, the modern-initialize native smoke, and the
+paused-first-batch native cancellation test. RED runs showed both original HTTP
+failures and actual native typing continuing to 4,096 characters after revoke;
+GREEN stops at 128, restores the keymap, skips canceled/expired queued text and
+acknowledges cleanup before releasing the controller. Parent owns final
+independent re-review, branch publication and integration.

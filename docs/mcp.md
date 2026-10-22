@@ -37,15 +37,27 @@ MCP configuration can use this shape; confirm its own configuration field names:
 ```
 
 Use HTTPS through the existing reverse proxy outside localhost. Forward
-`Authorization`, `Accept`, `Content-Type` and `MCP-Protocol-Version` to the same app
-path. There is no second port, WebSocket upgrade, legacy `/sse` endpoint, OAuth
+`Authorization`, `Accept`, `Content-Type`, `MCP-Protocol-Version` and
+`Mcp-Session-Id` to the same app path, and retain the `Mcp-Session-Id` response
+header. There is no second port, WebSocket upgrade, legacy `/sse` endpoint, OAuth
 flow, or CORS allowlist to configure. A proxy that forces HTTP Basic authentication
 in front of *every* path must let the MCP path reach the application's separate
-bearer check; protect browser/management paths as before. The transport is
-stateless: `initialize`, notifications, `tools/list` and `tools/call` use POST;
-there are no reusable server sessions or session IDs, and GET/DELETE on `/mcp`
-return 405. A token is required on every request. Legacy protocol version
-`2025-06-18` initialize/list/call is covered by the HTTP contract tests.
+bearer check; protect browser/management paths as before.
+
+The transport negotiates the supported MCP session protocols
+`2025-03-26`, `2025-06-18` and `2025-11-25`. A client offering a newer revision
+receives `2025-11-25` during standard initialization. Read the `Mcp-Session-Id`
+response header, send `notifications/initialized`, then include that session ID,
+the negotiated `MCP-Protocol-Version` and the bearer token on subsequent POSTs.
+Tool responses use SSE (`text/event-stream`). Clients must accept both JSON and
+SSE. SDK sessions route `notifications/cancelled` to the original request, even
+when the notification arrives on a separate HTTP connection. Sessions belong to
+one token; another token cannot use their IDs. Every HTTP request still passes
+current bearer authorization. Disable/revoke closes sessions, and re-enabling
+requires new initialization. There are at most eight sessions per token; DELETE
+with the session ID closes one, and idle sessions expire after five minutes.
+GET supports the SDK session stream. Protocol revisions requiring stateless
+operation are not advertised; clients use the version returned by initialize.
 
 ## Tools
 
@@ -74,6 +86,10 @@ Escape is `[1]`, and Super is `[125]`. Keys are pressed in the supplied order an
 released in reverse order. `type_text` uses the existing Unicode virtual-keyboard
 path, without using a shell or clipboard. Mouse buttons and keys are released at
 the end of each action, on cancellation, or when credentials are disabled/revoked.
+Queued input carries token/request cancellation and an absolute deadline into the
+worker. Unicode input checks these before each batch and key pair, restores the
+base keymap, and acknowledges cleanup before handing over control. HTTP
+disconnection and `notifications/cancelled` both stop outstanding actions.
 The controller gate stays occupied until the input worker acknowledges cleanup;
 an unresponsive input worker is stopped by the existing release safety path.
 
@@ -156,13 +172,16 @@ The protocol implementation uses the official
 
 The regular workspace suite includes real HTTP initialize/list/call, bearer/scope/
 origin checks, token reload/revoke, stale captures, screenshot decoding, resized
-pixel coordinates, disconnect/revocation cancellation, and the five-second limit.
+pixel coordinates, disconnect/revocation cancellation, and the five-second limit. Session tests also cover modern-version
+negotiation,
+token isolation, disable/re-enable, and cancellation on a separate HTTP request.
 An additional opt-in native smoke test starts its own temporary compositor and
 transport, reads the real capture and compositor cursor position, sends Unicode
 input, and verifies the mounted management/revoke routes:
 
 ```sh
 cargo test --test mcp_live -- --ignored --nocapture
+cargo test --lib mcp::tests::native_text_revocation_between_batches_restores_keymap_and_skips_queued_input -- --ignored --nocapture
 ```
 
 It requires the same installed Hyprland/cage dependencies as the service and the
@@ -170,3 +189,8 @@ private Aquamarine directory (auto-detected under the installed compat directory
 or set `LIGHTOS_TEST_AQUAMARINE_DIR`). It never restarts the installed desktop
 owner or any other service. Frontend tests cover settings mutations, errors,
 once-only token display, clipboard copy and late responses after closing.
+
+The native text regression pauses the real Unicode worker after its first batch,
+revokes the token, and checks that subsequent keys and canceled/expired queued
+commands are skipped, the original keymap is restored, release is acknowledged,
+and capture and input remain available.

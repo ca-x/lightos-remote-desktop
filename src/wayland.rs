@@ -20,6 +20,7 @@ use anyhow::{Context, Result, bail, ensure};
 use libwayshot::WayshotConnection;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
+use tokio_util::sync::CancellationToken;
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
     globals::{GlobalListContents, registry_queue_init},
@@ -81,6 +82,39 @@ impl Frame {
     }
 }
 
+/// Internal input authorization survives the async queue and Unicode worker.
+#[derive(Debug, Clone)]
+pub struct InputGuard {
+    pub(crate) cancellation: CancellationToken,
+    pub(crate) deadline: Instant,
+    pub(crate) text_done: Arc<tokio::sync::Notify>,
+    #[cfg(test)]
+    pub(crate) probe: Option<Arc<TextProbe>>,
+}
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct TextProbe {
+    pub(crate) characters: std::sync::atomic::AtomicUsize,
+    pub(crate) batches: std::sync::atomic::AtomicUsize,
+    pub(crate) restored: AtomicBool,
+    pub(crate) first_batch: sync_mpsc::SyncSender<()>,
+    pub(crate) resume: Mutex<sync_mpsc::Receiver<()>>,
+}
+impl InputGuard {
+    pub(crate) fn new(cancellation: CancellationToken, deadline: Instant) -> Self {
+        Self {
+            cancellation,
+            deadline,
+            text_done: Arc::new(tokio::sync::Notify::new()),
+            #[cfg(test)]
+            probe: None,
+        }
+    }
+    pub(crate) fn active(&self) -> bool {
+        !self.cancellation.is_cancelled() && Instant::now() < self.deadline
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InputCommand {
@@ -102,6 +136,11 @@ pub enum InputCommand {
     },
     Release,
     #[serde(skip)]
+    Guarded {
+        command: Box<InputCommand>,
+        guard: InputGuard,
+    },
+    #[serde(skip)]
     ReleaseSync {
         done: sync_mpsc::SyncSender<()>,
     },
@@ -111,6 +150,12 @@ pub enum InputCommand {
 }
 
 impl InputCommand {
+    pub(crate) fn into_active(self) -> Option<(Self, Option<InputGuard>)> {
+        match self {
+            Self::Guarded { command, guard } => guard.active().then_some((*command, Some(guard))),
+            command => Some((command, None)),
+        }
+    }
     pub fn validate(&self) -> Result<()> {
         match self {
             Self::Move { x, y } => ensure!(
@@ -138,6 +183,7 @@ impl InputCommand {
                     "unsupported text control character"
                 );
             }
+            Self::Guarded { command, .. } => command.validate()?,
             Self::Release | Self::ReleaseSync { .. } => {}
         }
         Ok(())
@@ -740,7 +786,7 @@ impl Devices {
                 self.pointer.frame();
             }
             InputCommand::Release => self.release(),
-            InputCommand::Text { .. } => unreachable!(),
+            InputCommand::Text { .. } | InputCommand::Guarded { .. } => unreachable!(),
         }
         Ok(())
     }
@@ -874,33 +920,65 @@ fn run_input(
     let result = (|| -> Result<()> {
         let mut last_sync = Instant::now();
         while !shared.stopped.load(Ordering::Acquire) {
-            match receiver.try_recv().map(validated_input) {
-                Ok(Some(InputCommand::ReleaseSync { done })) => {
+            let received = receiver
+                .try_recv()
+                .map(|command| validated_input(command).and_then(InputCommand::into_active));
+            match received {
+                Ok(Some((InputCommand::ReleaseSync { done }, _))) => {
                     devices.release();
                     queue.roundtrip(&mut dispatch)?;
                     let _ = done.send(());
                 }
-                Ok(Some(InputCommand::Text { text })) => {
+                Ok(Some((InputCommand::Text { text }, guard))) => {
                     devices.release();
                     let characters: Vec<char> = text.chars().collect();
                     for batch in characters.chunks(128) {
-                        if shared.stopped.load(Ordering::Acquire) {
+                        if shared.stopped.load(Ordering::Acquire)
+                            || guard.as_ref().is_some_and(|g| !g.active())
+                        {
                             break;
                         }
                         let map = unicode_keymap(&devices.context, batch)?;
                         send_keymap(&devices.keyboard, &map)?;
                         queue.roundtrip(&mut dispatch)?;
                         for index in 0..batch.len() {
+                            if shared.stopped.load(Ordering::Acquire)
+                                || guard.as_ref().is_some_and(|g| !g.active())
+                            {
+                                break;
+                            }
+                            #[cfg(test)]
+                            if let Some(probe) = guard.as_ref().and_then(|g| g.probe.as_ref()) {
+                                probe.characters.fetch_add(1, Ordering::AcqRel);
+                            }
                             devices.keyboard.key(devices.time(), index as u32 + 1, 1);
                             devices.keyboard.key(devices.time(), index as u32 + 1, 0);
                         }
                         queue.roundtrip(&mut dispatch)?;
+                        #[cfg(test)]
+                        if let Some(probe) = guard.as_ref().and_then(|g| g.probe.as_ref())
+                            && probe.batches.fetch_add(1, Ordering::AcqRel) == 0
+                        {
+                            let _ = probe.first_batch.send(());
+                            probe
+                                .resume
+                                .lock()
+                                .unwrap()
+                                .recv_timeout(Duration::from_secs(5))?;
+                        }
                     }
                     send_keymap(&devices.keyboard, &devices.base_keymap)?;
                     devices.modifiers();
                     queue.roundtrip(&mut dispatch)?;
+                    if let Some(guard) = &guard {
+                        #[cfg(test)]
+                        if let Some(probe) = &guard.probe {
+                            probe.restored.store(true, Ordering::Release);
+                        }
+                        guard.text_done.notify_one();
+                    }
                 }
-                Ok(Some(command)) => devices.command(command)?,
+                Ok(Some((command, _))) => devices.command(command)?,
                 Ok(None) => {}
                 Err(mpsc::error::TryRecvError::Empty) => {
                     thread::park_timeout(Duration::from_millis(5))
@@ -929,7 +1007,12 @@ mod tests {
 
     #[test]
     fn input_barrier_cannot_be_requested_over_the_public_protocol() {
-        assert!(serde_json::from_str::<InputCommand>(r#"{"type":"release_sync"}"#).is_err());
+        for payload in [
+            r#"{"type":"release_sync"}"#,
+            r#"{"type":"guarded","command":{"type":"key","code":30,"pressed":true}}"#,
+        ] {
+            assert!(serde_json::from_str::<InputCommand>(payload).is_err());
+        }
     }
 
     #[test]
