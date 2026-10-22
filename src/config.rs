@@ -84,6 +84,9 @@ pub struct Config {
     pub password: String,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_SUBFOLDER", default_value = "")]
     pub subfolder: String,
+    /// Private MCP enable state and hashed credentials (defaults to the app state directory).
+    #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_MCP_SETTINGS")]
+    pub mcp_settings: Option<PathBuf>,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_SCREEN")]
     pub screen: Option<String>,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_WIDTH", default_value_t = 1280)]
@@ -204,6 +207,12 @@ impl Config {
             self.password.len() <= 4096 && !self.password.contains(['\r', '\n']),
             "invalid password"
         );
+        if let Some(path) = &self.mcp_settings {
+            ensure!(
+                path.is_absolute() && path.file_name().is_some(),
+                "MCP settings must be an absolute file path"
+            );
+        }
         if let Some(socket) = &self.wayland_socket {
             ensure!(
                 socket.is_absolute(),

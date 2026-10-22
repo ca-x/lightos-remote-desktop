@@ -3,6 +3,8 @@ import { initReactI18next } from "react-i18next";
 import { languageKey, languages, readPreference, resolveLanguage } from "./preferences";
 
 const en = {
+  mcpTitle: "MCP agent access", mcpHelp: "Agents can observe this desktop with a token. Control tokens can also send input to the virtual desktop; Disconnect the browser to hand over control. Physical desktops are read-only.",
+  mcpEnabled: "Enable MCP", mcpEndpoint: "Streamable HTTP endpoint", mcpCreateForm: "Create an MCP token", mcpTokenName: "Token name", mcpScope: "Access", mcpObserve: "Observe only", mcpControl: "Observe & control", mcpCreate: "Create token", mcpNewToken: "New MCP token", mcpOnce: "Save this token now. It is shown only once and is cleared when these settings close.", mcpCopy: "Copy token", mcpCopied: "Copied", mcpDone: "Done", mcpTokens: "MCP tokens", mcpNoTokens: "No agent tokens. Create one to connect a client.", mcpRevoke: "Revoke", mcpRevokeNamed: "Revoke {{name}}", mcpError: "Could not update MCP settings. Check your login, connection and the server’s private settings file, then Refresh.", mcpCopyError: "Copy was unavailable. Select and copy the token from the text field.",
   streamSettings: "Video & streaming", videoCodec: "Video encoding", streamStrategy: "Streaming strategy", automatic: "Automatic", lowLatency: "Low latency", smooth: "Smoothness", qualityFirst: "Quality first",
   streamHelp: "Automatic negotiates video support and adjusts buffering from render acknowledgements. An unavailable codec falls back to JPEG; your preference is saved.",
   title: "Remote desktop", viewport: "Remote desktop viewport", canvas: "Remote desktop. Focus here to send keyboard and pointer input.",
@@ -23,6 +25,8 @@ const en = {
   touchHelp: "Tap to click, drag with one finger, hold to right-click, and scroll with two fingers. Use the leftmost keyboard button to show or hide the keyboard. Highlighted modifiers apply to the next key.",
 };
 const zh: Record<keyof typeof en, string> = {
+  mcpTitle: "MCP 智能体接入", mcpHelp: "智能体可凭令牌查看此桌面。控制令牌还可向虚拟桌面发送输入；请先断开浏览器连接以交出控制权。物理桌面仅允许查看。",
+  mcpEnabled: "启用 MCP", mcpEndpoint: "Streamable HTTP 地址", mcpCreateForm: "创建 MCP 令牌", mcpTokenName: "令牌名称", mcpScope: "权限", mcpObserve: "仅查看", mcpControl: "查看与控制", mcpCreate: "创建令牌", mcpNewToken: "新 MCP 令牌", mcpOnce: "请立即保存令牌。令牌仅显示一次，关闭此设置后即清除。", mcpCopy: "复制令牌", mcpCopied: "已复制", mcpDone: "完成", mcpTokens: "MCP 令牌", mcpNoTokens: "暂无智能体令牌。创建后即可连接客户端。", mcpRevoke: "撤销", mcpRevokeNamed: "撤销 {{name}}", mcpError: "MCP 设置未能更新。请检查登录、连接和服务的私有设置文件后刷新。", mcpCopyError: "无法自动复制，请在文本框中选中并复制令牌。",
   streamSettings: "视频与传输", videoCodec: "视频编码", streamStrategy: "传输策略", automatic: "自动", lowLatency: "低延迟优先", smooth: "流畅优先", qualityFirst: "清晰优先",
   streamHelp: "自动模式协商编码能力，并根据画面确认调整缓冲。不支持的编码会回退为 JPEG，保留你的选择。",
   title: "远程桌面", viewport: "远程桌面视口", canvas: "远程桌面，聚焦此处发送键盘和鼠标输入。",

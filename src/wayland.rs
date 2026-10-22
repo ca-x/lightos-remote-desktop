@@ -54,6 +54,17 @@ pub struct Frame {
 }
 
 impl Frame {
+    #[cfg(test)]
+    pub(crate) fn test_frame(width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+            jpeg: OnceLock::new(),
+            pixels: [24, 64, 128, 255].repeat((width * height) as usize).into(),
+            captured_at: Instant::now(),
+        }
+    }
+
     pub fn jpeg(&self, quality: u8) -> Result<Arc<[u8]>> {
         ensure!(
             self.pixels.len() == self.width as usize * self.height as usize * 4,

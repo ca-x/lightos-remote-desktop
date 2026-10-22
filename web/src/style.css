@@ -90,3 +90,16 @@ footer { font-size: 10px; color: var(--muted); padding-top: 12px; }
 .mobile-key[aria-pressed="true"] { background: var(--selected); color: var(--accent); border-color: var(--accent); }
 .touch-desktop input, .touch-desktop textarea, .touch-desktop select { font-size: 16px; }
 .touch-desktop .panel { max-height: calc(var(--visible-height, 100dvh) - var(--mobile-bar-height, 104px) - 24px); max-width: calc(var(--dock-width, 100vw) - 24px); }
+
+.mcp-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
+.mcp-create { display: grid; gap: 10px; margin-top: 12px; }
+.mcp-create input, .mcp-create select, .mcp-secret textarea, #mcp-endpoint { width: 100%; min-width: 0; }
+.mcp-secret { margin-top: 12px; padding: 10px; border: 1px solid var(--accent); border-radius: 7px; background: var(--field); }
+.mcp-secret p { margin: 0 0 8px; color: var(--text); }
+.mcp-secret textarea, #mcp-endpoint { font-family: ui-monospace, monospace; font-size: 11px; }
+.mcp-secret .toolbar { margin-top: 8px; }
+.mcp-tokens { list-style: none; padding: 0; margin: 12px 0 0; }
+.mcp-tokens li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 0; border-top: 1px solid var(--border); }
+.mcp-tokens li div { min-width: 0; overflow-wrap: anywhere; }
+.mcp-tokens strong { display: block; font-size: 12px; font-weight: 550; }
+.mcp-tokens span { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }

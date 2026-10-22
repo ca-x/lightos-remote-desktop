@@ -45,3 +45,15 @@ are build-time tools, not target-machine services. The frontend build collects
 license notices from the installed production dependency graph into
 web/dist/NOTICE.frontend.txt; CI includes this as licenses/frontend.txt. Lucide's
 ISC/MIT notices must be retained, including inherited Feather attribution.
+
+MCP uses the official `modelcontextprotocol/rust-sdk` crates `rmcp` and
+`rmcp-macros` 3.1.2 (Apache-2.0), with schemars (MIT) for tool schemas. Credential
+creation uses rand's OS randomness and RustCrypto sha2 (MIT/Apache-2.0); no custom
+cryptographic primitive or MCP framing is implemented. Cargo.lock records exact
+versions. CI collects their upstream notices using `scripts/mcp-notices.py` into
+`licenses/mcp.txt`. The rmcp 3.1.2 crate archives omit a license file; the upstream
+root LICENSE from VCS commit `02c62aef2e331e5cf79c06c744eb1eb052cc8ebd` (including its
+licensing transition notice and both license texts) is retained verbatim in
+`docs/licenses/rmcp.txt` and used as the packaging fallback for both SDK crates.
+The Cua repository was consulted as interface documentation only; no Cua runtime,
+images or source are embedded.

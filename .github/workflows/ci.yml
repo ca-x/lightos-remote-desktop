@@ -26,7 +26,8 @@ jobs:
       - run: npm run build
       - run: npm test
       - run: cargo fmt --all --check
-      - run: cargo test --workspace --locked --features bundled-jpeg
+      - name: Test workspace including MCP HTTP, authorization and input cleanup
+        run: cargo test --workspace --locked --features bundled-jpeg
       - run: cargo clippy --workspace --locked --features bundled-jpeg --all-targets -- -D warnings
       - run: bash tests/installer.sh
       - run: bash scripts/test-install-compat.sh
@@ -47,6 +48,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - run: cargo build --release --locked --features bundled-jpeg
       - name: Package Linux x86_64 binary
         shell: bash
@@ -63,6 +67,7 @@ jobs:
           cp "$jpeg_license" "dist/$package/licenses/libjpeg-turbo.md"
           cp "$wrapper_license" "dist/$package/licenses/turbojpeg.txt"
           cp web/dist/NOTICE.frontend.txt "dist/$package/licenses/frontend.txt"
+          python3 scripts/mcp-notices.py "dist/$package/licenses/mcp.txt"
           openh264_license=$(find "$registry" -path '*/openh264-sys2-*/upstream/LICENSE' -print -quit)
           openh264_wrapper_notice=$(find "$registry" -path '*/openh264-0.9.9/README.md' -print -quit)
           test -s "$openh264_license" && test -s "$openh264_wrapper_notice"

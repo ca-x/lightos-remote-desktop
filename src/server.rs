@@ -71,6 +71,7 @@ struct AudioRequest {
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
+    pub(crate) mcp: Arc<crate::mcp::TokenStore>,
     pub backend: Arc<Backend>,
     pub session: Arc<Mutex<Session>>,
     controller: Arc<AtomicBool>,
@@ -107,7 +108,11 @@ impl AppState {
             DesktopMode::Virtual
         };
         let displays = session_displays(&config, &session, desktop == DesktopMode::Virtual);
+        let mcp = Arc::new(crate::mcp::TokenStore::open(crate::mcp::settings_path(
+            &config,
+        )));
         Self {
+            mcp,
             codec_capabilities: Arc::new(tokio::sync::OnceCell::new()),
             displays,
             config: Arc::new(config),
@@ -196,6 +201,7 @@ impl AppState {
         );
         Ok(Self {
             codec_capabilities: self.codec_capabilities,
+            mcp: self.mcp,
             displays,
             config: self.config,
             controller: self.controller,
@@ -211,6 +217,12 @@ impl AppState {
 }
 
 pub fn router(state: AppState) -> Router {
+    let mcp = crate::mcp::transport(
+        state.mcp.clone(),
+        state.backend.clone(),
+        state.controller.clone(),
+        state.desktop == DesktopMode::Virtual,
+    );
     let desktop = Router::new()
         .route(
             "/app.js",
@@ -258,9 +270,22 @@ pub fn router(state: AppState) -> Router {
             }),
         )
         .route("/audio", get(upgrade_audio))
-        .route("/desktops", get(desktops));
-    mount_desktop(desktop, &state.config.subfolder)
-        .route_layer(middleware::from_fn_with_state(state.clone(), authenticate))
+        .route("/desktops", get(desktops))
+        .merge(crate::mcp::management(state.mcp.clone()).with_state(()));
+    let desktop = mount_desktop(desktop, &state.config.subfolder)
+        .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
+    let mcp: Router<AppState> = if state.config.subfolder.trim_matches('/').is_empty() {
+        mcp.with_state(())
+    } else {
+        Router::new()
+            .nest(
+                &format!("/{}", state.config.subfolder.trim_matches('/')),
+                mcp,
+            )
+            .with_state(())
+    };
+    desktop
+        .merge(mcp)
         .route("/healthz", get(health))
         .layer(middleware::from_fn(security_headers))
         .with_state(state)
