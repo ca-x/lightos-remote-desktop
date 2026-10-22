@@ -34,6 +34,28 @@ pub struct Session {
 }
 
 impl Session {
+    pub(crate) fn attached(
+        runtime: PathBuf,
+        socket: PathBuf,
+        signature: Option<String>,
+        pulse_server: Option<String>,
+        pulse_client_config: Option<PathBuf>,
+        audio_source: Option<String>,
+    ) -> Self {
+        Self {
+            runtime,
+            socket,
+            signature,
+            pulse_server,
+            pulse_client_config,
+            audio_source,
+            children: vec![],
+            temporary: None,
+            lock: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     pub fn physical_socket(config: &Config) -> Result<PathBuf> {
         let owner = unsafe { libc::geteuid() };
         if let Some(socket) = &config.physical_wayland_socket {
@@ -78,6 +100,23 @@ impl Session {
             unsafe { libc::geteuid() } != 0,
             "desktop service must run as a non-root user"
         );
+        if config.wayland_socket.is_none()
+            && let Some(runtime) = &config.session_runtime
+        {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !runtime.join("session.json").exists() {
+                ensure!(
+                    !cancelled.load(Ordering::Acquire),
+                    "persistent desktop connection cancelled"
+                );
+                ensure!(
+                    Instant::now() < deadline,
+                    "persistent desktop owner did not become ready"
+                );
+                thread::sleep(Duration::from_millis(100));
+            }
+            return crate::handoff::Descriptor::read(runtime)?.attach(runtime);
+        }
         if let Some(socket) = &config.wayland_socket {
             let runtime = socket
                 .parent()
@@ -155,22 +194,15 @@ impl Session {
                 .setup_audio()
                 .context("starting private desktop audio")?;
         }
-        let omarchy = config.omarchy_path()?;
+        let prepared = crate::desktop::prepare(config, &session.runtime)?;
+        let omarchy = prepared.omarchy;
         if omarchy.is_some() {
             session.prepare_application_launchers()?;
         }
-        let desktop_config = if let Some(path) = &config.desktop_config {
-            ensure!(path.is_file(), "desktop configuration is missing");
-            fs::canonicalize(path)?
-        } else {
-            let path = session.runtime.join("hyprland.conf");
-            let (width, height) = config.dimensions()?;
-            fs::write(
-                &path,
-                desktop_configuration(width, height, config.fps, omarchy.is_some()),
-            )?;
-            path
-        };
+        let desktop_config = prepared.configuration;
+        let lua = desktop_config
+            .extension()
+            .is_some_and(|extension| extension == "lua");
         let mut command = Command::new(&config.cage);
         command.arg("--");
         if let Some(directory) = &config.aquamarine_dir {
@@ -209,6 +241,7 @@ impl Session {
             .env("WLR_RENDER_DRM_DEVICE", "/dev/dri/renderD128")
             .env("XDG_CURRENT_DESKTOP", "Hyprland")
             .env("XDG_SESSION_TYPE", "wayland");
+        command.envs(prepared.environment.iter().cloned());
         session.audio_environment(&mut command);
         if let Some(path) = &omarchy {
             session.omarchy_environment(&mut command, path)?;
@@ -227,7 +260,7 @@ impl Session {
             .filter_map(Result::ok)
             .find(|entry| entry.path().join(".socket.sock").exists())
             .map(|entry| entry.file_name().to_string_lossy().into_owned());
-        let display = session.prepare_application_environment()?;
+        let display = session.prepare_application_environment(lua)?;
         if let Some(path) = &omarchy {
             let mut shell = Command::new("quickshell");
             shell
@@ -255,6 +288,7 @@ impl Session {
             if let Some(signature) = &session.signature {
                 shell.env("HYPRLAND_INSTANCE_SIGNATURE", signature);
             }
+            shell.envs(prepared.environment.iter().cloned());
             session.audio_environment(&mut shell);
             session.omarchy_environment(&mut shell, path)?;
             session.spawn(shell, "omarchy-shell.log")?;
@@ -263,7 +297,7 @@ impl Session {
         Ok(session)
     }
 
-    fn prepare_application_environment(&mut self) -> Result<String> {
+    fn prepare_application_environment(&mut self, lua: bool) -> Result<String> {
         let script = self.runtime.join("session-environment");
         fs::write(&script, include_str!("../scripts/session-environment.sh"))?;
         fs::set_permissions(&script, fs::Permissions::from_mode(0o700))?;
@@ -284,13 +318,14 @@ impl Session {
         socket.set_read_timeout(Some(Duration::from_secs(3)))?;
         socket.set_write_timeout(Some(Duration::from_secs(3)))?;
         let quote = |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
-        socket
-            .write_all(format!("dispatch exec {} {}", quote(&script), quote(&output)).as_bytes())?;
+        let command = format!("{} {}", quote(&script), quote(&output));
+        socket.write_all(desktop_config::exec_dispatch(&command, lua).as_bytes())?;
         let mut response = [0_u8; 256];
         let length = socket.read(&mut response)?;
         ensure!(
             response[..length].starts_with(b"ok"),
-            "compositor rejected session environment initialization"
+            "compositor rejected session environment initialization: {}",
+            String::from_utf8_lossy(&response[..length])
         );
         self.wait_for(Duration::from_secs(5), || output.is_file())?;
         let display = fs::read_to_string(output)?;
@@ -306,7 +341,6 @@ impl Session {
                 "omarchy-launch-browser",
                 include_str!("../scripts/session-browser.sh"),
             ),
-            ("omarchy-launch-terminal", "#!/bin/sh\nexec foot \"$@\"\n"),
         ] {
             let path = directory.join(name);
             fs::write(&path, source)?;
@@ -484,19 +518,9 @@ impl Session {
     }
 }
 
-fn is_owned_socket(path: &Path, owner: u32) -> bool {
+pub(crate) fn is_owned_socket(path: &Path, owner: u32) -> bool {
     fs::symlink_metadata(path)
         .is_ok_and(|metadata| metadata.file_type().is_socket() && metadata.uid() == owner)
-}
-
-fn desktop_configuration(width: u32, height: u32, fps: u32, omarchy: bool) -> String {
-    let mut configuration = include_str!("../config/hyprland.conf")
-        .replace("1280x720@30", &format!("{width}x{height}@{fps}"));
-    if omarchy {
-        configuration = configuration.replace("exec-once = $terminal\n", "");
-        configuration.push_str(include_str!("../config/omarchy.conf"));
-    }
-    configuration
 }
 
 fn desktop_socket(runtime: &Path) -> Option<PathBuf> {
@@ -515,7 +539,7 @@ fn desktop_socket(runtime: &Path) -> Option<PathBuf> {
         .map(|entry| entry.path())
 }
 
-fn secure_directory(path: &Path) -> Result<()> {
+pub(crate) fn secure_directory(path: &Path) -> Result<()> {
     if !path.exists() {
         fs::DirBuilder::new().mode(0o700).create(path)?;
     }
@@ -601,25 +625,8 @@ mod tests {
     }
 
     #[test]
-    fn default_desktop_starts_a_visible_application() {
-        let config = include_str!("../config/hyprland.conf");
-        assert!(config.lines().any(|line| line == "$terminal = foot"));
-        assert!(config.lines().any(|line| line == "exec-once = $terminal"));
-    }
-
-    #[test]
-    fn omarchy_desktop_exposes_launcher_without_covering_wallpaper() {
-        let config = desktop_configuration(1600, 900, 25, true);
-        assert!(config.contains("1600x900@25"));
-        assert!(config.contains("omarchy-menu toggle apps"));
-        assert!(config.contains("workspace, 5"));
-        assert!(!config.contains("exec-once = $terminal"));
-        assert!(!config.contains("import-environment"));
-    }
-
-    #[test]
     fn minimal_desktop_retains_terminal_without_omarchy_dependencies() {
-        let config = desktop_configuration(1280, 720, 20, false);
+        let config = desktop_config::minimal(1280, 720, 20, "test-terminal");
         assert!(config.contains("exec-once = $terminal"));
         assert!(!config.contains("omarchy-menu"));
     }

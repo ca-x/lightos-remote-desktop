@@ -272,6 +272,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
+name = "desktop-config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glob",
+ "tempfile",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -408,6 +417,12 @@ dependencies = [
  "libc",
  "r-efi 6.0.0",
 ]
+
+[[package]]
+name = "glob"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "heck"
@@ -598,13 +613,14 @@ dependencies = [
 
 [[package]]
 name = "lightos-remote-desktop"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "axum",
  "base64",
  "bytes",
  "clap",
+ "desktop-config",
  "futures-util",
  "image",
  "libc",
@@ -612,6 +628,7 @@ dependencies = [
  "libwayshot",
  "openh264",
  "opus",
+ "platform-detect",
  "serde",
  "serde_json",
  "subtle",
@@ -836,6 +853,15 @@ name = "pkg-config"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
+
+[[package]]
+name = "platform-detect"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "tempfile",
+]
 
 [[package]]
 name = "ppv-lite86"

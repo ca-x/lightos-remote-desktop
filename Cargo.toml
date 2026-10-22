@@ -1,6 +1,10 @@
+[workspace]
+members = ["crates/platform-detect", "crates/desktop-config"]
+resolver = "3"
+
 [package]
 name = "lightos-remote-desktop"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 rust-version = "1.88"
 description = "A native Rust browser remote desktop for LightOS"
@@ -9,6 +13,8 @@ description = "A native Rust browser remote desktop for LightOS"
 bundled-jpeg = ["turbojpeg/cmake", "turbojpeg/require-simd"]
 
 [dependencies]
+platform-detect = { path = "crates/platform-detect" }
+desktop-config = { path = "crates/desktop-config" }
 anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"

@@ -40,6 +40,10 @@ base=$root/usr/local/lib/lightos-remote-desktop
 state=$root/var/lib/lightos-remote-desktop
 unit=$root/etc/systemd/system/lightos-remote-desktop.service
 override=$unit.d/90-native.conf
+session_override=$unit.d/95-session.conf
+session_unit=$root/etc/systemd/system/lightos-remote-desktop-session.service
+session_template=$repository/systemd/lightos-remote-desktop-session.service
+session_override_template=$repository/systemd/95-session.conf
 environment=$root/etc/lightos/remote-desktop.env
 native_environment=$root/etc/lightos/remote-desktop-native.env
 service=lightos-remote-desktop.service
@@ -67,7 +71,9 @@ restore_file() {
 }
 restore() {
     restore_file "$base/current" current || return 1
-    restore_file "$override" override
+    restore_file "$override" override || return 1
+    restore_file "$session_override" session-override || return 1
+    restore_file "$session_unit" session-unit
 }
 record_recovery() {
     if ! restore_file "$state/latest" latest || ! touch "$transaction/restored"; then
@@ -106,7 +112,7 @@ done
 for directory in "$base" "$base/releases" "$state" "${override%/*}" "${environment%/*}"; do
     [[ $(realpath -m -- "$directory") == "$directory" ]] || fail "symlinked deployment directory: $directory"
 done
-[[ ! -L $environment && ! -L $native_environment && ! -L $override ]] || fail 'environment files and managed override must not be symlinks'
+[[ ! -L $environment && ! -L $native_environment && ! -L $override && ! -L $session_override && ! -L $session_unit ]] || fail 'environment files and managed override must not be symlinks'
 if exists "$native_environment"; then [[ -f $native_environment ]] || fail 'native environment must be a regular file'; fi
 if exists "$base/current"; then [[ -L $base/current ]] || fail 'current must be a symlink'; fi
 
@@ -118,6 +124,12 @@ if ((rollback)); then
     [[ -d $transaction && ! -L $transaction && -f $transaction/ready && ! -e $transaction/restored ]] || fail 'no prepared installation to roll back'
 else
     [[ -f $binary && -x $binary ]] || fail "prebuilt executable required: $binary"
+    [[ -f $session_template && -f $session_override_template ]] || fail 'missing session service templates'
+    # Staging and fixtures never call systemd. Activation resolves the effective User below.
+    runtime_user=$(awk '/^\[/{section=$0} section=="[Service]" && /^User=/{sub(/^User=/, ""); user=$0} END{print user}' "$unit")
+    [[ $runtime_user =~ ^[a-zA-Z_][a-zA-Z0-9_-]*[$]?$ && $runtime_user != root ]] || fail 'a named non-root User is required in the existing service'
+    session_contents=$(<"$session_template")
+    session_contents=${session_contents//@USER@/$runtime_user}
     [[ -f $template ]] || fail 'missing systemd override template'
     digest=$(sha256sum -- "$binary"); digest=${digest%% *}
     release=$base/releases/$digest
@@ -179,10 +191,12 @@ fi
 if ((activate)); then
     runtime_user=$(activation_systemctl show --property=User --value "$service")
     [[ -n $runtime_user && $runtime_user != root && $runtime_user != 0 ]] || fail 'service must have a non-root User'
+    session_contents=$(<"$session_template")
+    session_contents=${session_contents//@USER@/$runtime_user}
     activation_doctor
 fi
 
-if [[ -L $base/current && $(readlink -- "$base/current") == "releases/$digest" ]] && cmp -s -- "$template" "$override"; then
+if [[ -L $base/current && $(readlink -- "$base/current") == "releases/$digest" ]] && cmp -s -- "$template" "$override" && cmp -s -- "$session_override_template" "$session_override" && cmp -s <(printf '%s\n' "$session_contents") "$session_unit"; then
     if ((activate)); then
         [[ -f $state/latest && ! -L $state/latest ]] || fail 'missing activation rollback snapshot'
         read -r identifier < "$state/latest"
@@ -204,6 +218,8 @@ snapshot "$unit" unit
 snapshot "$environment" environment
 snapshot "$native_environment" native-environment
 snapshot "$override" override
+snapshot "$session_override" session-override
+snapshot "$session_unit" session-unit
 snapshot "$base/current" current
 snapshot "$state/latest" latest
 if [[ ! -e $state/original ]]; then
@@ -223,6 +239,13 @@ mv -Tf -- "$temporary" "$base/current"
 temporary=$(mktemp "${override%/*}/.override.XXXXXX")
 install -m 0644 -- "$template" "$temporary"
 mv -Tf -- "$temporary" "$override"
+temporary=$(mktemp "${session_unit%/*}/.session.XXXXXX")
+printf '%s\n' "$session_contents" > "$temporary"
+chmod 0644 "$temporary"
+mv -Tf -- "$temporary" "$session_unit"
+temporary=$(mktemp "${session_override%/*}/.session-override.XXXXXX")
+install -m 0644 -- "$session_override_template" "$temporary"
+mv -Tf -- "$temporary" "$session_override"
 if ((activate)); then
     if activation_systemctl is-active --quiet "$service"; then was_active=1; fi
     activation_attempted=1

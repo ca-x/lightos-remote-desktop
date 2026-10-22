@@ -140,6 +140,7 @@ impl AppState {
         .name
         .clone();
         let mut config = (*self.config).clone();
+        config.session_runtime = None;
         config.wayland_socket = Some(socket.clone());
         let session = Session::start(&config)?;
         let backend = Backend::start_with_output_cancellable(

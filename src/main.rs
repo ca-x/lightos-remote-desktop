@@ -33,6 +33,8 @@ enum Action {
     )]
     RollbackService(lightos_remote_desktop::install::ServiceOptions),
     Serve(Config),
+    #[command(about = "Own a persistent desktop independently of the HTTP transport")]
+    DesktopSession(Config),
     Doctor(Config),
     Probe {
         #[command(flatten)]
@@ -58,6 +60,7 @@ async fn main() -> Result<()> {
             tokio::task::spawn_blocking(move || probe(&config, expect_pid)).await?
         }
         Action::Serve(config) => serve(config).await,
+        Action::DesktopSession(config) => desktop_session(config).await,
     }
 }
 
@@ -122,23 +125,52 @@ fn doctor(config: &Config) -> Result<()> {
     }
     println!(
         "{}",
-        serde_json::json!({"ok":true,"native":true,"transport":"websocket","video_codecs":["h264","jpeg"],"desktop_smoke_test":false})
+        serde_json::json!({"distribution": platform_detect::Distribution::detect(), "omarchy": platform_detect::OmarchyInstallation::detect(), "persistent_session":config.session_runtime, "ok":true,"native":true,"transport":"websocket","video_codecs":["h264","jpeg"],"desktop_smoke_test":false})
     );
     Ok(())
 }
 
 fn executable_exists(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    let executable = |path: &Path| {
-        path.metadata()
-            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    platform_detect::find_executable(path).is_some()
+}
+
+async fn desktop_session(mut config: Config) -> Result<()> {
+    config.session_runtime = None;
+    ensure!(
+        config.wayland_socket.is_none(),
+        "desktop-session cannot own an attached compositor"
+    );
+    ensure!(
+        config.runtime_dir.is_some(),
+        "desktop-session requires an explicit persistent --runtime-dir"
+    );
+    doctor(&config)?;
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let startup_cancelled = cancelled.clone();
+    let mut startup =
+        tokio::task::spawn_blocking(move || Session::start_cancellable(&config, startup_cancelled));
+    let mut session = tokio::select! {
+        result = &mut startup => result??,
+        _ = async { tokio::select! { _ = term.recv() => {}, _ = interrupt.recv() => {} } } => {
+            cancelled.store(true, std::sync::atomic::Ordering::Release);
+            let _ = startup.await;
+            return Ok(());
+        }
     };
-    if path.components().count() > 1 {
-        return executable(path);
-    }
-    std::env::var_os("PATH").is_some_and(|value| {
-        std::env::split_paths(&value).any(|directory| executable(&directory.join(path)))
-    })
+    lightos_remote_desktop::handoff::Descriptor::publish(&session)?;
+    let mut ticks = tokio::time::interval(Duration::from_secs(1));
+    let result = loop {
+        tokio::select! {
+            _ = term.recv() => break Ok(()),
+            _ = interrupt.recv() => break Ok(()),
+            _ = ticks.tick() => if !session.healthy() { break Err(anyhow::anyhow!("owned desktop process exited")); }
+        }
+    };
+    lightos_remote_desktop::handoff::Descriptor::remove(&session.runtime);
+    drop(session);
+    result
 }
 
 async fn serve(config: Config) -> Result<()> {

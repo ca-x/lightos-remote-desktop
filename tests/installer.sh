@@ -86,6 +86,11 @@ printf '\nnew release\n' >> "$workspace/candidate"
 run
 [[ $(readlink "$base/current") != "$first" ]]
 cmp "$state/$(cat "$state/latest")/override" "$repository/systemd/90-native.conf"
+[[ -f $root/etc/systemd/system/lightos-remote-desktop-session.service ]]
+grep -Fxq 'User=czyt' "$root/etc/systemd/system/lightos-remote-desktop-session.service"
+grep -Fxq 'KillMode=control-group' "$root/etc/systemd/system/lightos-remote-desktop-session.service"
+grep -Fxq 'Requires=lightos-remote-desktop-session.service' "$unit.d/95-session.conf"
+! grep -Eq '^(PartOf|BindsTo)=' "$root/etc/systemd/system/lightos-remote-desktop-session.service"
 pass 'upgrade snapshots preceding release'
 run --rollback
 [[ $(readlink "$base/current") == "$first" ]]
@@ -132,7 +137,8 @@ run --rollback
 [[ ! -e $root/usr/local/lib/lightos-remote-desktop/current && ! -L $root/usr/local/lib/lightos-remote-desktop/current ]]
 [[ ! -e $unit.d/90-native.conf && ! -e $root/etc/lightos/remote-desktop.env ]]
 [[ ! -e $root/etc/lightos/remote-desktop-native.env ]]
-pass 'first-install rollback removes override and current; never creates an empty secret'
+[[ ! -e $root/etc/systemd/system/lightos-remote-desktop-session.service && ! -e $unit.d/95-session.conf ]]
+pass 'first-install rollback removes override, session unit and current; never creates an empty secret'
 mkdir -p "$unit.d"
 printf '[Service]\nEnvironment=ORIGINAL_OVERRIDE=yes\n' > "$unit.d/90-native.conf"
 cp "$unit.d/90-native.conf" "$workspace/override.original"
@@ -262,7 +268,8 @@ activate_candidate
 [[ $(grep -c '^sleep$' "$activation_log") == 5 ]]
 [[ $(grep -c -- '--expect-pid 200' "$activation_log") == 2 ]]
 grep -q -- "--property=EnvironmentFile=$environment --property=EnvironmentFile=-$native_environment" "$activation_log"
-pass 'activation requires live probe, stable MainPID/ExecMainPID and NRestarts, then final health probe'
+! grep -Eq '^systemctl (restart|stop) lightos-remote-desktop-session.service' "$activation_log"
+pass 'activation verifies transport health and never restarts/stops the persistent session'
 for failure in unhealthy wrong-native wrong-health-pid probe-timeout missing-probe late-unhealthy same-pid changed-pid restarted missing-exec inactive restart-failed; do
     reset_activation "$failure"
     reject activate_candidate

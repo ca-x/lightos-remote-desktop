@@ -1,6 +1,8 @@
 pub mod audio;
 pub mod audio_channel;
 pub mod config;
+pub mod desktop;
+pub mod handoff;
 pub mod install;
 pub mod server;
 pub mod session;

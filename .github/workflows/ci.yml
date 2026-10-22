@@ -25,9 +25,9 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
-      - run: cargo fmt --check
-      - run: cargo test --locked --features bundled-jpeg
-      - run: cargo clippy --locked --features bundled-jpeg --all-targets -- -D warnings
+      - run: cargo fmt --all --check
+      - run: cargo test --workspace --locked --features bundled-jpeg
+      - run: cargo clippy --workspace --locked --features bundled-jpeg --all-targets -- -D warnings
       - run: bash tests/installer.sh
       - run: bash scripts/test-install-compat.sh
   build:

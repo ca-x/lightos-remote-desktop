@@ -1,0 +1,12 @@
+[package]
+name = "desktop-config"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[dependencies]
+anyhow = "1"
+glob = "0.3"
+
+[dev-dependencies]
+tempfile = "3"

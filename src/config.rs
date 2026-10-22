@@ -96,6 +96,12 @@ pub struct Config {
     pub quality: u8,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_RUNTIME_DIR")]
     pub runtime_dir: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "LIGHTOS_REMOTE_DESKTOP_SESSION_RUNTIME",
+        conflicts_with = "wayland_socket"
+    )]
+    pub session_runtime: Option<PathBuf>,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_WAYLAND_SOCKET")]
     pub wayland_socket: Option<PathBuf>,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_PHYSICAL_WAYLAND_SOCKET")]
@@ -125,19 +131,12 @@ impl Config {
         {
             return Ok(None);
         }
-        let path = std::env::var_os("OMARCHY_PATH")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/usr/share/omarchy"));
-        if path.join("shell/shell.qml").is_file() {
-            Ok(Some(path))
-        } else {
-            ensure!(
-                self.desktop_shell != DesktopShell::Omarchy,
-                "Omarchy shell is not installed"
-            );
-            Ok(None)
-        }
+        let installation = platform_detect::OmarchyInstallation::detect();
+        ensure!(
+            installation.is_some() || self.desktop_shell != DesktopShell::Omarchy,
+            "Omarchy shell is not installed"
+        );
+        Ok(installation.map(|installation| installation.root))
     }
 
     pub fn dimensions(&self) -> Result<(u32, u32)> {
@@ -208,6 +207,12 @@ impl Config {
             ensure!(
                 socket.is_absolute(),
                 "physical Wayland socket must be absolute"
+            );
+        }
+        if let Some(directory) = &self.session_runtime {
+            ensure!(
+                directory.is_absolute(),
+                "persistent session runtime must be absolute"
             );
         }
         if let Some(directory) = &self.runtime_dir {

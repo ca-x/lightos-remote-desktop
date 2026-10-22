@@ -35,6 +35,14 @@ pub fn service(options: ServiceOptions, rollback: bool) -> Result<()> {
             include_str!("../scripts/activation.sh"),
         ),
         (
+            "systemd/95-session.conf",
+            include_str!("../systemd/95-session.conf"),
+        ),
+        (
+            "systemd/lightos-remote-desktop-session.service",
+            include_str!("../systemd/lightos-remote-desktop-session.service"),
+        ),
+        (
             "systemd/90-native.conf",
             include_str!("../systemd/90-native.conf"),
         ),
