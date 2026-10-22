@@ -15,6 +15,7 @@ function harness(pathname = "/") {
     textContent = "";
     captures = new Set();
     attributes = {};
+    style = { values: {}, setProperty(name, value) { this.values[name] = value; } };
     classList = {
       values: new Set(),
       toggle(name, enabled) { if (enabled) this.values.add(name); else this.values.delete(name); },
@@ -212,6 +213,70 @@ test("display mode icons switch fit, 1:1 and fullscreen, restoring the prior win
   await flush();
   assert.equal(app.nodes["mode-fit"].attributes["aria-pressed"], "true");
   assert.match(app.nodes.message.textContent, /denied/);
+});
+
+test("H.264 waits for codec setup, acknowledges rendered frames and closes stale decoders", async () => {
+  const app = harness();
+  const decoders = [];
+  app.window.VideoDecoder = class {
+    state = "unconfigured";
+    decodeQueueSize = 0;
+    chunks = [];
+    static async isConfigSupported() { return { supported: true }; }
+    constructor(callbacks) { this.callbacks = callbacks; decoders.push(this); }
+    configure(config) { this.config = config; this.state = "configured"; }
+    decode(chunk) { this.chunks.push(chunk); }
+    close() { this.state = "closed"; }
+  };
+  app.window.EncodedVideoChunk = class { constructor(value) { Object.assign(this, value); } };
+  const socket = app.ready();
+  socket.json({ type: "ready", width: 1280, height: 720, audio: false, frame_ack: true, frame_ids: true, video_codecs: ["h264", "jpeg"] });
+  assert.equal(socket.sent.at(-1).codec, "h264");
+  socket.json({ type: "video_config", codec: "avc1.42c01f", width: 1280, height: 720 });
+  socket.json({ type: "frame_id", id: 22 });
+  const packet = new Uint8Array([3, 1, 42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x65]).buffer;
+  socket.binary(packet);
+  await flush();
+  assert.equal(decoders[0].chunks.length, 1);
+  assert.equal(decoders[0].chunks[0].timestamp, 42);
+  const frame = { displayWidth: 1280, displayHeight: 720, timestamp: 42, close() { this.closed = true; } };
+  decoders[0].callbacks.output(frame);
+  assert.equal(frame.closed, true);
+  assert.equal(socket.sent.at(-1).type, "frame_ack");
+  assert.equal(socket.sent.at(-1).id, 22);
+  socket.json({ type: "video_config", codec: "avc1.42c01f", width: 800, height: 600 });
+  await flush();
+  assert.equal(decoders[0].state, "closed");
+  const acknowledgements = socket.sent.length;
+  decoders[0].callbacks.output(frame);
+  assert.equal(socket.sent.length, acknowledgements);
+  socket.binary(packet);
+  app.tick();
+  assert.equal(socket.sent.at(-1).codec, "jpeg");
+  assert.equal(decoders[1].state, "closed");
+});
+
+test("automatic resolution follows viewport CSS pixels with debounce, even dimensions and manual opt-out", () => {
+  const app = harness();
+  const socket = app.ready();
+  app.nodes.viewport.clientWidth = 1919;
+  app.nodes.viewport.clientHeight = 1079;
+  app.nodes["auto-resolution"].checked = true;
+  for (let count = 0; count < 10; count++) app.window.fire("resize");
+  assert.equal(app.timers.size, 1);
+  assert.equal(app.tick(), 250);
+  assert.deepEqual(socket.sent.at(-1), { type: "resize", width: 1918, height: 1078 });
+  app.window.fire("resize");
+  app.tick();
+  assert.equal(socket.sent.filter((command) => command.type === "resize").length, 1);
+  app.nodes["mode-actual"].fire("click");
+  assert.equal(app.nodes["auto-resolution"].checked, false);
+  app.window.fire("resize");
+  assert.equal(app.timers.size, 0);
+  app.nodes["auto-resolution"].checked = true;
+  app.window.fire("resize");
+  app.nodes.connection.fire("click");
+  assert.equal(app.timers.size, 0);
 });
 
 function jpeg(marker) { return new Uint8Array([1, marker]).buffer; }
@@ -444,6 +509,7 @@ test("resized JPEG updates canvas before drawing, preserves edited resolution, a
   app.decodes[0].resolve(bitmap(1024, 768));
   await flush();
   assert.deepEqual(dimensions, { width: 1024, height: 768 });
+  assert.equal(canvas.style.values["--desktop-aspect"], String(1024 / 768));
   assert.deepEqual(app.draws[0].slice(1), [0, 0, 1024, 768]);
   assert.deepEqual(changes, [["width", 1024], ["height", 768]]);
   assert.equal(app.nodes.width.value, "1600");

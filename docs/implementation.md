@@ -15,8 +15,8 @@ installed Python service. Source lives in ~/code/rust/lightos-remote-desktop.
   Preserve the original Python payload, configuration and rollback snapshots.
 - Ruling: use standard Wayland capture/input protocols and libwayshot rather
   than forking the Python-coupled pixelflux tree for the initial native backend.
-  This avoids shipping a CPython runtime, but the initial JPEG transport is
-  explicitly not H.264/zero-copy performance parity. Do not present it as a
+  This avoids shipping a CPython runtime. Video now negotiates CPU H.264 with
+  WebCodecs and JPEG fallback, but is not hardware/zero-copy performance parity. Do not present it as a
   fully equivalent production replacement until remaining features are verified.
 - Native Rust means no Python runtime. Hyprland, libxkbcommon, wl-clipboard,
   FFmpeg/PulseAudio-compatible audio services remain external dependencies.
@@ -100,3 +100,7 @@ Backend::stop(): signals its owned thread; never modifies global environment.
 - Default shell auto-detection now starts the installed Omarchy wallpaper,
   bar and menu rather than a terminal-only desktop. Remote application launch
   uses private PATH adapters; host UWSM/environment import is not required.
+- Video writes no longer block the input receiver. Render acknowledgements
+  bound video in flight; persistent H.264 encodes latest raw captures only on
+  demand, preserving reference-frame dependencies. FFmpeg AVI framing is parsed
+  with bounded lengths, not guessed from pipe read boundaries or idle timers.

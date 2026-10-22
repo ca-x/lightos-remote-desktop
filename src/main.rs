@@ -123,7 +123,7 @@ fn doctor(config: &Config) -> Result<()> {
     }
     println!(
         "{}",
-        serde_json::json!({"ok":true,"native":true,"transport":"jpeg-websocket","desktop_smoke_test":false})
+        serde_json::json!({"ok":true,"native":true,"transport":"websocket","video_codecs":["h264","jpeg"],"desktop_smoke_test":false})
     );
     Ok(())
 }

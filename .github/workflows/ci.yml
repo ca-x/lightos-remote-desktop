@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Native dependencies
-        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev cmake nasm pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev cmake nasm pkg-config ffmpeg
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -23,6 +23,7 @@ jobs:
           node-version: '24'
       - run: cargo fmt --check
       - run: cargo test --locked --features bundled-jpeg
+      - run: cargo test --locked --features bundled-jpeg video::tests::encoder_emits_an_initial_keyframe_then_predictive_frame_without_lookahead -- --ignored
       - run: cargo clippy --locked --features bundled-jpeg --all-targets -- -D warnings
       - run: bash tests/installer.sh
       - run: bash scripts/test-install-compat.sh

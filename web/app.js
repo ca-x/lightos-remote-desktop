@@ -59,6 +59,16 @@ function createClient() {
   let pendingMove = null;
   let frameAcknowledgements = false;
   let windowMode = "fit";
+  let videoDecoder = null;
+  let videoToken = 0;
+  let configuringVideo = false;
+  let pendingVideo = null;
+  let videoTimer = null;
+  let sequencedFrames = false;
+  let pendingFrameId = null;
+  const videoFrameIds = new Map();
+  let autoResizeTimer = null;
+  let lastRequestedSize = null;
 
   function listen(target, name, handler, options = {}) {
     target.addEventListener(name, handler, { ...options, signal: listeners.signal });
@@ -81,6 +91,7 @@ function createClient() {
   function resizeCanvas(width, height) {
     if (canvas.width !== width) canvas.width = width;
     if (canvas.height !== height) canvas.height = height;
+    canvas.style.setProperty("--desktop-aspect", String(width / height));
   }
 
   function updateControls() {
@@ -142,12 +153,18 @@ function createClient() {
   }
 
   function resetSession() {
+    clearTimeout(autoResizeTimer);
+    autoResizeTimer = null;
+    lastRequestedSize = null;
     ready = false;
     generation += 1;
     pendingFrame = null;
     clipboardPending = false;
     audioAvailable = false;
     frameAcknowledgements = false;
+    sequencedFrames = false;
+    pendingFrameId = null;
+    closeVideo();
     keys.clear();
     buttons.clear();
     release();
@@ -187,10 +204,15 @@ function createClient() {
       } else if (ready && event.data instanceof ArrayBuffer && event.data.byteLength > 1) {
         const kind = new Uint8Array(event.data, 0, 1)[0];
         if (kind === 1 && event.data.byteLength <= 16777216) {
-          pendingFrame = { data: event.data.slice(1), generation };
+          pendingFrame = { data: event.data.slice(1), generation, videoToken, id: pendingFrameId };
+          pendingFrameId = null;
           void decodeFrames();
         } else if (kind === 2) {
           receiveAudio(event.data);
+        } else if (kind === 3 && event.data.byteLength <= 16777216) {
+          const id = pendingFrameId;
+          pendingFrameId = null;
+          receiveVideo(event.data, id);
         }
       }
     };
@@ -251,7 +273,9 @@ function createClient() {
       }
       ready = true;
       frameAcknowledgements = value.frame_ack === true;
-      if (frameAcknowledgements) send({ type: "video_flow", enabled: true });
+      sequencedFrames = value.frame_ids === true;
+      if (frameAcknowledgements) send({ type: "video_flow", enabled: true, sequenced: sequencedFrames });
+      if (frameAcknowledgements && sequencedFrames && value.video_codecs?.includes("h264") && window.VideoDecoder && window.EncodedVideoChunk) send({ type: "video", codec: "h264" });
       clearTimeout(connectionTimer);
       connectionTimer = null;
       retries = 0;
@@ -260,6 +284,11 @@ function createClient() {
       element("state").textContent = "Connected";
       message(audioAvailable ? `Desktop ready. Audio is ${audioEnabled ? "on" : "off until enabled"}.` : "Desktop ready. Server audio is unavailable.");
       updateControls();
+      scheduleAutoResize();
+    } else if (value.type === "frame_id" && Number.isSafeInteger(value.id) && value.id > 0) {
+      pendingFrameId = value.id;
+    } else if (value.type === "video_config" && typeof value.codec === "string") {
+      void configureVideo(value);
     } else if (value.type === "clipboard" && typeof value.text === "string") {
       if (!clipboardPending) return;
       clipboardPending = false;
@@ -282,7 +311,7 @@ function createClient() {
         let bitmap;
         try {
           bitmap = await createImageBitmap(new Blob([frame.data], { type: "image/jpeg" }));
-          if (frame.generation === generation && ready && !destroyed) {
+          if (frame.generation === generation && frame.videoToken === videoToken && ready && !destroyed) {
             if (!validDimensions(bitmap.width, bitmap.height)) {
               message("Server supplied invalid JPEG dimensions.");
               continue;
@@ -294,10 +323,93 @@ function createClient() {
           if (frame.generation === generation && ready) message("Could not decode a desktop JPEG frame.");
         } finally {
           if (bitmap) bitmap.close();
-          if (frame.generation === generation && ready && frameAcknowledgements) send({ type: "frame_ack" });
+          if (frame.generation === generation && frame.videoToken === videoToken && ready && frameAcknowledgements) acknowledgeFrame(frame.id);
         }
       }
     } finally { decoding = false; }
+  }
+
+  function closeVideo() {
+    clearTimeout(videoTimer);
+    videoTimer = null;
+    videoToken += 1;
+    configuringVideo = false;
+    pendingVideo = null;
+    videoFrameIds.clear();
+    const previous = videoDecoder;
+    videoDecoder = null;
+    if (previous && previous.state !== "closed") previous.close();
+  }
+
+  function acknowledgeFrame(id) {
+    if (sequencedFrames) {
+      if (Number.isSafeInteger(id) && id > 0) send({ type: "frame_ack", id });
+    } else send({ type: "frame_ack" });
+  }
+
+  function fallbackVideo() {
+    closeVideo();
+    send({ type: "video", codec: "jpeg" });
+    message("H.264 is unavailable; using compatible JPEG video.");
+  }
+
+  async function configureVideo(value) {
+    closeVideo();
+    pendingFrame = null;
+    if (value.codec === "jpeg") { message("Video: JPEG compatibility mode."); return; }
+    if (!/^avc1\.[0-9a-f]{6}$/i.test(value.codec) || !window.VideoDecoder || !validDimensions(value.width, value.height)) { fallbackVideo(); return; }
+    const token = videoToken;
+    const session = generation;
+    configuringVideo = true;
+    try {
+      const config = { codec: value.codec, codedWidth: value.width, codedHeight: value.height, optimizeForLatency: true, hardwareAcceleration: "prefer-hardware" };
+      let support = await window.VideoDecoder.isConfigSupported(config);
+      if (!support.supported) {
+        config.hardwareAcceleration = "no-preference";
+        support = await window.VideoDecoder.isConfigSupported(config);
+      }
+      if (token !== videoToken || session !== generation || !ready || destroyed) return;
+      if (!support.supported) { fallbackVideo(); return; }
+      videoDecoder = new window.VideoDecoder({
+        output(frame) {
+          try {
+            if (token !== videoToken || session !== generation || !ready || destroyed) return;
+            clearTimeout(videoTimer);
+            videoTimer = null;
+            if (!validDimensions(frame.displayWidth, frame.displayHeight)) { fallbackVideo(); return; }
+            resizeCanvas(frame.displayWidth, frame.displayHeight);
+            drawing.drawImage(frame, 0, 0, canvas.width, canvas.height);
+            const id = videoFrameIds.get(frame.timestamp);
+            videoFrameIds.delete(frame.timestamp);
+            if (frameAcknowledgements) acknowledgeFrame(id);
+          } finally { frame.close(); }
+        },
+        error() { if (token === videoToken && session === generation && ready) fallbackVideo(); },
+      });
+      videoDecoder.configure(config);
+      configuringVideo = false;
+      const packet = pendingVideo;
+      pendingVideo = null;
+      if (packet) receiveVideo(packet.data, packet.id);
+      message("Video: low-latency H.264.");
+    } catch { if (token === videoToken && session === generation && ready) fallbackVideo(); }
+  }
+
+  function receiveVideo(data, id) {
+    if (data.byteLength <= 10) { fallbackVideo(); return; }
+    if (configuringVideo) {
+      if (pendingVideo) { fallbackVideo(); return; }
+      pendingVideo = { data, id };
+      return;
+    }
+    if (!videoDecoder || videoDecoder.state !== "configured" || videoDecoder.decodeQueueSize > 2) { fallbackVideo(); return; }
+    const view = new DataView(data);
+    const timestamp = view.getUint32(2, true) + view.getUint32(6, true) * 4294967296;
+    try {
+      videoFrameIds.set(timestamp, id);
+      videoTimer = setTimeout(() => { videoTimer = null; fallbackVideo(); }, 2000);
+      videoDecoder.decode(new window.EncodedVideoChunk({ type: view.getUint8(1) === 1 ? "key" : "delta", timestamp, data: new Uint8Array(data, 10) }));
+    } catch { fallbackVideo(); }
   }
 
   function receiveAudio(data) {
@@ -480,6 +592,7 @@ function createClient() {
   listen(window, "blur", () => { composing = false; release(); });
   listen(document, "visibilitychange", () => {
     if (document.hidden) { composing = false; release(); stopAudio(); }
+    else scheduleAutoResize();
   });
   listen(element("connection"), "click", () => {
     if (wanted) disconnect();
@@ -493,6 +606,11 @@ function createClient() {
         viewport.classList.toggle("fit", true);
       } else {
         windowMode = mode === "actual" ? "actual" : "fit";
+        if (windowMode === "actual") {
+          element("auto-resolution").checked = false;
+          clearTimeout(autoResizeTimer);
+          autoResizeTimer = null;
+        }
         if (document.fullscreenElement) await document.exitFullscreen();
         viewport.classList.toggle("fit", windowMode === "fit");
       }
@@ -513,12 +631,35 @@ function createClient() {
   }
   listen(element("mode-fit"), "click", () => { void displayMode("fit"); });
   listen(element("mode-actual"), "click", () => { void displayMode("actual"); });
+  function scheduleAutoResize() {
+    clearTimeout(autoResizeTimer);
+    autoResizeTimer = null;
+    if (!ready || !element("auto-resolution").checked) return;
+    autoResizeTimer = setTimeout(() => {
+      autoResizeTimer = null;
+      if (!ready || !element("auto-resolution").checked || document.hidden || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return;
+      const width = Math.max(320, Math.min(3840, Math.floor(viewport.clientWidth / 2) * 2));
+      const height = Math.max(200, Math.min(2160, Math.floor(viewport.clientHeight / 2) * 2));
+      const size = `${width}x${height}`;
+      if (lastRequestedSize === size || (canvas.width === width && canvas.height === height)) return;
+      release();
+      if (send({ type: "resize", width, height })) {
+        lastRequestedSize = size;
+        element("width").value = width;
+        element("height").value = height;
+        message(`跟随窗口：${width} × ${height}`);
+      }
+    }, 250);
+  }
+  listen(window, "resize", scheduleAutoResize);
+  listen(element("auto-resolution"), "change", scheduleAutoResize);
   listen(element("fullscreen"), "click", async () => {
     await displayMode(document.fullscreenElement ? windowMode : "fullscreen");
   });
   listen(document, "fullscreenchange", () => {
     updateDisplayMode();
     viewport.classList.toggle("fit", document.fullscreenElement ? true : windowMode === "fit");
+    scheduleAutoResize();
   });
   listen(element("resize"), "submit", (event) => {
     event.preventDefault();
@@ -529,6 +670,9 @@ function createClient() {
       return;
     }
     release();
+    element("auto-resolution").checked = false;
+    clearTimeout(autoResizeTimer);
+    autoResizeTimer = null;
     if (send({ type: "resize", width, height })) message("Resize requested; waiting for the server.");
   });
   listen(element("send-text"), "click", () => { if (!composing) typeText(textBox.value); });

@@ -90,7 +90,7 @@ pub struct Config {
     pub width: u32,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_HEIGHT", default_value_t = 720)]
     pub height: u32,
-    #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_FPS", default_value_t = 20)]
+    #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_FPS", default_value_t = 30)]
     pub fps: u32,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_QUALITY", default_value_t = 75)]
     pub quality: u8,

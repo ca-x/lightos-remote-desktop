@@ -10,8 +10,9 @@ This does not bootstrap Cage/Hyprland or the version-specific Aquamarine patch.
 
 The installer does not build, download, install packages, edit the original unit,
 or remove the Python launcher or `/opt/lightos/remote-desktop` payload. Use a
-reviewed local release executable. Current native transport is JPEG over
-WebSocket, **not H.264/zero-copy performance parity**. Audio, clipboard, Unicode,
+reviewed local release executable. Native video negotiates H.264/WebCodecs with
+SIMD JPEG fallback over WebSocket, **not hardware/zero-copy performance parity**.
+H.264 needs FFmpeg with libx264 and browser HTTPS/localhost support. Audio, clipboard, Unicode,
 resize and disconnect cleanup require separate real desktop verification.
 
 Native capture uses standard Wayland protocols/libwayshot, with **Cage/wlroots**

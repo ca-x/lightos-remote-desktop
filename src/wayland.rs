@@ -44,6 +44,7 @@ pub struct Frame {
     pub width: u32,
     pub height: u32,
     pub jpeg: Arc<[u8]>,
+    pub pixels: Arc<[u8]>,
     pub captured_at: Instant,
 }
 
@@ -353,7 +354,8 @@ fn run_capture(
     let mut encoder = turbojpeg::Compressor::new().context("initialize SIMD JPEG encoder")?;
     encoder.set_quality(i32::from(quality))?;
     encoder.set_subsamp(turbojpeg::Subsamp::Sub2x2)?;
-    let mut previous_pixels = None;
+    let mut previous_pixels: Arc<[u8]> = Arc::from([]);
+    let mut previous_dimensions = (0, 0);
     let mut previous_jpeg: Arc<[u8]> = Arc::from([]);
     while !shared.stopped.load(Ordering::Acquire) {
         let started = Instant::now();
@@ -387,7 +389,9 @@ fn run_capture(
             let _ = socket.shutdown(Shutdown::Both);
         }
         let rgba = image.to_rgba8();
-        let changed = previous_pixels.as_ref() != Some(&rgba);
+        let dimensions = (rgba.width(), rgba.height());
+        let changed = previous_dimensions != dimensions
+            || previous_pixels.as_ref() != rgba.as_raw().as_slice();
         if changed {
             previous_jpeg = encoder
                 .compress_to_vec(turbojpeg::Image {
@@ -402,13 +406,17 @@ fn run_capture(
         if shared.stopped.load(Ordering::Acquire) {
             break;
         }
+        if changed {
+            previous_pixels = rgba.into_raw().into();
+            previous_dimensions = dimensions;
+        }
         let frame = Arc::new(Frame {
-            width: rgba.width(),
-            height: rgba.height(),
+            width: dimensions.0,
+            height: dimensions.1,
             jpeg: previous_jpeg.clone(),
+            pixels: previous_pixels.clone(),
             captured_at,
         });
-        previous_pixels = Some(rgba);
         publish_frame(shared, frame, changed);
         if first {
             ready.send(Ok(()))?;
@@ -748,6 +756,7 @@ mod tests {
             width: 1,
             height: 1,
             jpeg: Arc::from([]),
+            pixels: Arc::from([]),
             captured_at: Instant::now(),
         });
         publish_frame(&backend.shared, frame, false);
@@ -761,6 +770,7 @@ mod tests {
                 width: 1,
                 height: 1,
                 jpeg: Arc::from([]),
+                pixels: Arc::from([]),
                 captured_at,
             })
         });

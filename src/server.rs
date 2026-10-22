@@ -32,6 +32,7 @@ use tokio::{
 use crate::{
     config::Config,
     session::Session,
+    video::H264Encoder,
     wayland::{Backend, InputCommand},
 };
 
@@ -183,7 +184,7 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
             StatusCode::SERVICE_UNAVAILABLE
         },
         axum::Json(
-            json!({"native":true,"ready":ready,"pid":std::process::id(),"transport":"jpeg-websocket"}),
+            json!({"native":true,"ready":ready,"pid":std::process::id(),"transport":"websocket","video_codecs":["h264","jpeg"]}),
         ),
     )
 }
@@ -275,7 +276,7 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
         .and_then(|session| session.audio_source.clone());
     let audio_available = state.config.audio && audio_source.is_some();
     let ready = Message::Text(
-        json!({"type":"ready","width":width,"height":height,"audio":audio_available,"frame_ack":true})
+        json!({"type":"ready","width":width,"height":height,"audio":audio_available,"frame_ack":true,"frame_ids":true,"video_codecs":["h264","jpeg"]})
             .to_string()
             .into(),
     );
@@ -289,6 +290,11 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
     let mut audio_buffer = vec![0_u8; 3840];
     let mut first_frame = true;
     let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
+    let mut h264 = false;
+    let mut encoder: Option<H264Encoder> = None;
+    let mut codec = None;
+    let video_started = std::time::Instant::now();
+    let mut frame_id = 0_u64;
     let transmit = async {
         loop {
             let outgoing = tokio::select! {
@@ -297,10 +303,47 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
                     if changed.is_err() { break; }
                     let frame = frames.borrow_and_update().clone();
                     let Some(frame) = frame else { break; };
-                    let mut packet = Vec::with_capacity(frame.jpeg.len() + 1);
-                    packet.push(1);
-                    packet.extend_from_slice(&frame.jpeg);
-                    pacing_tx.send_modify(|flow| { flow.pending = flow.enabled; });
+                    let mut packet = None;
+                    if h264 {
+                        let result = async {
+                            if encoder.as_ref().is_none_or(|encoder| (encoder.width, encoder.height) != (frame.width, frame.height)) {
+                                encoder = Some(H264Encoder::new(frame.width, frame.height, state.config.fps)?);
+                                codec = None;
+                            }
+                            encoder.as_mut().ok_or_else(|| anyhow::anyhow!("encoder missing"))?.encode(&frame.pixels).await
+                        }.await;
+                        match result {
+                            Ok(encoded) => {
+                                if let Some(configuration) = encoded.codec
+                                    && codec.as_ref() != Some(&configuration) {
+                                        let message = Message::Text(json!({"type":"video_config","codec":configuration,"width":frame.width,"height":frame.height}).to_string().into());
+                                        if !matches!(timeout(Duration::from_secs(3), writer.send(message)).await, Ok(Ok(()))) { break; }
+                                        codec = Some(configuration);
+                                }
+                                let mut bytes = Vec::with_capacity(encoded.data.len() + 10);
+                                bytes.extend_from_slice(&[3, u8::from(encoded.key)]);
+                                bytes.extend_from_slice(&(video_started.elapsed().as_micros() as u64).to_le_bytes());
+                                bytes.extend_from_slice(&encoded.data);
+                                packet = Some(bytes);
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "H.264 unavailable; falling back to JPEG");
+                                encoder.take(); h264 = false; codec = None;
+                                let message = Message::Text(json!({"type":"video_config","codec":"jpeg"}).to_string().into());
+                                if !matches!(timeout(Duration::from_secs(3), writer.send(message)).await, Ok(Ok(()))) { break; }
+                            }
+                        }
+                    }
+                    let packet = packet.unwrap_or_else(|| {
+                        let mut packet = Vec::with_capacity(frame.jpeg.len() + 1);
+                        packet.push(1); packet.extend_from_slice(&frame.jpeg); packet
+                    });
+                    frame_id += 1;
+                    pacing_tx.send_modify(|flow| { flow.pending = flow.enabled; flow.pending_id = frame_id; });
+                    if pacing.borrow().sequenced {
+                        let metadata = Message::Text(json!({"type":"frame_id","id":frame_id}).to_string().into());
+                        if !matches!(timeout(Duration::from_secs(3), writer.send(metadata)).await, Ok(Ok(()))) { break; }
+                    }
                     Some(Message::Binary(packet.into()))
                 }
                 changed = pacing.changed() => {
@@ -322,6 +365,18 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
                 incoming = controls.recv() => {
                     match incoming {
                         Some(text) => {
+                            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
+                                && value.get("type").and_then(|kind| kind.as_str()) == Some("video")
+                            {
+                                h264 = value.get("codec").and_then(|codec| codec.as_str()) == Some("h264") && pacing.borrow().sequenced;
+                                encoder.take(); codec = None; first_frame = true;
+                                pacing_tx.send_modify(|flow| { flow.pending = false; });
+                                if !h264 {
+                                    let message = Message::Text(json!({"type":"video_config","codec":"jpeg"}).to_string().into());
+                                    if !matches!(timeout(Duration::from_secs(3), writer.send(message)).await, Ok(Ok(()))) { break; }
+                                }
+                                continue;
+                            }
                             match handle_command(&state, &text, &mut audio, audio_source.as_deref()).await {
                                 Ok(response) => response,
                                 Err(error) => Some(error_message(&error.to_string())),
@@ -354,6 +409,8 @@ async fn connection(socket: WebSocket, state: AppState, _lease: ControllerLease)
 struct VideoFlow {
     enabled: bool,
     pending: bool,
+    sequenced: bool,
+    pending_id: u64,
 }
 
 impl VideoFlow {
@@ -392,13 +449,21 @@ async fn receive_commands(
                                 flow.enabled =
                                     value.get("enabled").and_then(|enabled| enabled.as_bool())
                                         == Some(true);
+                                flow.sequenced =
+                                    value.get("sequenced").and_then(|enabled| enabled.as_bool())
+                                        == Some(true);
                                 flow.pending = false;
                             });
                             continue;
                         }
                         Some("frame_ack") => {
                             pacing.send_modify(|flow| {
-                                flow.pending = false;
+                                if !flow.sequenced
+                                    || value.get("id").and_then(|id| id.as_u64())
+                                        == Some(flow.pending_id)
+                                {
+                                    flow.pending = false;
+                                }
                             });
                             continue;
                         }
@@ -634,6 +699,7 @@ mod tests {
         let (pacing, state) = watch::channel(VideoFlow {
             enabled: true,
             pending: true,
+            ..VideoFlow::default()
         });
         assert!(state.borrow().waiting());
         let reader =
@@ -641,6 +707,28 @@ mod tests {
         receive_commands(reader, input, controls, pacing).await;
         assert!(!state.borrow().waiting());
         assert!(state.borrow().enabled);
+    }
+
+    #[tokio::test]
+    async fn stale_jpeg_ack_cannot_release_a_new_h264_keyframe() {
+        let (input, _) = mpsc::channel(1);
+        let (controls, _) = mpsc::channel(1);
+        let (pacing, state) = watch::channel(VideoFlow {
+            enabled: true,
+            pending: true,
+            sequenced: true,
+            pending_id: 2,
+        });
+        let reader = futures_util::stream::iter([Ok(Message::Text(
+            "{\"type\":\"frame_ack\",\"id\":1}".into(),
+        ))]);
+        receive_commands(reader, input.clone(), controls.clone(), pacing.clone()).await;
+        assert!(state.borrow().waiting());
+        let reader = futures_util::stream::iter([Ok(Message::Text(
+            "{\"type\":\"frame_ack\",\"id\":2}".into(),
+        ))]);
+        receive_commands(reader, input, controls, pacing).await;
+        assert!(!state.borrow().waiting());
     }
 
     #[tokio::test]

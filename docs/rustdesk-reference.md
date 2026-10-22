@@ -1,6 +1,7 @@
 # RustDesk transport reference
 
 Read-only source investigation of `/home/czyt/code/rust/rustdesk` on 2026-10-22.
+Checkout HEAD: `bd9262397208c509ea97af61f0d44621ef25611c`.
 No RustDesk source is copied into this project (RustDesk is AGPL-licensed).
 
 - `libs/scrap/src/common/codec.rs`: negotiated VP9/VP8/AV1 and hardware codec
@@ -22,8 +23,8 @@ No RustDesk source is copied into this project (RustDesk is AGPL-licensed).
 
 Our independently implemented first improvements are bounded video credits,
 independent input processing, unchanged-image suppression, a local browser cursor,
-and SIMD JPEG. A further H.264 path must preserve prediction dependencies:
+and SIMD JPEG. The added H.264/WebCodecs path preserves prediction dependencies:
 drop unencoded capture frames, not arbitrary encoded P-frames. Resolution changes
-and reconnects need a fresh encoder/keyframe. Browser WebCodecs support must be
+and reconnects use a fresh encoder/keyframe. Browser WebCodecs support is
 checked, with JPEG retained when it is unavailable. Adaptive bitrate and GPU
 zero-copy are distinct follow-on work, not achieved merely by enabling H.264.

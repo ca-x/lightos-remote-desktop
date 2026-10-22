@@ -153,3 +153,73 @@ fn jpeg_encoder_benchmark() {
         times[28]
     );
 }
+
+#[tokio::test]
+#[ignore = "requires representative desktop JPEG and ffmpeg/libx264; compares simulated small desktop updates"]
+async fn desktop_video_codec_bandwidth_comparison() {
+    use lightos_remote_desktop::video::H264Encoder;
+    let path = std::env::var("LIGHTOS_REMOTE_DESKTOP_BENCHMARK_IMAGE").unwrap();
+    let mut rgba = image::load_from_memory(&std::fs::read(path).unwrap())
+        .unwrap()
+        .to_rgba8();
+    let mut h264 = H264Encoder::new(rgba.width(), rgba.height(), 30).unwrap();
+    let mut jpeg = turbojpeg::Compressor::new().unwrap();
+    jpeg.set_quality(75).unwrap();
+    jpeg.set_subsamp(turbojpeg::Subsamp::Sub2x2).unwrap();
+    let mut stream = Vec::new();
+    let mut jpeg_bytes = 0;
+    for index in 0..30 {
+        for row in 100..120 {
+            for column in 100..180 {
+                rgba.put_pixel(column, row, image::Rgba([index * 8, 150, 60, 255]));
+            }
+        }
+        stream.extend(h264.encode(rgba.as_raw()).await.unwrap().data);
+        jpeg_bytes += jpeg
+            .compress_to_vec(turbojpeg::Image {
+                pixels: rgba.as_raw().as_slice(),
+                width: rgba.width() as usize,
+                height: rgba.height() as usize,
+                pitch: rgba.width() as usize * 4,
+                format: turbojpeg::PixelFormat::RGBA,
+            })
+            .unwrap()
+            .len();
+    }
+    println!(
+        "30 simulated desktop updates: JPEG={jpeg_bytes} bytes, H.264={} bytes, ratio={:.2}",
+        stream.len(),
+        jpeg_bytes as f64 / stream.len() as f64
+    );
+    let mut decoder = std::process::Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "h264",
+            "-i",
+            "pipe:0",
+            "-f",
+            "null",
+            "-",
+            "-progress",
+            "pipe:1",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        decoder.stdin.take().unwrap().write_all(&stream).unwrap();
+    }
+    let decoded = decoder.wait_with_output().unwrap();
+    assert!(
+        decoded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&decoded.stderr)
+    );
+    assert!(String::from_utf8_lossy(&decoded.stdout).contains("frame=30"));
+}

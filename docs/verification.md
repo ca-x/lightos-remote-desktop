@@ -5,9 +5,12 @@ implementation, not complete Selkies or Omarchy feature parity.
 
 ## Automated checks
 
-- Rust unit suite: 24 passed; one ten-second timeout test is explicitly ignored
-  by default and was also run separately, passing in approximately 10.1 seconds.
-- Frontend: 16 dependency-free Node tests passed.
+- Rust unit suite: 29 passed; compositor timeout and FFmpeg integration tests
+  are ignored by default. Both have been run separately; the encoder produces
+  an initial keyframe followed by predictive output without lookahead.
+- Frontend: 22 dependency-free Node tests passed.
+- Embedded CLI installer: fixture verifies dry-run, source-tree-independent
+  self-staging, preserved Python unit/environment and transaction rollback.
 - Migration installer: 40 behaviors passed with isolated filesystems and mocked
   systemd. Compatibility installer: 13 behaviors passed.
 - `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`,
@@ -60,7 +63,7 @@ was not performed on the production service.
 - `/healthz`: native=true, ready=true; systemd active/running and NRestarts=0 at
   verification. Health PID matched MainPID.
 - Running binary SHA256:
-  `96072eb730d01cd3a3fd24a8cb7c6e4b4c774a104e445db8b24af0564d74e60d`.
+  `b789e488d5f3403701e2bb02134cf12589080c0f7c51937c2950e76a2e6d76f3`.
   It matched the local release artifact.
 - Managed override: `/etc/systemd/system/lightos-remote-desktop.service.d/90-native.conf`.
 - Private Aquamarine library provisioned with license/receipt; system library
@@ -74,7 +77,9 @@ was not performed on the production service.
 
 ## Remaining limits
 
-JPEG/PCM bandwidth and CPU behavior differ from H.264/Opus. Microphone uplink,
+Video now negotiates CPU H.264/WebCodecs with SIMD JPEG fallback; audio remains
+PCM rather than Opus. Hardware video encoding, DMA-BUF zero-copy, RustDesk-style
+adaptive bitrate and remote cursor-shape streaming are not implemented. Microphone uplink,
 image clipboard, file transfer, gamepads, multi-monitor control and full Omarchy
 desktop provisioning are not implemented. The actual external LightOS gateway
 was not independently exercised; tests covered its preserved local URL prefix
@@ -112,3 +117,57 @@ security boundary or a mirror of the physical display.
 After the user renewed `gh` authentication, the private repository was created
 at https://github.com/ca-x/lightos-remote-desktop. SSH authentication succeeds
 when bypassing the unavailable configured local proxy.
+
+## Latency and immersive controls
+
+- The original connection loop awaited large video writes before processing
+  input. Input now has an independent receiver; a regression test delivers
+  mouse motion/press/release while the control writer is not draining.
+- A real candidate switched workspace in approximately 53.9 ms with its video
+  render acknowledgement deliberately withheld. This is local input-to-compositor
+  observation, not browser-to-screen latency over an external network.
+- A representative 1280x720 desktop JPEG benchmark (30 encodes, quality 75)
+  measured legacy p50 14.55 ms versus SIMD p50 1.73 ms. Encoded sizes were
+  142,788 versus 107,544 bytes. It does not measure total application latency.
+- Thirty simulated small-area changes over a real desktop background produced
+  3,234,719 JPEG bytes versus 311,551 H.264 bytes (10.38x smaller). The complete
+  concatenated predictive stream decoded to 30 frames with FFmpeg. This is a
+  bounded synthetic workload, not a general bandwidth or WAN performance claim.
+- Unchanged captures refresh health without repeatedly encoding or sending
+  video. Pointer moves coalesce per animation frame, but clicks/releases are
+  never throttled; the final move is flushed before a click/release. The browser
+  renders a local pointer rather than a cursor baked into delayed video.
+- Chrome rendered actual VideoFrame outputs (30 observed, no JPEG draws in the
+  instrumented H.264 window), decoded 800x600 then 1280x720 after resize, and
+  fell back to JPEG when VideoDecoder was deliberately unavailable.
+- Full-page canvas and right floating icon controls were inspected at desktop
+  and 375px widths without page overflow. Native 1:1 mode retained 1280 CSS
+  pixels, fit mode scaled the canvas, and real browser fullscreen contained
+  the floating toolbar. Selected mode and tooltip labels have accessible names.
+- A user screenshot exposed that max-width/max-height alone did not upscale
+  small desktops. The corrected CSS uses explicit viewport/aspect sizing:
+  a 2400x1350 frame displays at 2800x1575 in a 2800x1600 viewport, including
+  fullscreen. Both small and larger-than-source viewports must be checked.
+- Browser-follow resolution defaults on, is debounced 250 ms, uses bounded even
+  CSS-pixel dimensions, and turns off for manual resolution/1:1 mode. A real
+  2400x1350 browser automatically received a 2400x1350 H.264 desktop. No physical
+  display resolution is changed. DPR is not multiplied into encoding size.
+- Independent review caught a stale JPEG ACK potentially releasing a new H.264
+  keyframe. Negotiated monotonic frame IDs now bind each ACK to its video packet;
+  IDs survive async decode and codec changes. Targeted regressions passed and
+  the reviewer found no remaining blocking issue in that fix. The local pointer
+  deliberately does not reproduce remote text/resize/busy cursor shapes.
+
+## Self-installation and automated binary builds
+
+The installed update was activated with the binary's own `install-service`
+command, not the source shell entry point. MainPID was stable, health ready
+and restart count zero afterward. Original configuration/payload remain intact.
+
+GitHub Actions run 39706988219 passed tests and the Ubuntu 22.04 Linux x86_64
+build. Its archive/checksum were downloaded, verified and the built executable
+ran `--version` and `install-service --dry-run` on this Arch host. libjpeg-turbo
+is statically bundled; remaining native system dependencies were resolved.
+Tagged `v*` builds have a release-publishing job; no tag/release is claimed to
+have been created solely by this verification. Subsequent H.264 changes require
+their own final CI run.

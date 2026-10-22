@@ -16,13 +16,22 @@ does not embed CPython or invoke the original Selkies Python launcher.
   an existing `lightos-remote-desktop.service`.
 
 **This is an initial native implementation, not complete Selkies parity.**
-Video currently uses CPU JPEG frames, not H.264, DMA-BUF zero-copy or hardware
-video encoding. Audio uses stereo PCM, not Opus. Microphone uplink, image
+Video negotiates low-latency H.264 through FFmpeg/libx264 and browser WebCodecs,
+with SIMD JPEG fallback when WebCodecs/encoding is unavailable. WebCodecs needs
+a secure browser context (HTTPS or localhost); H.264 requires even dimensions.
+The default capture cap is 30 FPS. This is CPU encoding, not DMA-BUF zero-copy
+or hardware video encoding. Audio uses stereo PCM, not Opus. Microphone uplink, image
 clipboard, file transfer, gamepads and multi-monitor control are not implemented.
 Do not assume equivalent bandwidth or latency; benchmark your deployment.
 Capture currently uses one short-lived connection per frame to contain
 libwayshot 0.9 protocol-object lifetime defects observed during real resize
 tests. This bounds resources but adds per-frame protocol setup overhead.
+Unchanged images are not repeatedly encoded or transmitted. Each browser
+acknowledges rendered frames; input is processed independently of video writes.
+H.264 samples the latest raw frame only when video credit is available, so it
+does not discard predictive frames after encoding. Reconnect and resolution
+changes create a fresh encoder/keyframe. RustDesk-inspired adaptive bitrate,
+GPU capture and remote cursor-shape streaming are not implemented.
 
 ## Build and test
 
@@ -53,8 +62,10 @@ The desktop fills the page. The right-hand icon opens floating controls;
 icon tooltips and keyboard focus labels identify actions. Display modes are
 fit-to-window, configured resolution at 1:1 with scrolling, and browser fullscreen.
 Fullscreen preserves the floating controls; Escape restores the preceding window
-mode. Display scaling does not change the remote resolution; use its settings
-to change that separately. Clipboard and resolution fields are tucked away.
+mode. Browser-follow resolution defaults on, matching the viewport in bounded
+even CSS-pixel dimensions after a 250 ms debounce. Manual resolution or 1:1 mode
+disables following. With following disabled, display scaling alone does not
+change remote resolution. Clipboard and resolution fields are tucked away.
 
 Use a current stable Rust toolchain. Native linking requires Wayland,
 libxkbcommon and libturbojpeg 3+. Alternatively build with `--features bundled-jpeg`
