@@ -32,9 +32,9 @@
 **Files:** create `crates/stream-scheduler/src/qos.rs`; modify `crates/stream-scheduler/src/lib.rs`.
 **Interfaces:** produce `RateTarget { fps, quality_percent }`, `FrameScheduler::target`, `next_frame_at`, `tick`, `qos_summary`, `set_quality_scalable`; retain existing configure/ACK/window APIs. Observe sent-at/ACK-at Instants. Samples spaced at least 500ms; FPS cap validated by existing constructor. Strategies set excess-delay threshold (100/150/220/150ms), minimum auto FPS min(5, cap), Quality first min(2, cap). Encoder budget factor bounded20..100%; quality cuts cooldown2s; recovery requires consecutive clean feedback. Baseline uses20 recent fresh samples; only settled floors may rise gradually.
 
-- [ ] Write deterministic failing tests for the spec's feedback/pacing/reset scenarios.
-- [ ] Implement minimal policy independent of codecs and sockets, preserving old window behavior.
-- [ ] Run scheduler tests; commit and push.
+- [x] Write deterministic failing tests for the spec's feedback/pacing/reset scenarios.
+- [x] Implement minimal policy independent of codecs and sockets, preserving old window behavior.
+- [x] Run scheduler tests; commit and push.
 
 ### Task 2: Real persistent encoder rate updates
 

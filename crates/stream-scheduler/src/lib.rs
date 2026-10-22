@@ -1,4 +1,8 @@
 //! Network pacing and latency measurements, independent of codec and platform.
+mod qos;
+use qos::AdaptiveRate;
+pub use qos::RateTarget;
+
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -41,6 +45,7 @@ pub enum SchedulingStrategy {
     Auto,
     LowLatency,
     Smooth,
+    QualityFirst,
 }
 
 #[derive(Clone)]
@@ -53,6 +58,8 @@ pub struct FrameScheduler {
     frame_interval: Duration,
     dimensions: Option<(u32, u32)>,
     ack_samples: LatencySamples,
+    qos: AdaptiveRate,
+    last_sent: Option<Instant>,
 }
 
 impl Default for FrameScheduler {
@@ -66,6 +73,8 @@ impl Default for FrameScheduler {
             frame_interval: Duration::from_secs_f64(1.0 / 30.0),
             dimensions: None,
             ack_samples: LatencySamples::default(),
+            qos: AdaptiveRate::new(30, SchedulingStrategy::Auto),
+            last_sent: None,
         }
     }
 }
@@ -75,6 +84,7 @@ impl FrameScheduler {
         anyhow::ensure!((1..=120).contains(&fps), "invalid scheduling frame rate");
         Ok(Self {
             frame_interval: Duration::from_secs_f64(1.0 / f64::from(fps)),
+            qos: AdaptiveRate::new(fps, SchedulingStrategy::Auto),
             ..Self::default()
         })
     }
@@ -103,6 +113,41 @@ impl FrameScheduler {
         self.ack_samples.summary()
     }
 
+    pub fn set_quality_scalable(&mut self, scalable: bool) {
+        self.qos.set_quality_scalable(scalable);
+    }
+    pub fn target(&self) -> RateTarget {
+        if self.enabled && self.sequenced {
+            self.qos.target()
+        } else {
+            RateTarget {
+                fps: (1.0 / self.frame_interval.as_secs_f64()).round() as u32,
+                quality_percent: 100,
+            }
+        }
+    }
+    pub fn next_frame_at(&self) -> Option<Instant> {
+        self.last_sent
+            .map(|at| at + Duration::from_secs_f64(1.0 / f64::from(self.target().fps)))
+    }
+    pub fn qos_summary(&self) -> serde_json::Value {
+        let mut summary = self.qos.summary();
+        summary["enabled"] = json!(self.enabled && self.sequenced);
+        summary["target"] = json!(self.target());
+        summary
+    }
+    pub fn tick(&mut self, now: Instant) {
+        if self.enabled
+            && self.sequenced
+            && self
+                .pending
+                .front()
+                .is_some_and(|(_, at)| now.saturating_duration_since(*at) > Duration::from_secs(2))
+        {
+            self.qos.stall(now);
+        }
+    }
+
     pub fn waiting(&self) -> bool {
         self.enabled && self.pending.len() >= self.window
     }
@@ -111,6 +156,8 @@ impl FrameScheduler {
         self.pending.clear();
         self.window = 1;
         self.dimensions = None;
+        self.last_sent = None;
+        self.qos.reset(self.strategy);
     }
 
     pub fn begin_frame(&mut self, dimensions: (u32, u32)) {
@@ -121,6 +168,7 @@ impl FrameScheduler {
     }
 
     pub fn sent(&mut self, id: u64, now: Instant) {
+        self.last_sent = Some(now);
         if self.enabled {
             self.pending.push_back((id, now));
         }
@@ -137,14 +185,18 @@ impl FrameScheduler {
         if let Some(index) = index {
             let elapsed = now.saturating_duration_since(self.pending[index].1);
             self.ack_samples.record(elapsed);
+            if self.enabled && self.sequenced {
+                self.qos.observe(self.pending[index].1, now);
+            }
             self.pending.drain(..=index);
             self.window = match (self.sequenced, self.strategy) {
                 (false, _) | (_, SchedulingStrategy::LowLatency) => 1,
                 (true, SchedulingStrategy::Smooth) => 3,
-                (true, SchedulingStrategy::Auto) => elapsed
+                (true, SchedulingStrategy::Auto | SchedulingStrategy::QualityFirst) => elapsed
                     .as_nanos()
                     .div_ceil(self.frame_interval.as_nanos())
-                    .clamp(1, 3) as usize,
+                    .clamp(1, 3)
+                    as usize,
             };
         }
     }
