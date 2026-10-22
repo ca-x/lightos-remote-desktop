@@ -1,22 +1,24 @@
 //! Encoder implementations and runtime availability, independent of capture and network policy.
 mod jpeg;
 mod openh264;
+mod selection;
+pub use selection::{BackendPreference, EncoderBackend, choose_h264_backend};
 
 use anyhow::{Context, Result};
 use futures_util::future::BoxFuture;
 pub use jpeg::encode_jpeg;
 pub use openh264::{EncodedFrame, H264Encoder};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum VideoCodec {
     H264,
     Jpeg,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct EncoderSettings {
     pub width: u32,
     pub height: u32,
@@ -24,7 +26,7 @@ pub struct EncoderSettings {
     pub quality: u8,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EncoderRate {
     pub bitrate_bps: u32,
     pub fps: u32,
@@ -52,6 +54,8 @@ pub struct CodecCapability {
     pub reason: Option<String>,
     pub dynamic_quality: bool,
     pub dynamic_bitrate: bool,
+    pub codec_string: Option<String>,
+    pub rate_update: &'static str,
 }
 
 pub trait VideoEncoder: Send {
@@ -160,6 +164,7 @@ impl EncoderFactory for SoftwareEncoders {
                         !encoded.data.is_empty() && encoded.key,
                         "codec test frame is not independently decodable"
                     );
+                    let codec_string = encoded.codec.clone();
                     let dynamic_bitrate = if codec == VideoCodec::H264 {
                         if encoder
                             .set_rate(EncoderRate {
@@ -175,7 +180,7 @@ impl EncoderFactory for SoftwareEncoders {
                     } else {
                         false
                     };
-                    Ok::<_, anyhow::Error>(dynamic_bitrate)
+                    Ok::<_, anyhow::Error>((dynamic_bitrate, codec_string))
                 })
                 .await
                 .context("codec probe timed out")
@@ -185,7 +190,16 @@ impl EncoderFactory for SoftwareEncoders {
                     backend,
                     hardware: false,
                     available: result.is_ok(),
-                    dynamic_bitrate: result.as_ref().is_ok_and(|supported| *supported),
+                    dynamic_bitrate: result.as_ref().is_ok_and(|(supported, _)| *supported),
+                    codec_string: result
+                        .as_ref()
+                        .ok()
+                        .and_then(|(_, profile)| profile.clone()),
+                    rate_update: if codec == VideoCodec::H264 {
+                        "live"
+                    } else {
+                        "none"
+                    },
                     reason: result.err().map(|e| format!("{e:#}")),
                     dynamic_quality,
                 });
