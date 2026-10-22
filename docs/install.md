@@ -310,13 +310,14 @@ systemd activation or native desktop behavior.
 
 ## Persistent desktop session
 
-Version 0.1.6 installs an independent `lightos-remote-desktop-session.service`
-and a `95-session.conf` transport drop-in. The session unit uses the same named
-non-root user as the existing service and retains normal `KillMode=control-group`
+For virtual-desktop deployments, version 0.1.6 installs an independent `lightos-remote-desktop-session.service`
+and a `95-session.conf` transport drop-in. The session unit uses the same
+non-root user (named or numeric UID) as the existing service and retains normal `KillMode=control-group`
 cleanup. The transport requires the session service but the session has no
 `PartOf`/`BindsTo` relationship back to the transport. Updating or restarting the
 transport therefore leaves the desktop's cgroup alive. Both managed files are
-included in installer transaction snapshots and rollback.
+included in installer transaction snapshots and rollback. Existing attached
+physical-desktop deployments omit the owner unit and persistent-runtime override.
 
 The owner uses `/run/lrd-session` (0700) and atomically publishes `session.json`
 (0600) after desktop startup. Attachment checks descriptor protocol, process

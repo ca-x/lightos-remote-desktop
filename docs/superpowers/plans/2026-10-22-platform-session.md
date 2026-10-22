@@ -43,3 +43,5 @@ Architecture: platform-detect reads OS identity and installed desktop capabiliti
 - Final review: fixed installed physical-attachment regression and missing D-Bus state propagation. Both regression tests observed RED on the reviewed implementation, then GREEN after fixes; whole workspace and Clippy passed. Also fixed effective User/drop-in/numeric-UID staging compatibility with a dedicated fixture.
 - Native Lua reload now exercised in the isolated live test; Ghostty remained mapped with the same PID after both transport generations and config reload. No config errors; 225 native bindings.
 - Deployment authentication: noninteractive sudo requires a password; pkexec has no registered authentication agent. Prepare a desktop-terminal sudo/systemd-run update so the installer runs outside the service it replaces.
+
+- Ruling: the user explicitly authorized merging based on local tests. GitHub runners remain queued; merge uses passing local workspace/bundled tests, frontend tests, Clippy, installer fixtures and live Ghostty/config-reload verification, while reporting remote CI as pending.
