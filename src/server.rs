@@ -5,7 +5,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use stream_scheduler::{FrameScheduler, LatencySamples, SchedulingStrategy};
+use stream_scheduler::{FrameScheduler, LatencySamples, RateTarget, SchedulingStrategy};
 
 use axum::{
     Router,
@@ -25,7 +25,8 @@ use display_control::{
 };
 use futures_util::{SinkExt, Stream, StreamExt, stream::SplitSink};
 use media_codec::{
-    CodecCapability, EncoderFactory, EncoderSettings, SoftwareEncoders, VideoCodec, VideoEncoder,
+    CodecCapability, EncoderFactory, EncoderRate, EncoderSettings, SoftwareEncoders, VideoCodec,
+    VideoEncoder,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -682,10 +683,17 @@ async fn connection(
         elapsed_ms = connection_started.elapsed().as_millis() as u64,
         "desktop ready sent"
     );
+    pacing_tx.send_modify(|flow| flow.set_quality_scalable(state.config.quality > 20));
+    let h264_dynamic_rate = codec_capabilities
+        .iter()
+        .any(|c| c.codec == VideoCodec::H264 && c.available && c.dynamic_bitrate);
     let mut audio = None;
     let mut audio_buffer = vec![0_u8; 3840];
     let mut first_frame = true;
     let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
+    let mut qos_ticks = tokio::time::interval(Duration::from_millis(250));
+    let mut applied_rate = None;
+    let mut applied_jpeg_quality = None;
     let mut h264 = false;
     let mut encoder: Option<Box<dyn VideoEncoder>> = None;
     let mut codec = None;
@@ -696,14 +704,20 @@ async fn connection(
     let mut send_samples = LatencySamples::default();
     let transmit = async {
         loop {
+            let frame_deadline = pacing.borrow().next_frame_at();
             let outgoing = tokio::select! {
-                changed = async { if !first_frame { frames.changed().await } else { Ok(()) } }, if !pacing.borrow().waiting() => {
+                changed = async {
+                    if let Some(deadline) = frame_deadline { tokio::time::sleep_until(deadline.into()).await; }
+                    if !first_frame { frames.changed().await } else { Ok(()) }
+                }, if !pacing.borrow().waiting() => {
                     first_frame = false;
                     if changed.is_err() { break; }
                     let frame = frames.borrow_and_update().clone();
                     let Some(frame) = frame else { break; };
                     pacing_tx.send_modify(|flow| flow.begin_frame((frame.width, frame.height)));
+                    let target = pacing.borrow().target();
                     let encode_started = Instant::now();
+                    pacing_tx.send_modify(|flow| flow.frame_started(encode_started));
                     let mut packet = None;
                     if h264 {
                         let result = async {
@@ -711,14 +725,26 @@ async fn connection(
                                 encoder = Some(SoftwareEncoders.create(VideoCodec::H264, EncoderSettings {width:frame.width,height:frame.height,fps:state.config.fps,quality:state.config.quality})?);
                                 codec = None;
                             }
-                            encoder.as_mut().ok_or_else(|| anyhow::anyhow!("encoder missing"))?.encode(frame.pixels.clone()).await
+                            let encoder = encoder.as_mut().ok_or_else(|| anyhow::anyhow!("encoder missing"))?;
+                            let rate = encoder_rate(frame.width, frame.height, state.config.fps, target);
+                            if h264_dynamic_rate { encoder.set_rate(rate)?; }
+                            let encoded = encoder.encode(frame.pixels.clone()).await?;
+                            applied_rate = h264_dynamic_rate.then_some(rate);
+                            applied_jpeg_quality = None;
+                            Ok::<_, anyhow::Error>(encoded)
                         }.await;
                         match result {
                             Ok(encoded) => {
+                                if encoded.data.is_empty() {
+                                    // OpenH264 skipped this raw input to honor its
+                                    // bitrate. No predictive frame was produced.
+                                    encode_samples.record(encode_started.elapsed());
+                                    continue;
+                                }
                                 if let Some(configuration) = encoded.codec
                                     && codec.as_ref() != Some(&configuration) {
                                         let message = Message::Text(json!({"type":"video_config","codec":configuration,"width":frame.width,"height":frame.height}).to_string().into());
-                                        if !matches!(timeout(Duration::from_secs(3), writer.send(message)).await, Ok(Ok(()))) { break; }
+                                        if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(message)).await, Ok(Ok(()))) { break; }
                                         codec = Some(configuration);
                                 }
                                 let mut bytes = Vec::with_capacity(encoded.data.len() + 10);
@@ -731,15 +757,19 @@ async fn connection(
                                 tracing::warn!(%error, "H.264 unavailable; falling back to JPEG");
                                 pacing_tx.send_modify(FrameScheduler::reset);
                                 encoder.take(); h264 = false; codec = None;
+                                applied_rate = None;
+                                pacing_tx.send_modify(|flow| flow.set_quality_scalable(state.config.quality > 20));
                                 let message = Message::Text(json!({"type":"video_config","codec":"jpeg"}).to_string().into());
-                                if !matches!(timeout(Duration::from_secs(3), writer.send(message)).await, Ok(Ok(()))) { break; }
+                                if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(message)).await, Ok(Ok(()))) { break; }
                             }
                         }
                     }
                     let packet = match packet {
                         Some(packet) => packet,
                         None => {
-                            let quality = state.config.quality;
+                            let quality = jpeg_quality(state.config.quality, pacing.borrow().target().quality_percent);
+                            applied_jpeg_quality = Some(quality);
+                            applied_rate = None;
                             let jpeg = match tokio::task::spawn_blocking(move || frame.jpeg(quality)).await {
                                 Ok(Ok(jpeg)) => jpeg,
                                 result => {
@@ -755,10 +785,18 @@ async fn connection(
                     pacing_tx.send_modify(|flow| flow.sent(frame_id, Instant::now()));
                     if pacing.borrow().sequenced() {
                         let metadata = Message::Text(json!({"type":"frame_id","id":frame_id}).to_string().into());
-                        if !matches!(timeout(Duration::from_secs(3), writer.send(metadata)).await, Ok(Ok(()))) { break; }
+                        if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(metadata)).await, Ok(Ok(()))) { break; }
                     }
                     encode_samples.record(encode_started.elapsed());
                     Some(Message::Binary(packet.into()))
+                }
+                _ = qos_ticks.tick() => {
+                    pacing_tx.send_if_modified(|flow| {
+                        let before = flow.target();
+                        flow.tick(Instant::now());
+                        before != flow.target()
+                    });
+                    None
                 }
                 changed = pacing.changed() => {
                     if changed.is_err() { break; }
@@ -786,7 +824,8 @@ async fn connection(
                                 let flow = pacing.borrow();
                                 let message = Message::Text(json!({"type":"pong","id":id,"video_metrics":{
                                     "ack":flow.ack_summary(),"encode":encode_samples.summary(),"send":send_samples.summary(),
-                                    "in_flight":flow.in_flight(),"window":flow.window(),"strategy":flow.strategy()
+                                    "in_flight":flow.in_flight(),"window":flow.window(),"strategy":flow.strategy(),
+                                    "qos":flow.qos_summary(),"encoder_rate":applied_rate,"jpeg_quality":applied_jpeg_quality
                                 }}).to_string().into());
                                 drop(flow);
                                 Some(message)
@@ -796,10 +835,14 @@ async fn connection(
                             {
                                 h264 = value.get("codec").and_then(|codec| codec.as_str()) == Some("h264") && pacing.borrow().sequenced() && video_codecs.contains(&VideoCodec::H264);
                                 encoder.take(); codec = None; first_frame = true;
-                                pacing_tx.send_modify(FrameScheduler::reset);
+                                pacing_tx.send_modify(|flow| {
+                                    flow.reset();
+                                    flow.set_quality_scalable(if h264 { h264_dynamic_rate } else { state.config.quality > 20 });
+                                });
+                                applied_rate = None; applied_jpeg_quality = None;
                                 if !h264 {
                                     let message = Message::Text(json!({"type":"video_config","codec":"jpeg"}).to_string().into());
-                                    if !matches!(timeout(Duration::from_secs(3), writer.send(message)).await, Ok(Ok(()))) { break; }
+                                    if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(message)).await, Ok(Ok(()))) { break; }
                                 }
                                 continue;
                             }
@@ -817,7 +860,7 @@ async fn connection(
                 let video_packet = matches!(&message, Message::Binary(bytes) if matches!(bytes.first(), Some(1 | 3)));
                 let started = Instant::now();
                 if !matches!(
-                    timeout(Duration::from_secs(3), writer.send(message)).await,
+                    timeout(STREAM_WRITE_TIMEOUT, writer.send(message)).await,
                     Ok(Ok(()))
                 ) {
                     break;
@@ -848,6 +891,27 @@ async fn connection(
         writer,
         release_requested,
     })
+}
+
+// A transient slow link must not tear down an otherwise live desktop. Input
+// receive remains independently polled while a video write waits. A timed-out
+// write still closes the transport: a partial WS frame cannot be retried.
+const STREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn encoder_rate(width: u32, height: u32, cap: u32, target: RateTarget) -> EncoderRate {
+    let bitrate = u64::from(media_codec::default_bitrate(width, height))
+        * u64::from(target.quality_percent)
+        * u64::from(target.fps)
+        / (100 * u64::from(cap));
+    EncoderRate {
+        bitrate_bps: bitrate.max(1_000) as u32,
+        fps: target.fps,
+    }
+}
+fn jpeg_quality(configured: u8, percent: u32) -> u8 {
+    configured
+        .saturating_sub(((100 - percent.min(100)) / 2) as u8)
+        .max(configured.min(20))
 }
 
 async fn receive_commands(
@@ -1149,6 +1213,42 @@ mod tests {
         let html = std::str::from_utf8(&body).unwrap();
         assert!(html.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))));
         assert!(!html.contains("__LIGHTOS_VERSION__"));
+    }
+
+    #[test]
+    fn quality_first_rate_keeps_per_frame_budget_when_fps_falls() {
+        let full = encoder_rate(
+            1280,
+            720,
+            30,
+            stream_scheduler::RateTarget {
+                fps: 30,
+                quality_percent: 100,
+            },
+        );
+        let slow = encoder_rate(
+            1280,
+            720,
+            30,
+            stream_scheduler::RateTarget {
+                fps: 10,
+                quality_percent: 100,
+            },
+        );
+        let reduced = encoder_rate(
+            1280,
+            720,
+            30,
+            stream_scheduler::RateTarget {
+                fps: 30,
+                quality_percent: 50,
+            },
+        );
+        assert_eq!(full.bitrate_bps / 30, slow.bitrate_bps / 10);
+        assert_eq!(full.bitrate_bps / 2, reduced.bitrate_bps);
+        assert_eq!(jpeg_quality(75, 100), 75);
+        assert_eq!(jpeg_quality(75, 20), 35);
+        assert_eq!(jpeg_quality(10, 20), 10);
     }
 
     #[test]

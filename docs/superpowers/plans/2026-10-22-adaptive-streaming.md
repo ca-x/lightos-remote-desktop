@@ -50,10 +50,10 @@
 **Files:** modify `src/server.rs`; create `tests/adaptive_stream.rs` and a repeatable isolated benchmark runner under `scripts/`.
 **Interfaces:** consume tasks1/2; apply target rate before encoding; pace latest raw frames; expose QoS and applied codec rate in video_metrics. Tick stall controller independently of video credit. Bound established writes15s.
 
-- [ ] Capture 0.1.8 baseline artifact and run reproducible isolated moving-desktop/network scenario.
-- [ ] Write regression tests for rate mapping/transport behavior; integrate controls with no wire break for legacy clients.
-- [ ] Compare clean/constrained/recovery/interruption conditions and decode actual H.264 streams.
-- [ ] Run targeted protocol/input checks; commit and push.
+- [x] Capture 0.1.8 baseline artifact and run reproducible isolated moving-desktop/network scenario.
+- [x] Write regression tests for rate mapping/transport behavior; integrate controls with no wire break for legacy clients.
+- [x] Compare clean/constrained/recovery/interruption conditions and decode actual H.264 streams.
+- [x] Run targeted protocol/input checks; commit and push.
 
 ### Task 4: Quality option and persistent reconnect
 

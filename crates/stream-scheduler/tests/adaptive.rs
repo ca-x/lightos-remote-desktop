@@ -197,3 +197,38 @@ fn encoders_without_scalable_quality_still_control_fps() {
     assert_eq!(flow.target().quality_percent, 100);
     assert!(flow.target().fps < 30);
 }
+
+#[test]
+fn native_skips_are_paced_from_the_encode_attempt_without_consuming_credit() {
+    let mut flow = flow(SchedulingStrategy::Auto, 30);
+    let now = Instant::now();
+    flow.frame_started(now);
+    assert_eq!(flow.in_flight(), 0);
+    assert!(flow.next_frame_at().unwrap() >= now + Duration::from_millis(60));
+    flow.frame_started(now + Duration::from_secs(1));
+    assert!(flow.next_frame_at().unwrap() >= now + Duration::from_millis(1060));
+}
+#[test]
+fn strategies_have_different_queue_tolerance_and_quality_first_survives_stalls() {
+    for (strategy, reduced) in [
+        (SchedulingStrategy::LowLatency, true),
+        (SchedulingStrategy::Auto, true),
+        (SchedulingStrategy::Smooth, false),
+    ] {
+        let mut flow = flow(strategy, 30);
+        let mut clock = Instant::now();
+        warm(&mut flow, &mut clock);
+        for id in 6..=9 {
+            sample(&mut flow, id, &mut clock, 200);
+        }
+        assert_eq!(flow.target().quality_percent < 100, reduced);
+    }
+    let mut flow = flow(SchedulingStrategy::QualityFirst, 30);
+    let now = Instant::now();
+    flow.sent(1, now);
+    for secs in 3..=10 {
+        flow.tick(now + Duration::from_secs(secs));
+    }
+    assert_eq!(flow.target().quality_percent, 100);
+    assert_eq!(flow.target().fps, 2);
+}

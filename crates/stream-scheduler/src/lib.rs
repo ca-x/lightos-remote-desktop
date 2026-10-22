@@ -60,6 +60,7 @@ pub struct FrameScheduler {
     ack_samples: LatencySamples,
     qos: AdaptiveRate,
     last_sent: Option<Instant>,
+    last_started: Option<Instant>,
 }
 
 impl Default for FrameScheduler {
@@ -75,6 +76,7 @@ impl Default for FrameScheduler {
             ack_samples: LatencySamples::default(),
             qos: AdaptiveRate::new(30, SchedulingStrategy::Auto),
             last_sent: None,
+            last_started: None,
         }
     }
 }
@@ -126,8 +128,12 @@ impl FrameScheduler {
             }
         }
     }
+    pub fn frame_started(&mut self, now: Instant) {
+        self.last_started = Some(now);
+    }
     pub fn next_frame_at(&self) -> Option<Instant> {
-        self.last_sent
+        self.last_started
+            .or(self.last_sent)
             .map(|at| at + Duration::from_secs_f64(1.0 / f64::from(self.target().fps)))
     }
     pub fn qos_summary(&self) -> serde_json::Value {
@@ -157,6 +163,7 @@ impl FrameScheduler {
         self.window = 1;
         self.dimensions = None;
         self.last_sent = None;
+        self.last_started = None;
         self.qos.reset(self.strategy);
     }
 
