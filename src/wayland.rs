@@ -156,12 +156,30 @@ impl Frame {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InputCommand {
-    Move { x: f64, y: f64 },
-    Button { button: u32, pressed: bool },
-    Key { code: u32, pressed: bool },
-    Scroll { x: f64, y: f64 },
+    Move {
+        x: f64,
+        y: f64,
+    },
+    Button {
+        button: u32,
+        pressed: bool,
+    },
+    Key {
+        code: u32,
+        pressed: bool,
+    },
+    Scroll {
+        x: f64,
+        y: f64,
+    },
     Release,
-    Text { text: String },
+    #[serde(skip)]
+    ReleaseSync {
+        done: sync_mpsc::SyncSender<()>,
+    },
+    Text {
+        text: String,
+    },
 }
 
 impl InputCommand {
@@ -192,7 +210,7 @@ impl InputCommand {
                     "unsupported text control character"
                 );
             }
-            Self::Release => {}
+            Self::Release | Self::ReleaseSync { .. } => {}
         }
         Ok(())
     }
@@ -229,6 +247,14 @@ pub struct Backend {
 }
 
 impl Backend {
+    pub fn release_input(&self) -> bool {
+        let (done, completed) = sync_mpsc::sync_channel(1);
+        self.input
+            .try_send(InputCommand::ReleaseSync { done })
+            .is_ok()
+            && completed.recv_timeout(Duration::from_secs(1)).is_ok()
+    }
+
     pub fn frame_is_fresh(&self, max_age: Duration) -> bool {
         !self.shared.stopped.load(Ordering::Acquire)
             && self
@@ -722,6 +748,9 @@ impl Devices {
 
     fn command(&mut self, command: InputCommand) -> Result<()> {
         match command {
+            InputCommand::ReleaseSync { .. } => {
+                bail!("input release barrier requires a compositor roundtrip")
+            }
             InputCommand::Move { x, y } => {
                 ensure!(
                     x.is_finite() && y.is_finite(),
@@ -918,6 +947,11 @@ fn run_input(
         let mut last_sync = Instant::now();
         while !shared.stopped.load(Ordering::Acquire) {
             match receiver.try_recv().map(validated_input) {
+                Ok(Some(InputCommand::ReleaseSync { done })) => {
+                    devices.release();
+                    queue.roundtrip(&mut dispatch)?;
+                    let _ = done.send(());
+                }
                 Ok(Some(InputCommand::Text { text })) => {
                     devices.release();
                     let characters: Vec<char> = text.chars().collect();
@@ -964,6 +998,11 @@ fn run_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_barrier_cannot_be_requested_over_the_public_protocol() {
+        assert!(serde_json::from_str::<InputCommand>(r#"{"type":"release_sync"}"#).is_err());
+    }
 
     #[test]
     fn rotated_outputs_report_oriented_pixel_dimensions() {

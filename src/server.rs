@@ -20,7 +20,7 @@ use axum::{
     routing::get,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use futures_util::{SinkExt, Stream, StreamExt};
+use futures_util::{SinkExt, Stream, StreamExt, stream::SplitSink};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use subtle::ConstantTimeEq;
@@ -430,14 +430,7 @@ impl ControllerLease {
 impl Drop for ControllerLease {
     fn drop(&mut self) {
         self.state.audio_hub.stop();
-        if self.state.transient_backend
-            || self
-                .state
-                .backend
-                .input
-                .try_send(InputCommand::Release)
-                .is_err()
-        {
+        if self.state.transient_backend || !self.state.backend.release_input() {
             self.state.backend.stop();
         }
         self.state.controller.store(false, Ordering::Release);
@@ -493,7 +486,18 @@ async fn upgrade(
             match result {
                 Ok(Ok(selected)) => {
                     lease.state = selected.clone();
-                    connection(socket, selected, connection_id, started).await;
+                    let end = connection(socket, selected, connection_id, started).await;
+                    lease.release().await;
+                    tracing::info!(connection_id, "desktop controller released");
+                    if let Some(mut end) = end {
+                        if end.release_requested {
+                            let acknowledgement = Message::Text(json!({"type":"released"}).to_string().into());
+                            let _ = timeout(Duration::from_secs(1), end.writer.send(acknowledgement)).await;
+                        }
+                        let close = timeout(Duration::from_secs(1), end.writer.close()).await;
+                        tracing::info!(connection_id, flushed = matches!(close, Ok(Ok(()))), "desktop close handshake");
+                    }
+                    return;
                 }
                 result => {
                     let error = match result {
@@ -559,12 +563,17 @@ async fn upgrade_audio(
         })
 }
 
+struct ConnectionEnd {
+    writer: SplitSink<WebSocket, Message>,
+    release_requested: bool,
+}
+
 async fn connection(
     socket: WebSocket,
     state: AppState,
     connection_id: u64,
     connection_started: Instant,
-) {
+) -> Option<ConnectionEnd> {
     let (mut writer, reader) = socket.split();
     let (control_tx, mut controls) = mpsc::channel(16);
     let (pacing_tx, mut pacing) = watch::channel(VideoFlow {
@@ -582,9 +591,7 @@ async fn connection(
         .borrow()
         .as_ref()
         .map(|frame| (frame.width, frame.height));
-    let Some((width, height)) = dimensions else {
-        return;
-    };
+    let (width, height) = dimensions?;
     let audio_source = state
         .session
         .lock()
@@ -593,7 +600,7 @@ async fn connection(
     let audio_available = state.config.audio && audio_source.is_some();
     let audio_session = audio_available.then(|| state.audio_hub.start());
     let ready = Message::Text(
-        json!({"type":"ready","version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":"embedded","audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":["h264","jpeg"],"desktop":state.desktop,"desktops":state.desktop_options(),"resize":state.desktop == DesktopMode::Virtual,"outputs":state.outputs,"output":state.output})
+        json!({"type":"ready","control_release":true,"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":"embedded","audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":["h264","jpeg"],"desktop":state.desktop,"desktops":state.desktop_options(),"resize":state.desktop == DesktopMode::Virtual,"outputs":state.outputs,"output":state.output})
             .to_string()
             .into(),
     );
@@ -601,7 +608,7 @@ async fn connection(
         timeout(Duration::from_secs(3), writer.send(ready)).await,
         Ok(Ok(()))
     ) {
-        return;
+        return None;
     }
     tracing::info!(
         connection_id,
@@ -762,21 +769,18 @@ async fn connection(
             }
         }
     };
-    tokio::select! { _ = receive => {}, _ = transmit => {} }
+    let release_requested =
+        tokio::select! { requested = receive => requested, _ = transmit => false };
     audio.take();
     let _ = timeout(
         Duration::from_secs(1),
         state.backend.input.send(InputCommand::Release),
     )
     .await;
-    // Reading a Close queues tungstenite's reply. Dropping the split socket
-    // without flushing it leaves WebSocket proxies waiting for their timeout.
-    let close = timeout(Duration::from_secs(1), writer.close()).await;
-    tracing::info!(
-        connection_id,
-        flushed = matches!(close, Ok(Ok(()))),
-        "desktop close handshake"
-    );
+    Some(ConnectionEnd {
+        writer,
+        release_requested,
+    })
 }
 
 #[derive(Clone, Default)]
@@ -885,7 +889,7 @@ async fn receive_commands(
     input: mpsc::Sender<InputCommand>,
     controls: mpsc::Sender<String>,
     pacing: watch::Sender<VideoFlow>,
-) {
+) -> bool {
     while let Ok(Some(Ok(message))) = timeout(Duration::from_secs(60), reader.next()).await {
         match message {
             Message::Text(text) => {
@@ -905,6 +909,7 @@ async fn receive_commands(
                 }
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
                     match value.get("type").and_then(|kind| kind.as_str()) {
+                        Some("disconnect") => return true,
                         Some("video_flow") => {
                             pacing.send_modify(|flow| {
                                 flow.enabled =
@@ -934,6 +939,7 @@ async fn receive_commands(
             _ => break,
         }
     }
+    false
 }
 
 async fn read_audio(audio: &mut Option<AudioStream>, buffer: &mut [u8]) -> std::io::Result<usize> {

@@ -11,7 +11,7 @@ And 虚拟桌面原有应用继续运行
 ID: SC-RECOVER-FROM-STALLED-CLOSE
 Profile: draft
 Gate: required
-Given 用户已连接桌面且访问链路无法完成旧连接的关闭握手
+Given 用户已连接桌面且访问链路无法确认旧会话停止控制，也无法完成关闭握手
 When 用户切换桌面
 Then 用户在三秒内看到旧连接关闭超时的反馈
 And 用户可以主动重连或重新选择桌面，迟到的旧连接消息不会改变当前桌面

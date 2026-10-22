@@ -110,6 +110,8 @@ export function createClient(options: ClientOptions = {}) {
   let desktopOutputs: DesktopOutput[] = [];
   let resizeAvailable = true;
   let switchingDesktop = false;
+  let controlRelease = false;
+  let releasingSocket: WebSocket | null = null;
   let discoveryRequest = 0;
   let refreshingDesktops = false;
   let discoveryReason = "";
@@ -178,6 +180,8 @@ export function createClient(options: ClientOptions = {}) {
       return;
     }
     if (mode === desktopMode && output === selectedOutput) return;
+    const canRelease = ready && controlRelease && socket?.readyState === WebSocket.OPEN;
+    const releasePending = socket !== null && releasingSocket === socket;
     release();
     stopAudio();
     if (connectionFailure) wanted = true;
@@ -193,7 +197,11 @@ export function createClient(options: ClientOptions = {}) {
     resetSession();
     desktopStatus(`${wanted ? "正在连接" : "已选择"}${desktopLabel()}，${wanted ? "尚未确认" : "尚未连接"}${selectedOutput ? ` · ${selectedOutput}` : ""}。`);
     setText("state", wanted ? "Connecting" : "Disconnected");
-    if (socket) closeSocket(socket, 1000, "Switch desktop");
+    if (socket && canRelease) {
+      releasingSocket = socket;
+      waitForClose(socket);
+      socket.send(JSON.stringify({ type: "disconnect" }));
+    } else if (socket && !releasePending) closeSocket(socket, 1000, "Switch desktop");
     else connect();
   }
 
@@ -480,6 +488,7 @@ export function createClient(options: ClientOptions = {}) {
     autoResizeTimer = null;
     lastRequestedSize = null;
     ready = false;
+    controlRelease = false;
     generation += 1;
     pendingFrame = null;
     clipboardPending = false;
@@ -496,7 +505,7 @@ export function createClient(options: ClientOptions = {}) {
     updateControls();
   }
 
-  function closeSocket(current: WebSocket, code = 1000, reason = "") {
+  function waitForClose(current: WebSocket) {
     // A Close frame can be lost by a proxy. Stop waiting, but require an
     // explicit user action before opening another transport. The server still
     // owns the single-controller gate if the abandoned transport is alive.
@@ -507,7 +516,9 @@ export function createClient(options: ClientOptions = {}) {
         cancelTimer(connectionTimer);
         connectionTimer = null;
         current.onopen = current.onmessage = current.onerror = current.onclose = null;
+        current.close(4000, "Control release timeout");
         socket = null;
+        releasingSocket = null;
         switchingDesktop = false;
         wanted = false;
         connectionFailure = "Previous connection did not close within 3 seconds. Reconnect or select another desktop.";
@@ -517,7 +528,26 @@ export function createClient(options: ClientOptions = {}) {
         message(connectionFailure);
       }, 3000);
     }
+  }
+
+  function closeSocket(current: WebSocket, code = 1000, reason = "") {
+    waitForClose(current);
     current.close(code, reason);
+  }
+
+  function completeRelease(current: WebSocket) {
+    if (current !== socket || current !== releasingSocket || !switchingDesktop) return;
+    cancelTimer(closeTimer);
+    closeTimer = null;
+    cancelTimer(connectionTimer);
+    connectionTimer = null;
+    current.onopen = current.onmessage = current.onerror = current.onclose = null;
+    releasingSocket = null;
+    socket = null;
+    switchingDesktop = false;
+    current.close(1000, "Switch desktop");
+    updateControls();
+    connect();
   }
 
   function connect() {
@@ -552,7 +582,13 @@ export function createClient(options: ClientOptions = {}) {
       message("Connected; waiting for server readiness.");
     };
     current.onmessage = (event) => {
-      if (current !== socket || !wanted || destroyed || switchingDesktop) return;
+      if (current !== socket || !wanted || destroyed) return;
+      if (switchingDesktop) {
+        if (typeof event.data === "string") {
+          try { if (JSON.parse(event.data)?.type === "released") completeRelease(current); } catch {}
+        }
+        return;
+      }
       if (typeof event.data === "string") {
         receiveJSON(event.data);
       } else if (ready && event.data instanceof ArrayBuffer && event.data.byteLength > 1) {
@@ -584,6 +620,7 @@ export function createClient(options: ClientOptions = {}) {
       cancelTimer(closeTimer);
       closeTimer = null;
       socket = null;
+      releasingSocket = null;
       resetSession();
       setText("state", "Disconnected");
       if (switchingDesktop) {
@@ -615,6 +652,7 @@ export function createClient(options: ClientOptions = {}) {
   function disconnect() {
     wanted = false;
     switchingDesktop = false;
+    releasingSocket = null;
     connectionFailure = "";
     cancelTimer(closeTimer);
     closeTimer = null;
@@ -647,6 +685,7 @@ export function createClient(options: ClientOptions = {}) {
         element("height").value = String(height);
       }
       ready = true;
+      controlRelease = value.control_release === true;
       connectionFailure = "";
       if (typeof value.version === "string" && value.version.length <= 64 && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/.test(value.version)) {
         setText("software-version", `v${value.version}`);

@@ -292,6 +292,67 @@ test("stalled close reports failure within three seconds and ignores late callba
   assert.equal(app.sockets.length, 2);
 });
 
+test("negotiated control release switches immediately without waiting for transport close", () => {
+  const app = harness();
+  const old = app.ready();
+  desktopReady(old, "virtual", {control_release:true});
+  app.nodes["desktop-source"].value = "physical";
+  app.nodes["desktop-source"].fire("change");
+  assert.equal(old.sent.at(-1).type, "disconnect");
+  assert.equal(old.readyState, 1);
+  assert.equal(app.sockets.length, 1);
+  assert.equal(app.nodes["send-text"].disabled, true);
+  old.json({type:"released"});
+  assert.equal(old.readyState, 2);
+  assert.equal(app.sockets.length, 2);
+  const next = app.sockets.at(-1);
+  next.open();
+  desktopReady(next, "physical", {control_release:true});
+  old.finishClose();
+  old.json({type:"released"});
+  assert.equal(app.sockets.length, 2);
+  assert.match(app.nodes["desktop-status"].textContent, /已连接.*物理桌面/);
+});
+
+test("rapid source changes keep the latest target and issue a single release request", () => {
+  const app = harness();
+  const old = app.ready();
+  desktopReady(old, "virtual", {control_release:true});
+  old.json({type:"released"});
+  assert.equal(app.sockets.length, 1, "unsolicited release is ignored");
+  app.nodes["desktop-source"].value = "physical";
+  app.nodes["desktop-source"].fire("change");
+  app.nodes["desktop-source"].value = "virtual";
+  app.nodes["desktop-source"].fire("change");
+  assert.equal(old.sent.filter(v=>v.type==="disconnect").length, 1);
+  old.json({type:"released"});
+  assert.equal(app.sockets.length, 2);
+  assert.equal(new URL(app.sockets.at(-1).url).searchParams.get("desktop"), "virtual");
+});
+
+test("a missing release acknowledgement is bounded and manual disconnect cancels it", () => {
+  const app = harness();
+  const old = app.ready();
+  desktopReady(old, "virtual", {control_release:true});
+  app.nodes["desktop-source"].value = "physical";
+  app.nodes["desktop-source"].fire("change");
+  assert.equal(app.tick(), 3000);
+  old.json({type:"released"});
+  assert.equal(old.readyState, 2, "timed-out release closes its abandoned transport");
+  assert.equal(app.sockets.length, 1);
+  assert.equal(app.timers.size, 0);
+  const cancelled = harness();
+  const active = cancelled.ready();
+  desktopReady(active, "virtual", {control_release:true});
+  cancelled.nodes["desktop-source"].value = "physical";
+  cancelled.nodes["desktop-source"].fire("change");
+  cancelled.nodes.connection.fire("click");
+  active.json({type:"released"});
+  active.finishClose();
+  assert.equal(cancelled.sockets.length, 1);
+  assert.equal(cancelled.timers.size, 0);
+});
+
 test("a source selection recovers from a stalled close without reusing old input", () => {
   const app = harness();
   desktopReady(app.ready());

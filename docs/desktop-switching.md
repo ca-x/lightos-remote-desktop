@@ -6,6 +6,16 @@ input and reconnects to the authenticated, same-origin WebSocket with
 `?desktop=virtual` or `?desktop=physical`. Only one controller is allowed across
 both targets. The virtual session remains alive while viewing the physical one.
 
+New servers advertise `control_release: true` in `ready`. To switch, the owner
+sends `{"type":"disconnect"}`. The server stops reading input and sending media,
+releases held input (including a compositor roundtrip for the retained virtual
+desktop), stops transient workers and frees the controller before replying with
+`{"type":"released"}`. The browser may then connect the latest selected target
+immediately, while the old WebSocket completes its transport close in the
+background. Only the pending switch on that exact socket accepts this reply;
+unsolicited or stale replies cannot start another connection. A missing reply
+retains the three-second recovery bound. Older servers retain the Close-wait path.
+
 Both media sockets finish the WebSocket close handshake before dropping their
 transport. A TCP disconnect without the Close acknowledgement can leave a
 gateway holding the browser in CLOSING for 60 seconds, before the next desktop

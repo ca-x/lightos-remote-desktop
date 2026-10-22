@@ -11,6 +11,70 @@ use tokio_tungstenite::{
     },
 };
 
+#[tokio::test]
+#[ignore = "requires a separate native candidate with a physical target"]
+async fn released_control_can_be_reacquired_without_waiting_for_transport_close() {
+    let base = std::env::var("LIGHTOS_REMOTE_DESKTOP_TEST_URL").unwrap();
+    let rest = base.strip_prefix("http://").unwrap();
+    let (address, path) = rest.split_once('/').unwrap();
+    let user =
+        std::env::var("LIGHTOS_REMOTE_DESKTOP_AUTH_USER").unwrap_or_else(|_| "lightos".into());
+    let password = std::env::var("LIGHTOS_REMOTE_DESKTOP_AUTH_PASSWORD").unwrap();
+    let auth = STANDARD.encode(format!("{user}:{password}"));
+    let mut retired = Vec::new();
+    for index in 0..10 {
+        let mode = if index % 2 == 0 {
+            "virtual"
+        } else {
+            "physical"
+        };
+        let mut request = format!("ws://{address}/{path}ws?desktop={mode}")
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("Authorization", format!("Basic {auth}").parse().unwrap());
+        request
+            .headers_mut()
+            .insert("Origin", format!("http://{address}").parse().unwrap());
+        let (mut socket, _) = connect_async(request)
+            .await
+            .expect("released controller must be immediately available");
+        let ready = tokio::time::timeout(Duration::from_secs(2), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let Message::Text(ready) = ready else {
+            panic!("missing ready")
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&ready).unwrap()["control_release"],
+            true
+        );
+        socket
+            .send(Message::Text("{\"type\":\"disconnect\"}".into()))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                match socket.next().await.unwrap().unwrap() {
+                    Message::Text(text) if text.contains("\"type\":\"released\"") => break,
+                    Message::Close(_) => {
+                        panic!("transport closed before control release acknowledgement")
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("control release took more than one second");
+        // Keep each old transport alive at the client while the next controller
+        // connects. Neither a client Close nor EOF is needed for reacquisition.
+        retired.push(socket);
+    }
+}
+
 async fn close_cleanly<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     socket: &mut WebSocketStream<S>,
 ) {

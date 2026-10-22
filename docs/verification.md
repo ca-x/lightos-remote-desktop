@@ -48,6 +48,27 @@ it removes the reproduced 60-second stall while retaining a separately measured
 gateway close delay. The installed service passed the installer's health/stability
 gate with zero automatic restarts; its rollback transaction was preserved.
 
+### Fast control-release follow-up
+
+The follow-up advertises a control-release capability. The server acknowledges
+release only after input/media processing ends, held virtual input has completed
+a compositor roundtrip, transient workers stop and the controller gate is freed.
+The client can start its next connection on that acknowledgement while the old
+transport closes in the background. Legacy clients and servers retain the prior
+WebSocket-close path. Release timeout, rapid source changes and stale acknowledgements
+have focused frontend regressions.
+
+77 Node tests, 3 React tests, 56 Rust unit tests, the installer fixture and clippy
+passed. Three explicit candidate desktop tests passed, including ten immediate
+alternating virtual/physical acquisitions while retaining all previous client
+transports without sending Close. Existing clean-close and abandoned-initialization
+tests also passed against the actual HDMI-A-1 target and isolated compositor.
+The bundled candidate SHA-256 is
+`293d44213ef463cdae7319e2351b1cc137a2863a6a7f02a6b8aa37eb1bbf3b57`.
+The user confirmed fast switching in manual testing of the installed HTTPS entry.
+No numerical timing was recorded for that manual check; the previous section's
+gateway measurements refer to the preceding release.
+
 ## Cursor, keyboard and toolbar regression checks
 
 The interaction fixes were checked locally on 2026-10-22 with two isolated
