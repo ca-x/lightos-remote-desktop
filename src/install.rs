@@ -1,25 +1,124 @@
 use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, process::Command};
 
 use anyhow::{Context, Result, ensure};
-use clap::Args;
+use clap::{Args, ValueEnum};
 
 #[derive(Args)]
 pub struct ServiceOptions {
     #[arg(
         long,
-        help = "Check prerequisites without changing files or restarting the service"
+        help = "Show installation layout without changing files or services"
     )]
     pub dry_run: bool,
-    #[arg(
-        long,
-        help = "Stage the binary and override without restarting the service"
-    )]
+    #[arg(long, help = "Install files without activating services")]
     pub stage_only: bool,
-    #[arg(long, hide = true, requires = "stage_only")]
+    #[arg(long, hide = true)]
     pub test_root: Option<PathBuf>,
+    #[arg(long, value_enum, conflicts_with_all = ["package_managed", "snapshot", "remove", "legacy", "dry_run", "stage_only", "test_root"]) ]
+    pub print_unit: Option<ServiceUnit>,
+    #[arg(long, conflicts_with_all = ["snapshot", "remove", "legacy", "dry_run", "stage_only"]) ]
+    pub package_managed: bool,
+    #[arg(long, conflicts_with_all = ["package_managed", "remove", "legacy", "dry_run", "stage_only"]) ]
+    pub snapshot: bool,
+    #[arg(long, conflicts_with_all = ["package_managed", "snapshot", "legacy", "dry_run", "stage_only"]) ]
+    pub remove: bool,
+    #[arg(long, help = "Use the explicit legacy LightOS transactional installer")]
+    pub legacy: bool,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+pub enum ServiceUnit {
+    Transport,
+    Session,
+}
+
+const TRANSPORT: &str = include_str!("../systemd/lightos-remoted-transport.service");
+const SESSION: &str = include_str!("../systemd/lightos-remoted-session.service");
+
 pub fn service(options: ServiceOptions, rollback: bool) -> Result<()> {
+    let package = options.package_managed || options.snapshot || options.remove;
+    ensure!(
+        !rollback || (!package && options.print_unit.is_none()),
+        "rollback does not support package lifecycle or unit export flags"
+    );
+    if let Some(unit) = options.print_unit {
+        print!(
+            "{}",
+            match unit {
+                ServiceUnit::Transport => TRANSPORT,
+                ServiceUnit::Session => SESSION,
+            }
+        );
+        return Ok(());
+    }
+    if options.legacy {
+        return legacy_service(options, rollback);
+    }
+    ensure!(
+        options.dry_run || options.test_root.is_some() || unsafe { libc::geteuid() } == 0,
+        "service installation requires root; run with sudo (or use --dry-run)"
+    );
+    let directory = tempfile::Builder::new()
+        .prefix("lightos-services.")
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir()?;
+    for (name, source) in [
+        (
+            "scripts/service-install.sh",
+            include_str!("../scripts/service-install.sh"),
+        ),
+        (
+            "scripts/service-bootstrap.sh",
+            include_str!("../scripts/service-bootstrap.sh"),
+        ),
+        (
+            "scripts/service-activation.sh",
+            include_str!("../scripts/service-activation.sh"),
+        ),
+        ("systemd/lightos-remoted-transport.service", TRANSPORT),
+        ("systemd/lightos-remoted-session.service", SESSION),
+    ] {
+        let path = directory.path().join(name);
+        fs::create_dir_all(path.parent().unwrap())?;
+        fs::write(path, source)?;
+    }
+    let mut command = Command::new("/bin/bash");
+    command.arg(directory.path().join(if package {
+        "scripts/service-bootstrap.sh"
+    } else {
+        "scripts/service-install.sh"
+    }));
+    if options.snapshot {
+        command.arg("--snapshot");
+    }
+    if options.remove {
+        command.arg("--remove");
+    }
+    if !package {
+        if rollback {
+            command.arg("--rollback");
+        } else {
+            command.arg("--binary").arg(std::env::current_exe()?);
+        }
+        if options.dry_run {
+            command.arg("--dry-run");
+        }
+        if options.stage_only {
+            command.arg("--stage-only");
+        }
+    }
+    if let Some(root) = options.test_root {
+        command.arg("--test-root").arg(root);
+    }
+    let status = command.status().context("run embedded service installer")?;
+    ensure!(
+        status.success(),
+        "service installer failed: {status}; inspect its recovery output"
+    );
+    Ok(())
+}
+
+fn legacy_service(options: ServiceOptions, rollback: bool) -> Result<()> {
     ensure!(
         options.dry_run || options.test_root.is_some() || unsafe { libc::geteuid() } == 0,
         "service installation requires root; run with sudo (or use --dry-run)"

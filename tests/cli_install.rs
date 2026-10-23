@@ -17,6 +17,7 @@ fn embedded_installer_stages_itself_preserves_python_and_rolls_back_without_sour
         Command::new(binary)
             .current_dir(root)
             .arg(action)
+            .arg("--legacy")
             .args(["--stage-only", "--test-root"])
             .arg(root)
             .args(extra)
@@ -78,7 +79,7 @@ fn attached_installation_does_not_require_or_start_a_virtual_desktop() {
     )
     .unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_lightos-remoted"))
-        .args(["install-service", "--stage-only", "--test-root"])
+        .args(["install-service", "--legacy", "--stage-only", "--test-root"])
         .arg(root)
         .output()
         .unwrap();
@@ -112,7 +113,7 @@ fn staged_session_owner_respects_user_dropin_and_numeric_uid() {
     )
     .unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_lightos-remoted"))
-        .args(["install-service", "--stage-only", "--test-root"])
+        .args(["install-service", "--legacy", "--stage-only", "--test-root"])
         .arg(root)
         .output()
         .unwrap();
@@ -148,4 +149,127 @@ fn public_binary_uses_the_unified_remoted_name() {
             .unwrap()
             .contains("Usage: lightos-remoted")
     );
+}
+
+#[test]
+fn canonical_units_export_without_installation_and_flags_are_exclusive() {
+    let directory = tempfile::tempdir().unwrap();
+    for (unit, expected) in [
+        (
+            "transport",
+            include_str!("../systemd/lightos-remoted-transport.service"),
+        ),
+        (
+            "session",
+            include_str!("../systemd/lightos-remoted-session.service"),
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_lightos-remoted"))
+            .current_dir(directory.path())
+            .args(["install-service", "--print-unit", unit])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+    for flags in [
+        ["--package-managed", "--snapshot"],
+        ["--snapshot", "--remove"],
+        ["--remove", "--package-managed"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_lightos-remoted"))
+            .arg("install-service")
+            .args(flags)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+    }
+}
+
+#[test]
+fn standalone_install_creates_both_units_preserves_state_and_rolls_back() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let run = |action: &str, extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_lightos-remoted"))
+            .arg(action)
+            .args(["--stage-only", "--test-root"])
+            .arg(root)
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let dry = run("install-service", &["--dry-run"]);
+    assert!(
+        dry.status.success(),
+        "{}",
+        String::from_utf8_lossy(&dry.stderr)
+    );
+    assert_eq!(fs::read_dir(root).unwrap().count(), 0);
+    let installed = run("install-service", &[]);
+    assert!(
+        installed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&installed.stderr)
+    );
+    for name in [
+        "lightos-remote-desktop.service",
+        "lightos-remote-desktop-session.service",
+    ] {
+        assert!(root.join("usr/lib/systemd/system").join(name).is_file());
+    }
+    let payload = root.join("usr/lib/lightos-remoted/lightos-remoted");
+    assert_eq!(
+        fs::read(&payload).unwrap(),
+        fs::read(env!("CARGO_BIN_EXE_lightos-remoted")).unwrap()
+    );
+    let environment = root.join("etc/lightos/remote-desktop.env");
+    fs::create_dir_all(environment.parent().unwrap()).unwrap();
+    fs::write(&environment, "private authentication\n").unwrap();
+    let upgraded = run("install-service", &[]);
+    assert!(
+        upgraded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&upgraded.stderr)
+    );
+    let rollback = run("rollback-service", &[]);
+    assert!(
+        rollback.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rollback.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(environment).unwrap(),
+        "private authentication\n"
+    );
+    assert!(payload.is_file());
+}
+
+#[test]
+fn standalone_refuses_package_files_and_legacy_units_without_modification() {
+    for package in [true, false] {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let protected = if package {
+            root.join("var/lib/pacman/local/lightos-remoted-bin-0.1.11-1/files")
+        } else {
+            root.join("etc/systemd/system/lightos-remote-desktop.service")
+        };
+        fs::create_dir_all(protected.parent().unwrap()).unwrap();
+        let contents = if package {
+            "%FILES%\nusr/lib/lightos-remoted/lightos-remoted\n"
+        } else {
+            "[Service]\nExecStart=/existing/payload\n"
+        };
+        fs::write(&protected, contents).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_lightos-remoted"))
+            .args(["install-service", "--stage-only", "--test-root"])
+            .arg(root)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert_eq!(fs::read_to_string(protected).unwrap(), contents);
+        assert!(!root.join("usr/lib/lightos-remoted").exists());
+    }
 }

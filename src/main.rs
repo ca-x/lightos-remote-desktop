@@ -24,13 +24,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
-    #[command(
-        about = "Install this binary over the existing LightOS Python service, with backup and rollback"
-    )]
+    #[command(about = "Install this binary and both LightOS services, or manage package lifecycle")]
     InstallService(lightos_remote_desktop::install::ServiceOptions),
-    #[command(
-        about = "Restore the previous service binary and override from the latest transaction"
-    )]
+    #[command(about = "Restore the previous standalone service installation")]
     RollbackService(lightos_remote_desktop::install::ServiceOptions),
     Serve(Config),
     #[command(about = "Own a persistent desktop independently of the HTTP transport")]

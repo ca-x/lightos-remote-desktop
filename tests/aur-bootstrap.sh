@@ -10,8 +10,9 @@ fixture() {
     root=$temporary/$1
     mkdir -p "$root/usr/lib/lightos-remoted/aquamarine" "$root/usr/lib/systemd/system" "$root/test-bin"
     touch "$root/events"
-    cp "$repository/lightos-remoted-bin/"*.service "$root/usr/lib/systemd/system/"
-    cp "$repository/lightos-remoted-bin/activation.sh" "$root/usr/lib/lightos-remoted/"
+    cp "$repository/systemd/lightos-remoted-transport.service" "$root/usr/lib/systemd/system/lightos-remote-desktop.service"
+    cp "$repository/systemd/lightos-remoted-session.service" "$root/usr/lib/systemd/system/lightos-remote-desktop-session.service"
+    cp "$repository/scripts/service-activation.sh" "$root/usr/lib/lightos-remoted/"
     printf '#!/bin/sh\nexit 0\n' > "$root/usr/lib/lightos-remoted/lightos-remoted"
     chmod +x "$root/usr/lib/lightos-remoted/lightos-remoted"
     cat > "$root/test-bin/getent" <<'MOCK'
@@ -33,10 +34,11 @@ set -euo pipefail
 root=${0%/test-bin/systemctl}
 printf 'systemctl %s\n' "$*" >> "$root/events"
 if [[ ${*: -1} == lightos-remote-desktop-session.service ]]; then
-    [[ $1 == show && $* == *--property=User* ]] || exit 99
+    [[ $1 == show && $* == *--property=User* || $1 == start || $1 == enable || $1 == disable || $1 == is-active ]] || exit 99
 fi
 case $1 in
 is-active)
+    if [[ ${*: -1} == lightos-remote-desktop-session.service ]]; then [[ -f $root/owner-active ]]; exit; fi
     [[ -f $root/legacy-active || -f $root/active ]] ;;
 show)
     if [[ $* == *--property=User* ]]; then
@@ -47,6 +49,7 @@ show)
         fi
     elif [[ $* == *--value* ]]; then cat "$root/pid" 2>/dev/null || printf '0\n'
     else printf 'ActiveState=active\nSubState=running\nMainPID=%s\nExecMainPID=%s\nNRestarts=0\n' "$(cat "$root/pid")" "$(cat "$root/pid")"; fi ;;
+start) touch "$root/owner-active" ;;
 restart)
     pid=$(cat "$root/pid" 2>/dev/null || echo 100)
     echo "$((pid+1))" > "$root/pid"
@@ -66,7 +69,7 @@ if [[ -f $root/fail-probe && $* == *probe* ]]; then exit 32; fi
 MOCK
     chmod +x "$root/test-bin/"*
 }
-bootstrap() { bash "$repository/lightos-remoted-bin/bootstrap.sh" --test-root "$root" "$@" > "$root/output" 2>&1; }
+bootstrap() { bash "$repository/scripts/service-bootstrap.sh" --test-root "$root" "$@" > "$root/output" 2>&1; }
 fixture fresh
 bootstrap
 check test -s "$root/etc/lightos/remote-desktop.env"
@@ -82,6 +85,18 @@ check test "$(grep -Fc "$password" "$root/output" || true)" = 0
 bootstrap
 check test "$(cat "$root/etc/lightos/remote-desktop.env")" = "$password"
 check test "$(grep -c useradd "$root/events")" = 1
+check test "$(grep -c '^systemctl start lightos-remote-desktop-session.service$' "$root/events")" = 1
+check grep -q '^systemctl enable lightos-remote-desktop-session.service$' "$root/events"
+# An attached physical socket never starts a virtual owner; native-file overrides count.
+for configuration in remote-desktop.env remote-desktop-native.env; do
+    fixture "attached-$configuration"
+    mkdir -p "$root/etc/lightos"
+    printf 'LIGHTOS_REMOTE_DESKTOP_USER=lightos-remoted\nLIGHTOS_REMOTE_DESKTOP_AUTH_PASSWORD=preserved\n' > "$root/etc/lightos/remote-desktop.env"
+    printf 'LIGHTOS_REMOTE_DESKTOP_WAYLAND_SOCKET=/run/user/1000/wayland-0\n' >> "$root/etc/lightos/$configuration"
+    bootstrap
+    check test "$(grep -c '^systemctl start lightos-remote-desktop-session.service$' "$root/events" || true)" = 0
+    check grep -q '^systemctl disable lightos-remote-desktop-session.service$' "$root/events"
+done
 fixture fresh2
 bootstrap
 check test "$(cat "$root/etc/lightos/remote-desktop.env")" != "$password"
@@ -150,7 +165,7 @@ for condition in transport-alias-zero owner-root owner-wrong-uid; do
             printf 'other:x:1000:1000::/home/other:/bin/bash\n' > "$root/nss-other" ;;
     esac
     if bootstrap; then echo "Invalid effective user accepted: $condition" >&2; exit 1; fi
-    check test "$(grep -c 'systemd-run\|systemctl restart\|systemctl enable' "$root/events" || true)" = 0
+    check test "$(grep -c 'systemd-run\|systemctl restart' "$root/events" || true)" = 0
     check test -s "$root/var/lib/lightos-remoted-package/rejected.sha256"
 done
 # Existing secrets/config (including custom library/shell settings) are byte exact.
@@ -210,15 +225,37 @@ check test "$(cat "$root/target")" = preserve
 fixture removal
 bootstrap
 bootstrap --snapshot
-PATH="$root/test-bin:$PATH"
-source "$repository/lightos-remoted-bin/lightos-remoted-bin.install"
-# Exercise removal with snapshot dispatch redirected into the isolated fixture.
-pre_remove_body=$(declare -f pre_remove)
-pre_remove_body=${pre_remove_body//\/usr\/lib\/lightos-remoted\/bootstrap/bash "$repository/lightos-remoted-bin/bootstrap.sh" --test-root "$root"}
-eval "$pre_remove_body"
-pre_remove
+bootstrap --remove
 check test -f "$root/active"
 check test -s "$root/etc/lightos/remote-desktop.env"
 check grep -q '^systemctl disable lightos-remote-desktop.service$' "$root/events"
 check test -x "$root/var/lib/lightos-remoted-package/previous/lightos-remoted"
-printf 'AUR bootstrap: %s checks passed (mock activation; no host service changes).\n' "$checks"
+# Standalone installs use the same lifecycle and keep units separate from local overrides.
+fixture standalone
+rm -f "$root/usr/lib/lightos-remoted/lightos-remoted" "$root/usr/lib/systemd/system/"*.service
+printf '#!/bin/sh\nexit 0\n# candidate A\n' > "$root/candidate"
+chmod +x "$root/candidate"
+install_standalone() { bash "$repository/scripts/service-install.sh" --binary "$root/candidate" --test-root "$root" > "$root/install-output" 2>&1; }
+install_standalone
+check cmp "$root/candidate" "$root/usr/lib/lightos-remoted/lightos-remoted"
+check test -f "$root/usr/lib/systemd/system/lightos-remote-desktop.service"
+check test -f "$root/usr/lib/systemd/system/lightos-remote-desktop-session.service"
+cp "$root/candidate" "$root/candidate-a"
+printf '# candidate B\n' >> "$root/candidate"
+install_standalone
+check test "$(grep -c '^systemctl start lightos-remote-desktop-session.service$' "$root/events")" = 1
+bash "$repository/scripts/service-install.sh" --rollback --test-root "$root" > "$root/install-output" 2>&1
+check cmp "$root/candidate-a" "$root/usr/lib/lightos-remoted/lightos-remoted"
+check test "$(grep -c '^systemctl restart lightos-remote-desktop.service$' "$root/events")" = 3
+check test "$(grep -c '^systemctl stop lightos-remote-desktop-session.service$' "$root/events" || true)" = 0
+# A failed candidate and its successor cannot replace the known-good rollback payload.
+printf '# candidate C\n' >> "$root/candidate"
+touch "$root/fail-doctor"
+if install_standalone; then echo 'Standalone doctor failure swallowed' >&2; exit 1; fi
+printf '# candidate D\n' >> "$root/candidate"
+if install_standalone; then echo 'Second standalone doctor failure swallowed' >&2; exit 1; fi
+check cmp "$root/candidate-a" "$root/var/lib/lightos-remoted-install/latest/binary"
+rm "$root/fail-doctor"
+bash "$repository/scripts/service-install.sh" --rollback --test-root "$root" > "$root/install-output" 2>&1
+check cmp "$root/candidate-a" "$root/usr/lib/lightos-remoted/lightos-remoted"
+printf 'AUR/shared bootstrap: %s checks passed (mock activation; no host service changes).\n' "$checks"
