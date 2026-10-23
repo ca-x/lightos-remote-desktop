@@ -10,12 +10,18 @@ does not embed CPython or invoke the original Selkies Python launcher.
 - Embedded React/TypeScript frontend with Headless UI and Lucide React icons.
   A compact action toolbar opens contextual display, keyboard, clipboard and
   connection popovers; a separate tabbed Settings dialog holds resolution,
-  encoding, appearance and MCP preferences. The appearance tab offers Chinese/English/browser language and
+  encoding, appearance, MCP and RDP preferences. The appearance tab offers Chinese/English/browser language and
   light/dark/system theme preferences, stored locally without reconnecting.
   These themes affect only the controls, not the captured desktop.
 - Authenticated same-origin WebSocket client with canvas display and reconnect.
-- Optional authenticated TLS RDP access to the same owned virtual desktop, off
-  by default with a separate loopback listener. See [RDP setup and limits](docs/rdp.md).
+- Enable/disable TLS RDP and set its port in Settings → RDP, using the same
+  owned virtual desktop as the browser. It is off by default and retains the
+  loopback bind policy; use SSH forwarding for remote access. Settings shows the
+  actual endpoint and TLS fingerprint. A private persistent TLS identity is
+  generated when no certificate is configured; explicit certificates remain
+  supported. Listener changes preserve HTTP and the desktop owner. RDP quality
+  is negotiated with the client, independently of browser encoding/quality
+  preferences. See [RDP setup and limits](docs/rdp.md).
 - Optional MCP Streamable HTTP endpoint with separate observe/control tokens,
   one-time token creation/revocation in Settings → MCP, and screenshot/mouse/
   keyboard tools over the existing owned desktop. Disabled by default; see
