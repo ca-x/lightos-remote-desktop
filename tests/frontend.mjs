@@ -4,6 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
 
+const zoomSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/picture-zoom.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const cursorSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/cursor.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const updatesSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/desktop-updates.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const resolutionSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/resolution.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
@@ -11,7 +12,7 @@ const mobileSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/mobil
 const clipboardSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/clipboard.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const codecSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/video-codec.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const preferenceSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/preferences.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
-const source = cursorSource + "\n" + updatesSource + "\n" + resolutionSource + "\n" + mobileSource + "\n" + clipboardSource + "\n" + preferenceSource + "\n" + codecSource + "\n" + stripTypeScriptTypes(readFileSync(new URL("../web/src/client.ts", import.meta.url), "utf8"))
+const source = zoomSource + "\n" + cursorSource + "\n" + updatesSource + "\n" + resolutionSource + "\n" + mobileSource + "\n" + clipboardSource + "\n" + preferenceSource + "\n" + codecSource + "\n" + stripTypeScriptTypes(readFileSync(new URL("../web/src/client.ts", import.meta.url), "utf8"))
 
   .replace(/^import .* from .*;$/gm, "")
   .replace(/^export /gm, "") + '\nconst audioWorkerUrl = "./audio-worker.js"; const audioWorkletUrl = "./audio-worklet.js"; const client = createClient(clientOptions);';

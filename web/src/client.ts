@@ -1,3 +1,4 @@
+import { createPictureZoom } from "./picture-zoom";
 import { encoderBackendKey, encoderBackends, readPreference, savePreference, videoCodecKey, videoCodecs, streamStrategyKey, streamStrategies } from "./preferences";
 import { supportedVideoConfig } from "./video-codec";
 import type { ClientOptions, DesktopChoice, DesktopOutput, Elements, SessionView } from "./types";
@@ -346,7 +347,17 @@ export function createClient(options: ClientOptions = {}) {
   let pingSequence = 0;
   let pendingPing: {id: number; started: number} | null = null;
   let latestRtt: number | null = null;
-  const cursor = createCursorLayer(canvas, element("remote-cursor"), () => latestRtt ?? 0);
+  function pictureBounds() {
+    const mobileBounds = mobile?.bounds();
+    if (mobileBounds) return { left: mobileBounds.left, top: mobileBounds.top,
+      right: mobileBounds.left + mobileBounds.width, bottom: mobileBounds.top + Math.max(0, mobileBounds.height - mobileBounds.bar) };
+    const rect = viewport.getBoundingClientRect();
+    return { left: rect.left, top: rect.top, right: rect.left + (viewport.clientWidth || rect.width), bottom: rect.top + (viewport.clientHeight || rect.height) };
+  }
+  const cursor = createCursorLayer(canvas, element("remote-cursor"), () => latestRtt ?? 0, pictureBounds);
+  const pictureZoom = createPictureZoom({ canvas, viewport, bounds: pictureBounds,
+    enabled: () => ready && !desktopPaused && desktopMode === "physical",
+    touching: () => mobile?.touching() ?? false, changed: () => cursor.layout() });
   const frameCursorModes = new Map<number, boolean>();
   const rttSamples: number[] = [];
   const renderSamples: number[] = [];
@@ -456,7 +467,7 @@ export function createClient(options: ClientOptions = {}) {
     if (canvas.height !== height) canvas.height = height;
     canvas.style.setProperty("--desktop-aspect", String(width / height));
     updateCanvasDensity();
-    if (changed) publishSessionView();
+    if (changed) { pictureZoom.reset(); publishSessionView(); }
   }
 
   function publishSessionView() {
@@ -572,6 +583,7 @@ export function createClient(options: ClientOptions = {}) {
 
   function resetSession() {
     desktopInitializing = false;
+    pictureZoom.reset();
     cursorSession = null;
     cursor.reset(); frameCursorModes.clear();
     clipboard.reset();
@@ -1421,7 +1433,7 @@ export function createClient(options: ClientOptions = {}) {
   });
   listen(canvas, "contextmenu", (event) => event.preventDefault());
   listen(canvas, "wheel", (event) => {
-    if (!ready) return;
+    if (!ready || event.ctrlKey || event.metaKey) return;
     event.preventDefault();
     const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? canvas.clientHeight : 1;
     const bounded = (value: number) => Number.isFinite(value) ? Math.max(-1000, Math.min(1000, value * scale)) : 0;
@@ -1516,6 +1528,7 @@ export function createClient(options: ClientOptions = {}) {
     }
   });
   async function displayMode(mode: string) {
+    pictureZoom.reset();
     try {
       if (mode === "fullscreen") {
         // Include portalled menus and dialogs in the browser fullscreen tree.
@@ -1694,6 +1707,7 @@ export function createClient(options: ClientOptions = {}) {
     disconnect();
     destroyed = true;
     mobile?.dispose();
+    pictureZoom.dispose();
     cursor.dispose();
     toolObserver?.disconnect();
     listeners.abort();
@@ -1722,7 +1736,7 @@ export function createClient(options: ClientOptions = {}) {
   });
   mobile = createMobileControls({
     canvas, viewport, input: element("mobile-input"), bar: element("mobile-shortcuts"), toggle: element("mobile-keyboard"),
-    ready: () => ready && !desktopPaused, send, text: typeText, move, tools: (open) => setToolsOpen(open), translate,
+    ready: () => ready && !desktopPaused, zoom: pictureZoom, send, text: typeText, move, tools: (open) => setToolsOpen(open), translate,
     hardwareKey: (event) => hardwareKey(event, true), composition: release,
     hardwareInput: (event) => {
       const pending = pendingHardwareKey;
@@ -1732,7 +1746,7 @@ export function createClient(options: ClientOptions = {}) {
     },
     paste: (event) => { void clipboard.paste(event); },
     chord: (codes) => { if (ready && codes.every((code) => Object.hasOwn(KEY_CODES, code))) sendChord(codes.map((code) => KEY_CODES[code])); },
-    layout: () => { updateCanvasDensity(); layoutTools(); scheduleAutoResize(); },
+    layout: () => { updateCanvasDensity(); pictureZoom.layout(); layoutTools(); scheduleAutoResize(); },
   });
   wanted = true;
   setToolsOpen(false);

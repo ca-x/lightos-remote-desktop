@@ -266,7 +266,11 @@ impl AppState {
                 .map(|error| error.to_string()),
             Err(error) => Some(error.clone()),
         };
-        let virtual_available = self.desktop == DesktopMode::Virtual;
+        // A transient physical connection still belongs to the same service.
+        // Its base configuration determines whether the retained virtual
+        // desktop can be selected again.
+        let virtual_available =
+            self.config.wayland_socket.is_none() && self.config.x11_display.is_none();
         json!([
             {"mode":"virtual","label":"虚拟桌面","available":virtual_available,"reason":if virtual_available { "" } else { "服务以外部桌面模式启动" }},
             {"mode":"physical","label":"物理桌面","available":reason.is_none(),"reason":reason,"capabilities":physical.ok()}
@@ -1504,6 +1508,46 @@ fn error_message(message: &str) -> Message {
 mod tests {
     use super::*;
     use tower::ServiceExt;
+
+    #[test]
+    fn physical_connection_still_advertises_the_services_virtual_desktop() {
+        use clap::Parser;
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = Config::try_parse_from(["test"]).unwrap();
+        config.mcp_settings = Some(directory.path().join("mcp.json"));
+        config.rdp.rdp_settings = Some(directory.path().join("rdp.json"));
+        let session = Session::attached(
+            directory.path().into(),
+            directory.path().join("wayland-test"),
+            None,
+            None,
+            None,
+            None,
+        );
+        let mut state = AppState::new(
+            config.clone(),
+            backend::DeferredPortalBackend::new(),
+            session,
+        );
+        state.desktop = DesktopMode::Physical;
+        assert_eq!(
+            state.desktop_options(Err("unavailable".into()))[0]["available"],
+            true
+        );
+        config.wayland_socket = Some(directory.path().join("physical-wayland"));
+        state.config = Arc::new(config.clone());
+        assert_eq!(
+            state.desktop_options(Err("unavailable".into()))[0]["available"],
+            false
+        );
+        config.wayland_socket = None;
+        config.x11_display = Some(":1".into());
+        state.config = Arc::new(config);
+        assert_eq!(
+            state.desktop_options(Err("unavailable".into()))[0]["available"],
+            false
+        );
+    }
 
     struct MissingOutputMetadata(std::sync::atomic::AtomicUsize);
     impl DisplayController for MissingOutputMetadata {

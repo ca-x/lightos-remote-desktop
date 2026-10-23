@@ -9,6 +9,8 @@ let visual: EventTarget & { width: number; height: number; offsetTop: number; of
 let commands: Record<string, unknown>[];
 let texts: string[];
 let chords: string[][];
+let zoomed: boolean;
+let gestures: { ratio: number; from: {x:number;y:number}; to: {x:number;y:number} }[];
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -16,13 +18,14 @@ beforeEach(() => {
   viewport = document.querySelector("main")!;
   input = document.querySelector("textarea")!;
   toggle = document.querySelector("#keyboard")!;
-  commands = []; texts = []; chords = [];
+  commands = []; texts = []; chords = []; zoomed = false; gestures = [];
   visual = Object.assign(new EventTarget(), { width: 390, height: 844, offsetTop: 0, offsetLeft: 0 });
   vi.stubGlobal("visualViewport", visual);
   vi.stubGlobal("innerHeight", 844);
   vi.stubGlobal("matchMedia", () => Object.assign(new EventTarget(), { matches: true }));
   controls = createMobileControls({
     canvas: document.querySelector("canvas")!, viewport, input, bar: document.querySelector("nav")!, toggle,
+    zoom: { active: () => zoomed, gesture: (from, to, ratio) => { gestures.push({from, to, ratio}); zoomed = true; } },
     ready: () => true, send: command => { commands.push(command); return true; },
     text: value => texts.push(value), chord: value => chords.push(value), move: () => {}, tools: () => {}, layout: () => {}, translate: value => value,
   });
@@ -163,7 +166,7 @@ it("scrolls with two fingers and never turns the last lifted finger into a click
   controls.handlePointer(pointer(2, 100, 90), "move");
   controls.handlePointer(pointer(1, 10, 90), "up");
   controls.handlePointer(pointer(2, 100, 90), "up");
-  expect(commands.filter(v=>v.type==="scroll")).toHaveLength(2);
+  expect(commands.filter(v=>v.type==="scroll").reduce((sum,v)=>sum + Number(v.y),0)).toBe(10);
   expect(commands.filter(v=>v.type==="button")).toEqual([]);
 });
 
@@ -186,4 +189,32 @@ it("excludes host safe areas from the area used for capture and toolbar placemen
   visual.width = 844; visual.height = 390;
   viewport.style.padding = "0px 47px 0 47px";
   expect(controls.bounds()).toEqual({ top: 0, left: 47, width: 750, height: 390, bar: 111 });
+});
+
+it("pinches and pans only the local picture without scrolling or changing keyboard and sticky keys", () => {
+  toggle.click();
+  const ctrl = document.querySelector<HTMLButtonElement>('[data-mobile-key="ControlLeft"]')!;
+  ctrl.click();
+  controls.handlePointer(pointer(1,100,100),"down");
+  controls.handlePointer(pointer(2,200,100),"down");
+  // Accumulate small motion until it is distinguishable from a scroll.
+  for (let x=98;x>=88;x-=2) controls.handlePointer(pointer(1,x,100),"move");
+  controls.handlePointer(pointer(2,220,100),"move");
+  controls.handlePointer(pointer(1,88,100),"up");
+  controls.handlePointer(pointer(2,220,100),"up");
+  expect(gestures.length).toBeGreaterThan(0);
+  expect(gestures.reduce((scale,g)=>scale*g.ratio,1)).toBeCloseTo(1.32);
+  expect(commands.filter(c=>c.type==="scroll"||c.type==="button")).toEqual([]);
+  expect(document.activeElement).toBe(input);
+  expect(ctrl.getAttribute("aria-pressed")).toBe("true");
+  expect(toggle.getAttribute("aria-pressed")).toBe("true");
+  gestures=[];
+  controls.handlePointer(pointer(3,100,100),"down");
+  controls.handlePointer(pointer(4,200,100),"down");
+  controls.handlePointer(pointer(3,100,110),"move");
+  controls.handlePointer(pointer(4,200,110),"move");
+  controls.handlePointer(pointer(3,100,110),"up");
+  controls.handlePointer(pointer(4,200,110),"up");
+  expect(gestures.every(g=>g.ratio===1)).toBe(true);
+  expect(commands.filter(c=>c.type==="scroll"||c.type==="button")).toEqual([]);
 });

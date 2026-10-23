@@ -3,11 +3,11 @@
 :root[data-theme="light"] { color-scheme: light; --surface: #faf9f6; --control: #efefec; --field: #fff; --text: #202632; --muted: #596475; --border: #ced4de; --accent: #2458bd; --selected: #dce8fd; --shadow: 0 8px 30px #172c4c26; }
 * { box-sizing: border-box; }
 html, body, #root { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #101115; }
-html { overscroll-behavior: none; -webkit-tap-highlight-color: transparent; -webkit-text-size-adjust: 100%; }
+html { touch-action: pan-x pan-y; overscroll-behavior: none; -webkit-tap-highlight-color: transparent; -webkit-text-size-adjust: 100%; }
 body { color: var(--text); }
 [hidden] { display: none !important; }
 #viewport { width: 100vw; height: 100dvh; overflow: auto; background: #101115; }
-#desktop { display: block; width: auto; height: auto; max-width: none; max-height: none; touch-action: none; }
+#desktop { transform-origin: 0 0; display: block; width: auto; height: auto; max-width: none; max-height: none; touch-action: none; }
 #viewport.fit { display: flex; align-items: center; justify-content: center; overflow: hidden; }
 #viewport.fit #desktop { width: min(100vw, calc(100dvh * var(--desktop-aspect, 1.777778))); height: auto; max-height: 100dvh; object-fit: contain; }
 #viewport.fit.native-pixel-fit #desktop { width: min(100vw, calc(100dvh * var(--desktop-aspect, 1.777778)), var(--desktop-native-width, 100vw)); }
@@ -83,8 +83,8 @@ footer { font-size: 10px; color: var(--muted); padding-top: 12px; }
    inside the remaining safe area, so letterboxing never moves the controls. */
 #viewport.touch-desktop { --desktop-area-width: max(0px, calc(var(--mobile-width, 100vw) - var(--lzc-safe-area-inset-left) - var(--lzc-safe-area-inset-right))); --desktop-area-height: max(0px, calc(var(--mobile-height, 100dvh) - var(--mobile-bar-height, calc(77px + var(--lzc-safe-area-inset-bottom))) - var(--lzc-safe-area-inset-top))); position: fixed; left: var(--mobile-left, 0px); top: var(--mobile-top, 0px); width: var(--mobile-width, 100vw); height: calc(var(--mobile-height, 100dvh) - var(--mobile-bar-height, calc(77px + var(--lzc-safe-area-inset-bottom)))); padding: var(--lzc-safe-area-inset-top) var(--lzc-safe-area-inset-right) 0 var(--lzc-safe-area-inset-left); overscroll-behavior: none; }
 #viewport.touch-desktop.fit { flex-direction: column; }
-#viewport.touch-desktop.fit #desktop { flex-shrink: 0; width: min(var(--desktop-area-width), calc(var(--desktop-area-height) * var(--desktop-aspect, 1.777778))); max-height: var(--desktop-area-height); touch-action: pinch-zoom; }
-.touch-desktop #desktop { touch-action: pinch-zoom; -webkit-touch-callout: none; }
+#viewport.touch-desktop.fit #desktop { flex-shrink: 0; width: min(var(--desktop-area-width), calc(var(--desktop-area-height) * var(--desktop-aspect, 1.777778))); max-height: var(--desktop-area-height); touch-action: none; }
+.touch-desktop #desktop { touch-action: none; -webkit-touch-callout: none; }
 .touch-desktop .mobile-help { display: block; }
 .touch-desktop #tools-toggle { opacity: 0; pointer-events: none; }
 .touch-desktop .mobile-shortcuts { position: fixed; left: var(--dock-left, 0px); bottom: var(--keyboard-inset, 0px); width: var(--dock-width, 100vw); z-index: 12; display: flex; flex-direction: column; gap: 4px; padding: 8px max(5px, var(--lzc-safe-area-inset-right)) calc(8px + var(--lzc-safe-area-inset-bottom)) max(5px, var(--lzc-safe-area-inset-left)); background: var(--surface); color: var(--text); border-top: 1px solid var(--border); }
@@ -244,3 +244,6 @@ button:active:not(:disabled) { transform: scale(.97); }
 .about-brand > img { width: 48px; height: 48px; object-fit: contain; flex-shrink: 0; }
 .remote-cursor { position: fixed; top: 0; left: 0; z-index: 5; pointer-events: none; user-select: none; max-width: none; object-fit: fill; will-change: transform; }
 .remote-cursor[hidden] { display: none; }
+
+/* Avoid focus-triggered page magnification in touch webviews. */
+@media (any-pointer: coarse) { :root input, :root textarea, :root select { font-size: 16px; } }

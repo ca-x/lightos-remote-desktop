@@ -1,0 +1,104 @@
+export interface PicturePoint { x: number; y: number }
+export interface PictureBounds { left: number; top: number; right: number; bottom: number }
+
+/** Local picture magnification. It never changes the browser or remote resolution. */
+export function createPictureZoom(options: {
+  canvas: HTMLCanvasElement;
+  viewport: HTMLElement;
+  enabled: () => boolean;
+  bounds: () => PictureBounds;
+  touching: () => boolean;
+  changed: () => void;
+}) {
+  const { canvas, viewport } = options;
+  const lifecycle = new AbortController();
+  let scale = 1, x = 0, y = 0;
+  let safari: { scale: number; point: PicturePoint } | null = null;
+  const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
+  const listen = (target: EventTarget, name: string, handler: (event: any) => void) => {
+    target.addEventListener(name, handler, { signal: lifecycle.signal, capture: true, passive: false });
+  };
+  function base() {
+    const rect = canvas.getBoundingClientRect();
+    return { left: rect.left - x, top: rect.top - y, width: rect.width / scale, height: rect.height / scale };
+  }
+  function reset() {
+    scale = 1; x = y = 0; safari = null;
+    canvas.style.removeProperty("transform");
+    canvas.style.removeProperty("clip-path");
+    options.changed();
+  }
+  function render(rect = base()) {
+    if (!options.enabled() || scale <= 1) { reset(); return; }
+    const area = options.bounds();
+    const width = rect.width * scale, height = rect.height * scale;
+    const position = (start: number, size: number, low: number, high: number) => size <= high - low
+      ? low + (high - low - size) / 2 : clamp(start, high - size, low);
+    const left = position(rect.left + x, width, area.left, area.right);
+    const top = position(rect.top + y, height, area.top, area.bottom);
+    x = left - rect.left; y = top - rect.top;
+    canvas.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+    // clip-path uses untransformed element coordinates. Limit the picture to
+    // the safe desktop area, including the space reserved above the dock.
+    canvas.style.clipPath = `inset(${Math.max(0, area.top - top) / scale}px ${Math.max(0, left + width - area.right) / scale}px ${Math.max(0, top + height - area.bottom) / scale}px ${Math.max(0, area.left - left) / scale}px)`;
+    options.changed();
+  }
+  function gesture(from: PicturePoint, to: PicturePoint, ratio: number) {
+    if (!options.enabled() || ![from.x, from.y, to.x, to.y, ratio].every(Number.isFinite) || ratio <= 0) return;
+    const rect = base();
+    if (!rect.width || !rect.height) return;
+    const next = clamp(scale * ratio, 1, 4);
+    const imageX = (from.x - rect.left - x) / scale;
+    const imageY = (from.y - rect.top - y) / scale;
+    x = to.x - rect.left - imageX * next;
+    y = to.y - rect.top - imageY * next;
+    scale = next;
+    render(rect);
+  }
+  function anchor(event: { clientX?: number; clientY?: number }): PicturePoint {
+    if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) return { x: event.clientX!, y: event.clientY! };
+    const area = options.bounds();
+    return { x: (area.left + area.right) / 2, y: (area.top + area.bottom) / 2 };
+  }
+  listen(document, "wheel", (event: WheelEvent) => {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    // Chromium trackpad pinches arrive as Ctrl+wheel. Other targets only
+    // suppress browser zoom; ordinary wheel scrolling still reaches the peer.
+    if (event.target !== canvas || safari || options.touching()) return;
+    const units = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1;
+    const point = anchor(event);
+    gesture(point, point, Math.exp(-clamp(event.deltaY * units, -100, 100) * .01));
+  });
+  listen(document, "keydown", (event: KeyboardEvent) => {
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.isComposing
+      && (["Equal", "Minus", "Digit0", "NumpadAdd", "NumpadSubtract", "Numpad0"].includes(event.code)
+        || ["+", "-", "=", "0"].includes(event.key))) {
+      event.preventDefault(); // Keep propagation so remote applications still receive their shortcuts.
+    }
+  });
+  for (const name of ["touchstart", "touchmove"]) {
+    listen(document, name, (event: TouchEvent) => { if (event.touches.length > 1) event.preventDefault(); });
+  }
+  listen(document, "gesturestart", (event: Event & { scale?: number; clientX?: number; clientY?: number }) => {
+    event.preventDefault();
+    safari = event.target === canvas && options.enabled() && !options.touching()
+      ? { scale: 1, point: anchor(event) } : null;
+  });
+  listen(document, "gesturechange", (event: Event & { scale?: number; clientX?: number; clientY?: number }) => {
+    event.preventDefault();
+    if (!safari || options.touching() || !Number.isFinite(event.scale) || event.scale! <= 0) return;
+    const point = anchor(event);
+    gesture(safari.point, point, event.scale! / safari.scale);
+    safari = { scale: event.scale!, point };
+  });
+  listen(document, "gestureend", (event: Event) => { event.preventDefault(); safari = null; });
+  listen(window, "resize", () => render());
+  const observer = window.ResizeObserver ? new window.ResizeObserver(() => render()) : null;
+  observer?.observe(canvas); observer?.observe(viewport);
+  return {
+    gesture, reset, layout: () => render(), active: () => options.enabled() && scale > 1,
+    dispose() { lifecycle.abort(); observer?.disconnect(); reset(); },
+  };
+}
