@@ -111,8 +111,10 @@ manual unit installation or `enable` commands. Configuration and credentials
 remain in `/etc/lightos/remote-desktop.env`; existing values are preserved.
 The service names remain `lightos-remote-desktop.service` and
 `lightos-remote-desktop-session.service` because LightOS setup scripts depend
-on them. Package upgrades restart only the HTTP transport and preserve the
-persistent desktop owner. See [AUR service and package details](docs/aur.md).
+on them. The binary is authoritative for service definitions and initialization: AUR
+exports both units from the executable and calls its lifecycle commands, while
+pacman owns the installed files. Package upgrades restart only the HTTP
+transport and preserve the persistent desktop owner. See [AUR service and package details](docs/aur.md).
 
 ### Migration and cleanup for legacy manual installations
 
@@ -156,7 +158,7 @@ including terminals and v2rayN.**
      /etc/systemd/system/lightos-remote-desktop-session.service
    sudo rm -rf -- /etc/systemd/system/lightos-remote-desktop.service.d
    sudo systemctl daemon-reload
-   sudo /usr/lib/lightos-remoted/bootstrap
+   sudo lightos-remoted install-service --package-managed
    ```
 
    The old `90-native.conf` and `95-session.conf` are removed along with the old
@@ -236,13 +238,26 @@ sudo ./lightos-remoted install-service
 sudo ./lightos-remoted rollback-service
 ```
 
-`install-service` installs this executable and activates the existing LightOS
-service, preserving its original unit, Python payload, credentials and URL prefix.
-Failure restores the previous transaction. `--stage-only` skips activation.
-Rollback restores the previous version, which may already be Rust. The installer
-and unit template are embedded; no source checkout is required. Existing native
-desktop dependencies and any required private Aquamarine compatibility library
-must already be provisioned; installation does not download libraries or packages.
+`install-service` uses the new layout by default: it installs the executable,
+command entry and both complete systemd units, initializes a nonroot account and
+authentication, and enables the services. It preserves existing values in
+`/etc/lightos/remote-desktop.env`. It needs neither an existing Python service
+nor a source checkout. Desktop dependencies and any required private Aquamarine
+library must already be installed; it does not download packages.
+
+`--dry-run` only shows the installation plan. `--stage-only` installs files
+without creating accounts/authentication or starting services. Normal updates
+restart only the transport and retain the desktop owner. `rollback-service`
+restores the previous standalone file transaction while preserving credentials.
+Rolling back the first installation removes service files, so save work and
+explicitly stop both services before using `--stage-only` for that rollback.
+Standalone installation refuses package-owned files; update AUR installations
+through the package manager.
+
+Legacy or custom units under `/etc/systemd/system` are preserved rather than
+overwritten or stopped. Follow the migration steps above. To retain the old
+transactional layout explicitly, use `install-service --legacy` and
+`rollback-service --legacy`.
 
 ### Desktop controls
 

@@ -38,7 +38,7 @@ yay -S lightos-remoted-bin
 yay -Syu
 ```
 
-全新安装会自动初始化认证并启动服务，无需手动安装 unit 或执行 `enable`。配置和认证信息保存在 `/etc/lightos/remote-desktop.env`，已有值会保留。LightOS 平台脚本依赖原有服务名，因此继续使用 `lightos-remote-desktop.service` 和 `lightos-remote-desktop-session.service`。常规包升级只重启 HTTP 传输服务，保留常驻桌面及其应用。参见 [AUR 服务与打包说明](docs/aur.md)。
+全新安装会自动初始化认证并启动服务，无需手动安装 unit 或执行 `enable`。配置和认证信息保存在 `/etc/lightos/remote-desktop.env`，已有值会保留。LightOS 平台脚本依赖原有服务名，因此继续使用 `lightos-remote-desktop.service` 和 `lightos-remote-desktop-session.service`。服务定义和初始化逻辑以二进制内置版本为准：AUR 打包时从二进制导出两个 unit，安装钩子调用程序完成激活，文件由 pacman 管理。常规包升级只重启 HTTP 传输服务，保留常驻桌面及其应用。参见 [AUR 服务与打包说明](docs/aur.md)。
 
 ### 老用户迁移与清理（旧版手动安装）
 
@@ -73,7 +73,7 @@ AUR 检测到旧版手动安装时，会保留当前服务和桌面，不自动�
      /etc/systemd/system/lightos-remote-desktop-session.service
    sudo rm -rf -- /etc/systemd/system/lightos-remote-desktop.service.d
    sudo systemctl daemon-reload
-   sudo /usr/lib/lightos-remoted/bootstrap
+   sudo lightos-remoted install-service --package-managed
    ```
 
    旧的 `90-native.conf`、`95-session.conf` 随上述旧 drop-in 目录一起移除；AUR 的完整 unit 已包含程序路径和 session 依赖，无需重新安装这两个文件。pacman 不会自动删除这些旧手动安装的文件。若目录内还有自定义配置，先备份并逐项迁移。
@@ -123,7 +123,11 @@ sudo ./lightos-remoted install-service
 sudo ./lightos-remoted rollback-service
 ```
 
-`install-service` 安装当前程序并激活 LightOS 服务，保留已有认证、Python 平台文件和 URL 前缀。失败时恢复之前的安装事务；`--stage-only` 只部署、不激活。`rollback-service` 恢复上一个版本，其中也可能是 Rust 版本。安装器和 unit 模板已内嵌，无需源码目录。原生桌面依赖和必要的私有 Aquamarine 兼容库仍须预先安装，这个命令不下载库或软件包。
+`install-service` 默认按新约定安装程序、命令入口和两个完整 systemd unit，自动初始化非 root 账户与认证，再启用服务。配置仍使用 `/etc/lightos/remote-desktop.env`，已有值会保留。无需已有的 Python service，也无需源码目录；桌面依赖和所需的 Aquamarine 兼容库仍须预先安装，程序不下载软件包。
+
+`--dry-run` 只显示安装计划，`--stage-only` 只部署文件，不创建账户、认证或启动服务。常规更新只重启传输服务，保留桌面 owner。`rollback-service` 恢复上一次独立安装事务，保留认证；若回退首次安装会移除服务文件，须先保存工作并主动停止两个服务，再用 `--stage-only` 回退。AUR 已管理的文件不会被独立安装器覆盖，请通过包管理器升级。
+
+检测到旧版或自定义的 `/etc/systemd/system` unit 时，不会直接覆盖或停止旧桌面，应按上文迁移。若要继续使用旧路径的事务迁移流程，可显式指定 `install-service --legacy` 和 `rollback-service --legacy`。
 
 ### 桌面操作
 

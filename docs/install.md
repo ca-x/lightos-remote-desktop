@@ -1,10 +1,55 @@
-# Installing the native candidate
+# Service installation
+
+## Current standalone and AUR installation
+
+The executable is the source of truth for both service definitions and their
+lifecycle. `sudo ./lightos-remoted install-service` supports a fresh system: it
+installs `/usr/lib/lightos-remoted/lightos-remoted`, the `/usr/bin/lightos-remoted`
+entry and both complete vendor units, initializes a nonroot account and private
+authentication if absent, then starts/enables the services. Existing credentials
+and native settings are preserved. Desktop dependencies and any required private
+Aquamarine library must already be installed; this command does not fetch them.
+
+```sh
+./lightos-remoted install-service --dry-run
+sudo ./lightos-remoted install-service
+sudo ./lightos-remoted rollback-service
+```
+
+`--dry-run` is a rootless, read-only plan; `--stage-only` deploys files without
+initializing accounts/credentials or starting services. Standalone transactions
+are retained under `/var/lib/lightos-remoted-install`; activation/recovery state
+uses `/var/lib/lightos-remoted-package`. Normal upgrades retain the desktop
+owner and restart only transport. A first-install rollback requires explicitly
+saving work, stopping both services and using `rollback-service --stage-only`,
+because it removes the newly installed service files. Rollback retains credentials.
+
+AUR uses `install-service --print-unit transport` and `--print-unit session` to
+obtain the same embedded units, which pacman owns. Its lifecycle hook calls the
+installed executable with `--package-managed`, `--snapshot` or `--remove`.
+Standalone installation refuses package-owned files. Removal disables future
+startup of both services without stopping their currently running processes.
+See [AUR details](aur.md) for installation and legacy migration.
+
+Virtual mode starts/enables the owner before activating transport; an already
+running owner is retained. Attached physical mode does not start a virtual
+owner, and disables its future startup without stopping a previously running
+owner. Save work before deliberately switching or ending that existing desktop.
+The transport unit orders after the owner but does not unconditionally require it.
+
+Custom or legacy `/etc/systemd/system` units/drop-ins are not silently replaced.
+Back them up and follow the README migration steps. The old migration path
+remains available explicitly through `install-service --legacy` and
+`rollback-service --legacy`. The rest of this document describes that legacy
+transactional layout and compatibility-library provisioning.
+
+## Legacy migration reference
 
 The executable embeds this transactional installer. On a provisioned LightOS
-machine, `sudo ./lightos-remoted install-service` replaces the existing
+machine, `sudo ./lightos-remoted install-service --legacy` replaces the existing
 Python service command and activates Rust after dependency and health checks.
-Use `install-service --dry-run` for read-only checks, `--stage-only` to avoid
-restarting, and `sudo ./lightos-remoted rollback-service` for the previous
+Use `install-service --legacy --dry-run` for read-only checks, `--stage-only` to avoid
+restarting, and `sudo ./lightos-remoted rollback-service --legacy` for the previous
 transaction. Root is needed only for installation, never for desktop runtime.
 This does not bootstrap Cage/Hyprland or the version-specific Aquamarine patch.
 
@@ -49,7 +94,7 @@ on shared host audio, host Pulse authentication or copied host cookies. No manua
 user-group changes are required. The private-audio prototype captured more than
 76 KB of PCM; the integrated runtime still requires installed WebSocket audio
 validation. Doctor/HTTP health alone does not prove working audio.
-The unreleased native-media binary links `libpulse.so.0` even with audio disabled;
+The native-media binary links `libpulse.so.0` even with audio disabled;
 install the runtime library before replacing an older executable.
 
 ## Provision the private compatibility library first
@@ -126,7 +171,7 @@ Power loss/storage failures still require operator inspection.
 
 ```sh
 bash scripts/install.sh --check
-bash scripts/install.sh --dry-run --binary /absolute/path/to/lightos-remote-desktop
+bash scripts/install.sh --dry-run --binary /absolute/path/to/lightos-remoted
 bash -n scripts/install.sh
 bash -n scripts/activation.sh
 bash -n tests/installer.sh
@@ -195,9 +240,9 @@ No account memberships, host audio authentication data or permissions are change
 ## Stage and explicitly activate (root required)
 
 ```sh
-sudo bash scripts/install.sh --binary /absolute/path/to/lightos-remote-desktop
+sudo bash scripts/install.sh --binary /absolute/path/to/lightos-remoted
 # After separate-port real desktop acceptance and review:
-sudo bash scripts/install.sh --binary /absolute/path/to/lightos-remote-desktop --activate
+sudo bash scripts/install.sh --binary /absolute/path/to/lightos-remoted --activate
 ```
 
 Staging does not call systemctl, restart or enable the service. It DOES change
