@@ -8,6 +8,23 @@ pipeline is launched. Browser hardware decoding is independent of server encodin
 The current capture/input service remains Linux Wayland. Encoder adapters for
 other operating systems do not implement Windows or macOS remote desktop sessions.
 
+## Arch Linux / Omarchy optional package
+
+```sh
+yay -S lightos-remoted-bin
+yay -S lightos-codec-ffmpeg-bin  # optional GPU encoding worker
+```
+
+The helper is an optional precompiled dependency, built in Arch Linux CI from
+the release source tag against Arch's FFmpeg ABI. It installs beside the managed
+service executable; no worker path setting is needed. The service keeps its built-in OpenH264 and
+JPEG encoders when the helper is absent or hardware probing fails. Installing,
+upgrading or removing the helper refreshes an already-running managed transport
+to clear encoder probes, while desktop applications remain running. Stopped,
+legacy and recovery services are left alone. After a system FFmpeg ABI change,
+update the helper package when its recorded SONAME dependencies require it.
+GPU drivers and service-user device access are still required. See [AUR packaging](aur.md).
+
 ## Build and runtime dependencies
 
 The core executable does not link FFmpeg. A missing, incompatible or broken

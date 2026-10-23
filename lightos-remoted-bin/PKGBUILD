@@ -11,6 +11,7 @@ depends=('glibc' 'libgcc' 'libstdc++' 'wayland' 'libxkbcommon' 'libpulse'
          'libglvnd' 'libhyprutils.so' 'libdisplay-info.so' 'libinput' 'mesa' 'pixman' 'seatd' 'systemd-libs'
          'cage' 'ghostty' 'ttf-liberation' 'dbus' 'pipewire' 'pipewire-pulse'
          'wireplumber' 'wl-clipboard' 'systemd' 'shadow' 'bash' 'coreutils' 'util-linux' 'gawk')
+optdepends=('lightos-codec-ffmpeg-bin: Optional native hardware H.264 encoders; software fallback remains available')
 makedepends=('cmake' 'ninja' 'pkgconf' 'hyprwayland-scanner' 'wayland-protocols' 'hwdata' 'patch')
 provides=("lightos-remoted=$pkgver" "lightos-remote-desktop=$pkgver")
 conflicts=('lightos-remoted' 'lightos-remote-desktop')

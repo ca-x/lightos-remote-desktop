@@ -7,6 +7,32 @@ yay -S lightos-remoted-bin
 yay -Syu
 ```
 
+For optional hardware H.264 encoding, install the separate binary package:
+
+```sh
+yay -S lightos-codec-ffmpeg-bin
+```
+
+`lightos-remoted-bin` lists this as an optional dependency and works without it.
+The helper supplies FFmpeg-backed GPU encoders; it does not replace the service
+or desktop owner. It is built from the same upstream release tag against Arch's
+FFmpeg headers and libraries in Arch Linux CI. AUR downloads that dedicated
+Arch archive; the Ubuntu worker archive is never used on Arch. There is no local
+Rust or C++ compilation. Packaging verifies its checksum, source/ABI manifest,
+ELF dependencies and notices. Fixed FFmpeg SONAME dependencies prevent installing
+a worker against incompatible libraries. A new Arch worker package is required
+when those ABIs change.
+
+The service discovers `/usr/lib/lightos-remoted/lightos-codec-ffmpeg` beside its
+own executable. Installing, upgrading or removing the helper refreshes only an
+already-active transport with the canonical managed executable and unit. The
+hook skips stopped services, legacy/custom base units and recovery instances;
+it never starts or restarts the desktop owner. Existing GUI applications remain
+running, though browser/RDP connections reconnect. This refresh clears cached
+encoder probes. Drivers and service-user GPU access still determine whether
+hardware encoding works. Missing or unusable hardware falls back to built-in
+software H.264, then JPEG as needed.
+
 On a fresh system, installation creates the nonroot `lightos-remoted` account,
 generates a private random password, checks the candidate, and enables/starts
 `lightos-remote-desktop.service`. No manual service enable step is required. The
@@ -137,32 +163,54 @@ generic minimal desktop under the dedicated account. When an existing
 configured account is retained, its own home and shell preferences are used;
 configuration is not copied between accounts.
 
-The core works without the optional FFmpeg worker. The Ubuntu-24.04 worker release
-asset is not installed on Arch. A separately validated, Arch-compatible
-`/usr/lib/lightos-remoted/lightos-codec-ffmpeg` can be supplied locally; package
-upgrades preserve it because it is not a package-owned file. Old legacy helpers
-are left in their old deployment rather than copied across incompatible layouts.
+The core works without the optional `lightos-codec-ffmpeg-bin` package. Its helper is
+owned by that package; the main package owns the service binary and units.
+A separately validated Arch-compatible helper may also be installed locally at
+`/usr/lib/lightos-remoted/lightos-codec-ffmpeg`, but move that unmanaged file aside
+before installing the helper package to avoid a pacman file conflict. Old legacy
+helpers stay in their old deployment rather than crossing incompatible layouts.
 
 ## Release automation
 
-`.github/workflows/aur.yml` runs for published releases or a manual dispatch with
-an explicit `vX.Y.Z` tag. It rejects draft/prerelease/malformed/downgrade inputs,
-requires successful tag CI, checks the exact four release assets and core checksum,
-and verifies the renamed ELF and LICENSE. Tag CI explicitly dispatches the AUR
-workflow after automatically publishing a stable release, since events created by
-GitHub's own token do not trigger another workflow. Draft releases wait until
-publication. If a dispatch needs to be retried, run:
+`.github/workflows/aur.yml` accepts only an explicit workflow dispatch with a
+`vX.Y.Z` tag. It rejects draft/prerelease/malformed/downgrade inputs,
+requires successful tag CI, checks the exact six release assets and core checksum,
+and verifies both ELF payloads, the worker ABI manifest and licenses. Tag CI
+explicitly dispatches the Arch worker workflow after publishing release assets,
+since events created by GitHub's own token do not trigger another workflow.
+The Arch worker job then dispatches AUR once the dedicated worker assets are
+available for a stable release. This CI → Arch CI → AUR order ensures that the
+Arch assets exist before AUR validation starts.
+
+Draft releases wait until publication. After manually publishing a draft,
+dispatch the Arch worker workflow; if all six assets are already present,
+dispatch AUR directly. Use the same AUR dispatch to retry publication:
 
 ```sh
-gh workflow run aur.yml -f version=v0.1.11
+gh workflow run aur.yml --ref main -f version=v0.1.11
 ```
 
-The organization's existing `AUR_USERNAME`, `AUR_EMAIL` and
-`AUR_SSH_PRIVATE_KEY` secrets are used by the pinned deploy action. `force=true`
-allows republishing the same version; it never permits a downgrade. GitHub keeps
-`SKIP` source checksums and no `.SRCINFO`. The deploy action downloads sources,
-writes real checksums and `.SRCINFO`, and publishes only `PKGBUILD`,
-`.SRCINFO`, `lightos-remoted-bin.install` and `aquamarine-wayland.patch`. Unit
+One shared guard checks both AUR versions before either deployment. The helper
+publishes first; the main package waits for success or an already-current helper.
+Retries skip each package independently when its version and pkgrel are current.
+Same-version dispatches retain each tracked pkgrel; a newer upstream version
+starts at pkgrel 1. `force=true` republishes identical metadata and never permits
+a version or pkgrel downgrade.
+
+Both deployments use the organization's existing `AUR_USERNAME`, `AUR_EMAIL` and
+`AUR_SSH_PRIVATE_KEY` secrets through the pinned action. GitHub keeps `SKIP`
+source checksums and no `.SRCINFO`; deployment generates real checksums and
+`.SRCINFO`. The exact package allowlists are:
+
+| Package | Published files |
+| --- | --- |
+| `lightos-remoted-bin` | `PKGBUILD`, `.SRCINFO`, `lightos-remoted-bin.install`, `aquamarine-wayland.patch` |
+| `lightos-codec-ffmpeg-bin` | `PKGBUILD`, `.SRCINFO`, `lightos-codec-ffmpeg-bin.install`, `validate-arch-codec.py` |
+
+Arch CI's `scripts/codec-worker-notices.py` collector retains the locked runtime
+dependency notices, including
+FFmpeg's Rust bindings, static OpenH264 and TurboJPEG native code and wrappers.
+System FFmpeg libraries and GPU drivers remain system dependencies. Unit
 definitions and installer scripts come from the release executable rather than
 independent AUR assets. The package installs the bundled Chinese and English
 READMEs alongside the bundled docs. No generated metadata or downloads are

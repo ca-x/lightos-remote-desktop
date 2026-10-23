@@ -1,7 +1,5 @@
 name: Publish AUR
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       version:
@@ -9,7 +7,7 @@ on:
         required: true
         type: string
       force:
-        description: Republish the same version
+        description: Republish packages already at the same version and pkgrel
         default: false
         type: boolean
 permissions:
@@ -18,23 +16,74 @@ concurrency:
   group: aur-lightos-remoted-bin
   cancel-in-progress: false
 jobs:
-  publish:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      publish: ${{ steps.release.outputs.publish }}
+      publish_helper: ${{ steps.release.outputs.publish_helper }}
+      pkgrel: ${{ steps.release.outputs.pkgrel }}
+      pkgrel_helper: ${{ steps.release.outputs.pkgrel_helper }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Verify published release, exact tag CI and both AUR versions
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.version }}
+          FORCE_RELEASE: ${{ inputs.force || false }}
+        run: bash .github/scripts/prepare-aur-release.sh
+  helper:
+    needs: prepare
+    if: needs.prepare.outputs.publish_helper == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: Verify published release and prepare metadata
-        id: release
+      - name: Apply verified helper metadata
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.version || github.event.release.tag_name }}
-          FORCE_RELEASE: ${{ inputs.force || false }}
-        run: bash .github/scripts/prepare-aur-release.sh
-      - name: Publish checksummed package to AUR
-        if: steps.release.outputs.publish == 'true'
+          AUR_VERSION: ${{ needs.prepare.outputs.version }}
+          AUR_PKGREL: ${{ needs.prepare.outputs.pkgrel_helper }}
+        run: sed -i "s/^pkgver=.*/pkgver=$AUR_VERSION/; s/^pkgrel=.*/pkgrel=$AUR_PKGREL/" lightos-codec-ffmpeg-bin/PKGBUILD
+      - name: Publish optional native FFmpeg worker first
+        uses: KSXGitHub/github-actions-deploy-aur@da03e160361ce01bf087e790b6ffd196d7dccff7 # v4.1.3
+        with:
+          pkgname: lightos-codec-ffmpeg-bin
+          pkgbuild: ./lightos-codec-ffmpeg-bin/PKGBUILD
+          updpkgsums: true
+          assets: |
+            ./lightos-codec-ffmpeg-bin/lightos-codec-ffmpeg-bin.install
+            ./lightos-codec-ffmpeg-bin/validate-arch-codec.py
+          post_process: bash /github/workspace/.github/scripts/prune-lightos-aur.sh lightos-codec-ffmpeg-bin
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: Update to version ${{ needs.prepare.outputs.version }}
+          ssh_keyscan_types: rsa,ecdsa,ed25519
+  publish:
+    needs: [prepare, helper]
+    if: >-
+      always() && needs.prepare.result == 'success' &&
+      (needs.helper.result == 'success' || needs.helper.result == 'skipped') &&
+      needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Apply verified main package metadata
+        env:
+          AUR_VERSION: ${{ needs.prepare.outputs.version }}
+          AUR_PKGREL: ${{ needs.prepare.outputs.pkgrel }}
+        run: sed -i "s/^pkgver=.*/pkgver=$AUR_VERSION/; s/^pkgrel=.*/pkgrel=$AUR_PKGREL/" lightos-remoted-bin/PKGBUILD
+      - name: Publish desktop with its optional helper available
         uses: KSXGitHub/github-actions-deploy-aur@da03e160361ce01bf087e790b6ffd196d7dccff7 # v4.1.3
         with:
           pkgname: lightos-remoted-bin
@@ -43,9 +92,9 @@ jobs:
           assets: |
             ./lightos-remoted-bin/lightos-remoted-bin.install
             ./lightos-remoted-bin/aquamarine-wayland.patch
-          post_process: bash /github/workspace/.github/scripts/prune-lightos-aur.sh
+          post_process: bash /github/workspace/.github/scripts/prune-lightos-aur.sh lightos-remoted-bin
           commit_username: ${{ secrets.AUR_USERNAME }}
           commit_email: ${{ secrets.AUR_EMAIL }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: Update to version ${{ steps.release.outputs.version }}
+          commit_message: Update to version ${{ needs.prepare.outputs.version }}
           ssh_keyscan_types: rsa,ecdsa,ed25519

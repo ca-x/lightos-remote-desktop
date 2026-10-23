@@ -112,7 +112,8 @@ python3 - "$repository" <<'PY'
 import pathlib, sys
 root = pathlib.Path(sys.argv[1])
 workflow = (root / '.github/workflows/aur.yml').read_text()
-assets = workflow.split('          assets: |\n', 1)[1].split('          post_process:', 1)[0]
+main = workflow.split('          pkgname: lightos-remoted-bin\n', 1)[1]
+assets = main.split('          assets: |\n', 1)[1].split('          post_process:', 1)[0]
 assert assets.split() == ['./lightos-remoted-bin/lightos-remoted-bin.install', './lightos-remoted-bin/aquamarine-wayland.patch']
 PY
 checks=$((checks+1))
