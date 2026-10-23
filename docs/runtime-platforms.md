@@ -86,7 +86,10 @@ GNOME/KDE hardware acceptance remains separate from build compatibility.
 Attached physical sessions use logind lock state where an exact local session
 can be identified. Locking clears the video, releases input and blocks further
 input/clipboard operations while retaining the browser connection; unlocking
-resumes on the same backend. A running logind with an unidentifiable or failed
+resumes on the same backend. UWSM compositors can retain a TTY login in logind:
+the verified Wayland socket peer's runtime and login ID identify that exact
+session even before its startup environment contains `WAYLAND_DISPLAY`.
+A running logind with an unidentifiable or failed
 session query is not treated as an unlocked desktop. The service never unlocks a
 login session or changes host lock policy. See [desktop switching](desktop-switching.md)
 for explicit target options and current platform verification boundaries.

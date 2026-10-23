@@ -70,17 +70,13 @@ impl SessionLock {
         } else {
             None
         };
+        let peer_login = peer.as_ref().and_then(|(pid, _)| {
+            peer_wayland_environment(*pid)
+                .ok()
+                .and_then(|environment| verified_peer_login(target, environment).ok().flatten())
+        });
         let wayland_login = if peer.is_some() && peer_session.is_none() {
-            let peer_login = peer.as_ref().and_then(|(pid, _)| {
-                peer_wayland_environment(*pid)
-                    .ok()
-                    .and_then(|(display, runtime, id)| {
-                        exact_wayland_login(target, display, runtime, id)
-                            .ok()
-                            .flatten()
-                    })
-            });
-            Some(match peer_login {
+            Some(match peer_login.clone() {
                 Some(id) => id,
                 None => exact_wayland_login(
                     target,
@@ -121,7 +117,7 @@ impl SessionLock {
                 continue;
             }
             let matches_target = if target.wayland_socket.is_some() {
-                kind == "wayland"
+                wayland_login_kind(&kind, &id, peer_login.as_deref())
             } else if let Some(display) = &target.x11_display {
                 let selected: String = session.get_property("Display").await?;
                 kind == "x11" && display_number(&selected) == display_number(display)
@@ -177,13 +173,14 @@ async fn selected_wayland_peer(socket: &std::path::Path) -> Result<(u32, tokio::
     Ok((pid, stream))
 }
 
-fn peer_wayland_environment(
-    pid: u32,
-) -> Result<(
-    Option<std::path::PathBuf>,
-    Option<std::path::PathBuf>,
-    Option<String>,
-)> {
+struct PeerWaylandEnvironment {
+    display: Option<std::path::PathBuf>,
+    runtime: Option<std::path::PathBuf>,
+    id: Option<String>,
+    session_type: Option<String>,
+}
+
+fn peer_wayland_environment(pid: u32) -> Result<PeerWaylandEnvironment> {
     let path = std::path::PathBuf::from(format!("/proc/{pid}/environ"));
     let file = File::open(&path)?;
     ensure!(
@@ -208,8 +205,55 @@ fn peer_wayland_environment(
         .map(std::ffi::OsString::from_vec)
         .map(std::path::PathBuf::from);
     let id = value(b"XDG_SESSION_ID=").and_then(|value| String::from_utf8(value).ok());
-    Ok((display, runtime, id))
+    let session_type = value(b"XDG_SESSION_TYPE=").and_then(|value| String::from_utf8(value).ok());
+    Ok(PeerWaylandEnvironment {
+        display,
+        runtime,
+        id,
+        session_type,
+    })
 }
+// UWSM starts the compositor in the user manager, outside the login's
+// process scope. Its startup environment knows the exact login ID but cannot
+// yet contain WAYLAND_DISPLAY, because the compositor creates that socket.
+// This fallback is only for the verified socket peer, never the service's env.
+fn verified_peer_login(
+    target: &SessionTarget,
+    environment: PeerWaylandEnvironment,
+) -> Result<Option<String>> {
+    let PeerWaylandEnvironment {
+        display,
+        runtime,
+        id,
+        session_type,
+    } = environment;
+    if display.is_some() {
+        return exact_wayland_login(target, display, runtime, id);
+    }
+    ensure!(
+        session_type.as_deref() == Some("wayland"),
+        "peer is not a Wayland login compositor"
+    );
+    let socket = target
+        .wayland_socket
+        .as_ref()
+        .context("no selected Wayland socket")?;
+    ensure!(
+        runtime
+            .as_deref()
+            .is_some_and(|runtime| socket.parent() == Some(runtime)),
+        "selected socket is outside the peer runtime"
+    );
+    Ok(Some(
+        id.filter(|id| !id.is_empty())
+            .context("Wayland peer has no login session ID")?,
+    ))
+}
+
+fn wayland_login_kind(kind: &str, id: &str, peer_login: Option<&str>) -> bool {
+    kind == "wayland" || (kind == "tty" && peer_login == Some(id))
+}
+
 fn exact_wayland_login(
     target: &SessionTarget,
     display: Option<std::path::PathBuf>,
@@ -606,6 +650,46 @@ mod tests {
             .is_err()
         );
         assert!(exact_wayland_login(&target, Some("wayland-2".into()), runtime, None).is_err());
+    }
+    #[test]
+    fn uwsm_socket_peer_retains_exact_tty_login_without_inheriting_a_display() {
+        let target =
+            SessionTarget::wayland("/run/user/1000/wayland-2".into(), "/run/user/1000".into());
+        let environment = || PeerWaylandEnvironment {
+            display: None,
+            runtime: Some("/run/user/1000".into()),
+            id: Some("c16".into()),
+            session_type: Some("wayland".into()),
+        };
+        assert_eq!(
+            verified_peer_login(&target, environment())
+                .unwrap()
+                .as_deref(),
+            Some("c16")
+        );
+        assert!(wayland_login_kind("tty", "c16", Some("c16")));
+        assert!(!wayland_login_kind("tty", "c17", Some("c16")));
+        assert!(!wayland_login_kind("tty", "c16", None));
+        for invalid in [
+            PeerWaylandEnvironment {
+                id: None,
+                ..environment()
+            },
+            PeerWaylandEnvironment {
+                runtime: Some("/run/user/1001".into()),
+                ..environment()
+            },
+            PeerWaylandEnvironment {
+                session_type: Some("tty".into()),
+                ..environment()
+            },
+            PeerWaylandEnvironment {
+                display: Some("wayland-1".into()),
+                ..environment()
+            },
+        ] {
+            assert!(verified_peer_login(&target, invalid).is_err());
+        }
     }
     #[tokio::test]
     async fn wayland_socket_peer_identifies_the_server_process() {
