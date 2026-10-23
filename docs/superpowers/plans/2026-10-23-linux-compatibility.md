@@ -76,3 +76,24 @@
 - [ ] Integrate the three tasks; run targeted tests, formatting and Clippy, plus existing frontend/installer guards when affected.
 - [ ] Obtain an independent integrated review and resolve findings.
 - [ ] Commit/push promptly; merge and publish only after checks, preserving tag-driven automation and user-managed production installation.
+
+## Research checkpoint and expanded scope (2026-10-23)
+
+Implementation is paused until the uu-remote comparison is consolidated in
+`docs/research/2026-10-23-uu-remote-linux.md`. Existing unchecked implementation
+remains work in progress, not shipped support.
+
+The user additionally requires a `DesktopBackend` trait and native X11 capture,
+input, text and clipboard in this iteration. Backend discovery and selection
+must be automatic by default; backend splitting must not become a manual setup
+step. Selection resolves a trusted target session first, then probes real
+capabilities on that target. XWayland must not override the actual Wayland
+session. Discovery must not prompt for Portal consent; opening a user-requested
+connection may request consent. Denial/cancellation must not trigger a bypass or
+repeated prompts.
+
+Before resuming, expand the tasks to cover the selector, shared Frame/InputGuard
+contracts, Wayland migration, X11 authority/library isolation validation, native
+X11 backend and isolated Xvfb acceptance tests. Preserve separate initializer
+and display-control traits. Portal is a separate backend capability path and
+must remain explicitly unsupported until actually implemented and verified.
