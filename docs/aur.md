@@ -10,8 +10,9 @@ yay -Syu
 On a fresh system, installation creates the nonroot `lightos-remoted` account,
 generates a private random password, checks the candidate, and enables/starts
 `lightos-remote-desktop.service`. No manual service enable step is required. The
-transport starts `lightos-remote-desktop-session.service`, which owns the desktop and
-its applications independently. Ghostty is installed for the generic desktop.
+installer also enables/starts `lightos-remote-desktop-session.service` for a fresh
+virtual desktop. That service owns the desktop and its applications independently.
+Ghostty is installed for the generic desktop.
 Open `http://HOST:8766`; the initial username is `admin`. Read the password locally
 as root:
 
@@ -28,48 +29,58 @@ a shell script. Edit it with `sudoedit /etc/lightos/remote-desktop.env`; an opti
 | --- | --- |
 | Command | `/usr/bin/lightos-remoted` |
 | Packaged executable | `/usr/lib/lightos-remoted/lightos-remoted` |
-| Automatic setup/retry | `/usr/lib/lightos-remoted/bootstrap` |
+| Automatic setup/retry | `lightos-remoted install-service --package-managed` |
 | Private Aquamarine library | `/usr/lib/lightos-remoted/aquamarine/libaquamarine.so.14` |
 | Configuration | `/etc/lightos/remote-desktop.env` |
 | Desktop account home/data | `/var/lib/lightos-remoted` |
 | Root-owned package recovery data | `/var/lib/lightos-remoted-package` |
 | Transport / desktop runtime | `/run/lightos-remoted` / `/run/lightos-remoted-session` |
 
+The release executable owns both service definitions and all installation
+behavior. During packaging, `makepkg` exports the two units with
+`lightos-remoted install-service --print-unit transport` and `--print-unit session`
+as the build user, then installs those files under pacman ownership. The package
+contains no separate bootstrap or activation script. Its install/upgrade/removal
+hooks call the installed executable with `install-service --package-managed`
+after installation or upgrade, `install-service --snapshot` before an upgrade,
+and `install-service --remove` before removal. Standalone installation uses the same installer without `--package-managed`; it creates
+both services and refuses to overwrite package-owned files.
+
 Normal upgrades check the candidate and restart only the transport. The desktop
 owner has no `PartOf`/`BindsTo` relationship to the transport, so existing desktop
-applications keep running. The package never invokes the legacy `install-service`
-command, whose binary installation paths belong to the older deployment. The
-existing service names and canonical auth file remain unchanged because LightOS
-platform setup scripts depend on them; no service aliases are installed.
+applications keep running. Package hooks select `--package-managed` so the
+installer activates the pacman-owned payload and units. The existing service names
+and canonical auth file remain unchanged because LightOS platform setup scripts
+depend on them; no service aliases are installed.
 
 Before replacing a previous new-layout package, the upgrade hook snapshots its
 binary and any locally installed sibling codec helper. Persistent digest markers
 allow only a successfully activated payload to replace this recovery copy;
-a candidate rejected by the doctor or later activation gates cannot displace it. If activation fails, the
-hook reports failure and attempts to restart the previous transport through a
-runtime systemd override. It does not overwrite package-owned files or restart
+a candidate rejected by the doctor or later activation gates cannot displace it.
+If activation fails, the hook reports failure and attempts to restart the previous
+transport through a runtime systemd override. It does not overwrite package-owned files or restart
 the desktop owner. This recovery override lasts until reboot; correct the failed
 package before rebooting. After correcting dependencies or installing a working
 package, retry the same checks and activation with:
 
 ```sh
-sudo /usr/lib/lightos-remoted/bootstrap
+sudo lightos-remoted install-service --package-managed
 systemctl status lightos-remote-desktop.service lightos-remote-desktop-session.service
 journalctl -u lightos-remote-desktop.service -u lightos-remote-desktop-session.service
 ```
 
-Removing the package disables future transport startup but does not stop a running
-desktop, remove credentials/account/data, or delete an older installation. Finish
-and save remote work before deliberately stopping/removing retained sessions.
+Removing the package disables future transport and desktop-owner startup while
+retaining running services, credentials/account/data, and older installations.
+Finish and save remote work before deliberately stopping/removing retained sessions.
 
 ## Existing installations and manual migration
 
 The setup hook detects an old transport or owner unit in `/etc/systemd/system`,
 or an active transport whose `/proc/PID/exe` is outside the new packaged/recovery
 binary paths. A running instance of this package is recognized by its executable
-path and remains eligible for normal upgrades. In that case it leaves the legacy installation
-untouched and skips new-service activation, preventing a second server on port
-8766. Installing this package does not migrate or stop its persistent desktop.
+path and remains eligible for normal upgrades. When a legacy instance is
+detected, setup leaves it untouched and skips new-service activation, preventing
+a second server on port 8766. Installing this package does not migrate or stop its persistent desktop.
 
 Migration requires an intentional session cutover. Back up the old units,
 drop-ins, `/etc/lightos/remote-desktop.env`,
@@ -81,7 +92,7 @@ In particular, the old installer's `90-native.conf` and `95-session.conf` point 
 the old payload/runtime and must not override the complete AUR units. Do not
 rewrite these live while the old desktop is running. Continue by
 preserving `/etc/lightos` and `/opt/lightos/remote-desktop` (the original Python
-payload/platform setup integration). Reload systemd, and run `sudo /usr/lib/lightos-remoted/bootstrap`. Confirm the new
+payload/platform setup integration). Reload systemd, and run `sudo lightos-remoted install-service --package-managed`. Confirm the new
 service and browser login work before deleting any old configuration, state or
 binaries. The README has the explicit cleanup commands. Package hooks never run
 those cleanup commands.
@@ -91,7 +102,7 @@ compatibility library and `/var/lib/lightos-remote-desktop` recovery state are
 retained until you remove them yourself. The canonical
 `/etc/lightos/remote-desktop.env` and optional native environment are preserved
 byte for byte. If `LIGHTOS_REMOTE_DESKTOP_USER` names an existing nonroot account,
-the bootstrap honors its UID, primary group and home in both service units.
+the binary installer honors its UID, primary group and home in both service units.
 After reloading systemd it also resolves both effective unit users through NSS
 and requires the configured nonroot UID, including when later drop-ins override
 `User=`. Root aliases and a mismatched desktop-owner UID are rejected before
@@ -148,11 +159,15 @@ The organization's existing `AUR_USERNAME`, `AUR_EMAIL` and
 `AUR_SSH_PRIVATE_KEY` secrets are used by the pinned deploy action. `force=true`
 allows republishing the same version; it never permits a downgrade. GitHub keeps
 `SKIP` source checksums and no `.SRCINFO`. The deploy action downloads sources,
-writes real checksums and `.SRCINFO`, and publishes only the exact package-file
-allowlist. No generated metadata or downloads are committed back to GitHub.
+writes real checksums and `.SRCINFO`, and publishes only `PKGBUILD`,
+`.SRCINFO`, `lightos-remoted-bin.install` and `aquamarine-wayland.patch`. Unit
+definitions and installer scripts come from the release executable rather than
+independent AUR assets. The package installs the bundled Chinese and English
+READMEs alongside the bundled docs. No generated metadata or downloads are
+committed back to GitHub.
 
 Validation must distinguish mocked service activation from a real fresh-machine
-installation. The bootstrap fixtures exercise initialization, preservation,
+installation. The installer fixtures exercise initialization, preservation,
 transport-only upgrades, activation recovery, legacy detection and removal
 without changing host services. A successful fixture run alone does not establish
 that every supported GPU or fresh Arch machine can run the nested desktop.

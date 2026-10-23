@@ -118,4 +118,39 @@ checks=$((checks+1))
 reset
 printf 'invalid checksum\n' > "$temporary/lightos-remoted-linux-x86_64.tar.gz.sha256"
 reject 'invalid checksum'
+# The deploy action runs pruning after real checksums and .SRCINFO generation.
+prune_fixture=$temporary/prune
+reset_prune() {
+    local file
+    rm -rf -- "$prune_fixture"
+    mkdir -p "$prune_fixture/.git" "$prune_fixture/src" "$prune_fixture/pkg"
+    printf "sha256sums=('abc123')\n" > "$prune_fixture/PKGBUILD"
+    for file in .SRCINFO lightos-remoted-bin.install aquamarine-wayland.patch; do
+        printf 'fixture\n' > "$prune_fixture/$file"
+    done
+    for file in bootstrap.sh activation.sh lightos-remote-desktop.service lightos-remote-desktop-session.service download.tar.gz upstream.env .state.json; do
+        printf 'obsolete fixture\n' > "$prune_fixture/$file"
+    done
+    ln -s /nonexistent "$prune_fixture/dangling-download"
+}
+prune() { (cd "$prune_fixture" && bash "$repository/.github/scripts/prune-lightos-aur.sh"); }
+reject_prune() { if prune; then echo "FAIL: pruning accepted $1" >&2; exit 1; fi; checks=$((checks+1)); }
+reset_prune
+prune
+printf '%s\n' .SRCINFO .git PKGBUILD aquamarine-wayland.patch lightos-remoted-bin.install > "$temporary/expected-allowlist"
+find "$prune_fixture" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort > "$temporary/actual-allowlist"
+cmp "$temporary/expected-allowlist" "$temporary/actual-allowlist"
+checks=$((checks+1))
+for file in PKGBUILD .SRCINFO lightos-remoted-bin.install aquamarine-wayland.patch; do
+    reset_prune
+    rm -- "$prune_fixture/$file"
+    reject_prune "missing $file"
+    reset_prune
+    rm -- "$prune_fixture/$file"
+    ln -s "$temporary/lightos-remoted-bin/PKGBUILD" "$prune_fixture/$file"
+    reject_prune "symlink $file"
+done
+reset_prune
+printf "sha256sums=('SKIP')\n" > "$prune_fixture/PKGBUILD"
+reject_prune 'unresolved checksum'
 printf 'AUR release guards: %s checks passed (fixture APIs; no external publication).\n' "$checks"

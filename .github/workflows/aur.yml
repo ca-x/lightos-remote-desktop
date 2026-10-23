@@ -42,10 +42,6 @@ jobs:
           updpkgsums: true
           assets: |
             ./lightos-remoted-bin/lightos-remoted-bin.install
-            ./lightos-remoted-bin/bootstrap.sh
-            ./lightos-remoted-bin/activation.sh
-            ./lightos-remoted-bin/lightos-remote-desktop.service
-            ./lightos-remoted-bin/lightos-remote-desktop-session.service
             ./lightos-remoted-bin/aquamarine-wayland.patch
           post_process: bash /github/workspace/.github/scripts/prune-lightos-aur.sh
           commit_username: ${{ secrets.AUR_USERNAME }}

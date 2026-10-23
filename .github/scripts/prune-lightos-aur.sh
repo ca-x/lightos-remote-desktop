@@ -4,11 +4,11 @@ set -euo pipefail
 for file in * .[^.]*; do
     [[ -e $file || -L $file ]] || continue
     case $file in
-        .git|.SRCINFO|PKGBUILD|lightos-remoted-bin.install|bootstrap.sh|activation.sh|lightos-remote-desktop.service|lightos-remote-desktop-session.service|aquamarine-wayland.patch) ;;
+        .git|.SRCINFO|PKGBUILD|lightos-remoted-bin.install|aquamarine-wayland.patch) ;;
         *) rm -rf -- "$file" ;;
     esac
 done
-for file in PKGBUILD .SRCINFO lightos-remoted-bin.install bootstrap.sh activation.sh lightos-remote-desktop.service lightos-remote-desktop-session.service aquamarine-wayland.patch; do
+for file in PKGBUILD .SRCINFO lightos-remoted-bin.install aquamarine-wayland.patch; do
     [[ -f $file && ! -L $file ]]
 done
 ! grep -q "'SKIP'" PKGBUILD

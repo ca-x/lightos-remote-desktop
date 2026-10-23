@@ -19,8 +19,8 @@ install=lightos-remoted-bin.install
 _aqcommit=f31c47a1b9d300847d8fc3108ad959448103dfc1
 _bundle=lightos-remoted-linux-x86_64
 source=("aquamarine-0.15.1-${_aqcommit}.tar.gz::https://codeload.github.com/hyprwm/aquamarine/tar.gz/${_aqcommit}"
-        'aquamarine-wayland.patch' 'bootstrap.sh' 'activation.sh' 'lightos-remote-desktop.service' 'lightos-remote-desktop-session.service')
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+        'aquamarine-wayland.patch' 'lightos-remoted-bin.install')
+sha256sums=('SKIP' 'SKIP' 'SKIP')
 source_x86_64=("${_bundle}-${pkgver}.tar.gz::${url}/releases/download/v${pkgver}/${_bundle}.tar.gz"
                "${_bundle}-${pkgver}.tar.gz.sha256::${url}/releases/download/v${pkgver}/${_bundle}.tar.gz.sha256")
 sha256sums_x86_64=('SKIP' 'SKIP')
@@ -47,9 +47,13 @@ build() {
 }
 
 package() {
+    local binary="$srcdir/${_bundle}/lightos-remoted"
+    local units="$srcdir/generated-systemd"
+    install -d "$units"
+    "$binary" install-service --print-unit transport > "$units/lightos-remote-desktop.service" || return 1
+    "$binary" install-service --print-unit session > "$units/lightos-remote-desktop-session.service" || return 1
+    [[ -s $units/lightos-remote-desktop.service && -s $units/lightos-remote-desktop-session.service ]] || return 1
     install -Dm755 "${_bundle}/lightos-remoted" "$pkgdir/usr/lib/lightos-remoted/lightos-remoted"
-    install -Dm644 activation.sh "$pkgdir/usr/lib/lightos-remoted/activation.sh"
-    install -Dm755 bootstrap.sh "$pkgdir/usr/lib/lightos-remoted/bootstrap"
     install -Dm755 aq-build/libaquamarine.so.0.15.1 "$pkgdir/usr/lib/lightos-remoted/aquamarine/libaquamarine.so.14"
     install -Dm644 "aquamarine-${_aqcommit}/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/aquamarine.txt"
     install -d "$pkgdir/usr/bin" "$pkgdir/usr/share/licenses/$pkgname" "$pkgdir/usr/share/doc/$pkgname"
@@ -57,6 +61,7 @@ package() {
     install -Dm644 "${_bundle}/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     cp -a "${_bundle}/licenses/." "$pkgdir/usr/share/licenses/$pkgname/"
     cp -a "${_bundle}/docs/." "$pkgdir/usr/share/doc/$pkgname/"
-    install -Dm644 lightos-remote-desktop.service "$pkgdir/usr/lib/systemd/system/lightos-remote-desktop.service"
-    install -Dm644 lightos-remote-desktop-session.service "$pkgdir/usr/lib/systemd/system/lightos-remote-desktop-session.service"
+    install -m644 "${_bundle}/README.md" "${_bundle}/README.en.md" "$pkgdir/usr/share/doc/$pkgname/"
+    install -Dm644 "$units/lightos-remote-desktop.service" "$pkgdir/usr/lib/systemd/system/lightos-remote-desktop.service"
+    install -Dm644 "$units/lightos-remote-desktop-session.service" "$pkgdir/usr/lib/systemd/system/lightos-remote-desktop-session.service"
 }
