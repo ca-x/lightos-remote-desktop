@@ -24,8 +24,18 @@ npm run build
 cargo build --release --locked --features bundled-jpeg,rdp
 ```
 
-Runtime RDP is off by default even in that binary. Enabling it requires a PEM
-certificate chain and matching PEM private key. The RDP listener defaults to
+Runtime RDP is off by default even in that binary. Open **Settings → RDP** to
+enable it or change its port (1–65535). Press Enter or leave the port field to
+apply it. Those are the only RDP controls; video quality remains negotiated with
+the RDP client. Toggling RDP or changing its port does not restart the HTTP server
+or desktop owner. A change disconnects RDP clients and releases held input while
+desktop applications continue running.
+
+Without explicit TLS files, enabling RDP creates a persistent self-signed
+certificate and private key using rcgen; no OpenSSL executable is needed. The
+settings page displays the actual bind address and the certificate SHA-256
+fingerprint. Verify that fingerprint through a trusted browser connection before
+accepting it in your RDP client. The RDP listener defaults to
 `127.0.0.1:3389`; HTTP listen settings do not change it. It uses the existing
 `--username` / `LIGHTOS_REMOTE_DESKTOP_AUTH_USER` and
 `--password` / `LIGHTOS_REMOTE_DESKTOP_AUTH_PASSWORD` credentials. The same
@@ -55,16 +65,47 @@ implemented by this feature.
 | --- | --- | --- |
 | `--rdp` | `LIGHTOS_REMOTE_DESKTOP_RDP` | `false` |
 | `--rdp-listen` | `LIGHTOS_REMOTE_DESKTOP_RDP_LISTEN` | `127.0.0.1:3389` |
-| `--rdp-tls-cert` | `LIGHTOS_REMOTE_DESKTOP_RDP_TLS_CERT` | required when enabled |
-| `--rdp-tls-key` | `LIGHTOS_REMOTE_DESKTOP_RDP_TLS_KEY` | required when enabled |
+| `--rdp-tls-cert` | `LIGHTOS_REMOTE_DESKTOP_RDP_TLS_CERT` | automatic persistent identity |
+| `--rdp-tls-key` | `LIGHTOS_REMOTE_DESKTOP_RDP_TLS_KEY` | automatic persistent identity |
+| `--rdp-settings` | `LIGHTOS_REMOTE_DESKTOP_RDP_SETTINGS` | service user state directory |
 
 Use `true`/`false` for the boolean environment setting. A public listen address
 must be explicitly configured and still requires TLS and credentials. TLS/key
-errors and occupied ports fail startup; the server never silently falls back to
-plaintext. A stalled authentication/activation attempt closes after 15 seconds
+errors and occupied ports reject the requested change, preserving the previous
+listener and saved settings. A failed optional listener at startup leaves the
+browser available and reports the error in Settings → RDP; it never silently
+falls back to plaintext. A stalled authentication/activation attempt closes after 15 seconds
 without reserving the browser controller. Input-route failure closes control and
 runs the existing held-input release barrier. HTTP shutdown closes RDP and releases its input before stopping the capture/input
 workers and waiting for HTTP connections to drain.
+
+## Persistence and server policy
+
+Settings live in `$XDG_STATE_HOME/lightos-remote-desktop/rdp/settings.json`, or
+`$HOME/.local/state/lightos-remote-desktop/rdp/settings.json` when XDG_STATE_HOME
+is unset. An absolute `--rdp-settings` path can override this location. The parent
+directory is private (0700), and settings and automatic identity files are 0600,
+owned by the service user. Writes use a synced temporary file and atomic rename.
+The sibling `settings.identity.pem` contains the certificate and private key;
+back it up privately to retain the identity when moving a deployment. Existing
+malformed, symlinked or publicly readable private state is rejected, not silently
+replaced. A damaged identity is never automatically rotated.
+
+Before the first saved change, `--rdp` and the port in `--rdp-listen` supply the
+initial state. Afterwards, saved enabled/port values take precedence, including
+saved `false` when a legacy startup command still contains `--rdp`. This lets a
+switch-off survive transport restarts. The IP address from `--rdp-listen` remains
+server policy and cannot be changed through the browser; it never follows the
+HTTP bind address automatically. Supply both explicit TLS options together to
+use an administrator-managed certificate/key; those paths always take precedence
+and the application never modifies their contents.
+
+The authenticated API is `GET`/`PUT <prefix>/api/rdp`. PUT accepts exactly
+`{"enabled":true,"port":3389}`. Both methods require browser Basic authentication,
+the `X-LightOS-RDP: 1` header and same-origin checks equivalent to MCP management.
+GET returns feature availability, active status, port, actual bind endpoint and a
+public fingerprint; it never exposes a key. Builds without RDP report unsupported
+and reject updates. Enabling on an attached physical desktop is rejected.
 
 ## Connect
 
@@ -116,7 +157,7 @@ its protocol. Verify the RDP certificate even when using the tunnel.
 - RDP audio, clipboard, files/drives, printer redirection, multiple monitors,
   client-requested resolution changes and Windows session management are not
   implemented. Continue using the browser path for its existing audio/clipboard
-  features. There are no new browser/mobile/IME settings or host config changes.
+  features. RDP controls do not change browser streaming quality or mobile/IME behavior.
 
 ## Verification
 
@@ -166,3 +207,10 @@ its ignored status in the general suite is not an interoperability claim by
 itself. `cargo build --release --locked` preserved the default software binary,
 and its CLI rejected an RDP enable request with the feature-required error.
 `npm run build` and `npm test` passed (84 Node tests and 15 Vitest tests).
+
+The settings unit tests exercise private persistence, a stable automatic identity
+across transport restarts, explicit TLS retention, occupied-port and malformed-TLS
+rejection, failed-save rollback, origin/auth/prefix guards, strict port validation,
+and the attached-desktop restriction. Component tests cover both controls,
+unavailable/error messages and cancellation when leaving the settings tab. These
+are isolated tests and do not install or change the host service.

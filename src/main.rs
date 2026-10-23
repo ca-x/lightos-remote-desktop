@@ -209,14 +209,11 @@ async fn serve(config: Config) -> Result<()> {
         }
     };
     let state = AppState::new(config, backend, session);
-    #[cfg(feature = "rdp")]
-    let rdp = lightos_remote_desktop::rdp::start(state.clone()).await?;
+    state.rdp.initialize(state.clone()).await;
     let failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let monitor = state.clone();
     let monitor_failed = failed.clone();
     tracing::info!(address = %listener.local_addr()?, "Rust desktop HTTP listener started");
-    #[cfg(feature = "rdp")]
-    let rdp_failure = rdp.as_ref().map(|service| service.failure_handle());
     let result = axum::serve(listener, router(state.clone())).with_graceful_shutdown(async move {
         let mut ticks = tokio::time::interval(Duration::from_secs(2));
         loop {
@@ -224,12 +221,6 @@ async fn serve(config: Config) -> Result<()> {
                 _ = interrupt.recv() => break,
                 _ = term.recv() => break,
                 _ = ticks.tick() => {
-                    #[cfg(feature = "rdp")]
-                    if rdp_failure.as_ref().is_some_and(|failed| failed.load(std::sync::atomic::Ordering::Acquire)) {
-                        tracing::error!("RDP transport stopped; exiting for supervised recovery");
-                        monitor_failed.store(true, std::sync::atomic::Ordering::Release);
-                        break;
-                    }
                     if !monitor.backend.frame_is_fresh(Duration::from_secs(5)) || !monitor.session.lock().is_ok_and(|mut session| session.healthy()) {
                         tracing::error!("desktop or capture stopped; exiting for supervised recovery");
                         monitor_failed.store(true, std::sync::atomic::Ordering::Release);
@@ -239,16 +230,11 @@ async fn serve(config: Config) -> Result<()> {
             }
         }
         monitor.shutdown_mcp();
-        #[cfg(feature = "rdp")]
-        if let Some(rdp) = rdp
-            && let Err(error) = rdp.stop().await
-        {
-            tracing::error!(%error, "RDP transport did not stop cleanly");
-            monitor_failed.store(true, std::sync::atomic::Ordering::Release);
-        }
+        monitor.rdp.shutdown().await;
         monitor.backend.stop();
     }).await;
     state.shutdown_mcp();
+    state.rdp.shutdown().await;
     state.backend.stop();
     result?;
     ensure!(

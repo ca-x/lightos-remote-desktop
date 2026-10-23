@@ -15,13 +15,14 @@ name = "lightos-remoted"
 path = "src/main.rs"
 
 [features]
-rdp = ["dep:async-trait", "dep:ironrdp-server", "dep:ironrdp-pdu", "dep:rustls-pemfile"]
+rdp = ["dep:async-trait", "dep:ironrdp-server", "dep:ironrdp-pdu", "dep:rustls-pemfile", "dep:rcgen"]
 bundled-jpeg = ["media-codec/bundled-jpeg", "turbojpeg/cmake", "turbojpeg/require-simd"]
 
 [dependencies]
 async-trait = { version = "0.1", optional = true }
 ironrdp-server = { version = "0.13", default-features = false, optional = true }
 ironrdp-pdu = { version = "0.9", optional = true }
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"], optional = true }
 rustls-pemfile = { version = "2", optional = true }
 stream-scheduler = { path = "crates/stream-scheduler" }
 media-codec = { path = "crates/media-codec" }

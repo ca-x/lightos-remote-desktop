@@ -16,7 +16,7 @@ fallback_root = repository / "docs/licenses/protocols"
 fallbacks = {(entry["name"], entry["version"]): entry for entry in json.loads((fallback_root / "sources.json").read_text())}
 packages = {package["id"]: package for package in metadata["packages"]}
 nodes = {node["id"]: node for node in metadata["resolve"]["nodes"]}
-roots = {"rmcp", "schemars", "rand", "sha2", "tokio-util", "ironrdp-server", "ironrdp-pdu", "rustls-pemfile", "bincode"}
+roots = {"rmcp", "schemars", "rand", "sha2", "tokio-util", "ironrdp-server", "ironrdp-pdu", "rustls-pemfile", "rcgen", "bincode"}
 pending = [key for key, package in packages.items() if package["name"] in roots]
 visited = set()
 while pending:

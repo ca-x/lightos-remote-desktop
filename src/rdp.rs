@@ -9,6 +9,9 @@ pub struct RdpConfig {
     /// Expose the current virtual desktop over authenticated TLS RDP (requires the rdp feature).
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_RDP", default_value_t = false)]
     pub rdp: bool,
+    /// Private persistent RDP settings (defaults to the service user state directory).
+    #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_RDP_SETTINGS")]
+    pub rdp_settings: Option<PathBuf>,
     #[arg(
         long,
         env = "LIGHTOS_REMOTE_DESKTOP_RDP_LISTEN",
@@ -25,6 +28,12 @@ pub struct RdpConfig {
 
 impl RdpConfig {
     pub fn validate(&self, external_desktop: bool) -> Result<()> {
+        if let Some(path) = &self.rdp_settings {
+            ensure!(
+                path.is_absolute() && path.file_name().is_some(),
+                "RDP settings must be an absolute file path"
+            );
+        }
         if !self.rdp {
             return Ok(());
         }
@@ -38,12 +47,14 @@ impl RdpConfig {
         );
         ensure!(self.rdp_listen.port() != 0, "RDP port must not be zero");
         ensure!(
-            self.rdp_tls_cert.is_some() && self.rdp_tls_key.is_some(),
-            "RDP requires --rdp-tls-cert and --rdp-tls-key; plaintext RDP is not supported"
+            self.rdp_tls_cert.is_some() == self.rdp_tls_key.is_some(),
+            "Specify both --rdp-tls-cert and --rdp-tls-key, or neither for automatic TLS"
         );
         Ok(())
     }
 }
+
+pub mod settings;
 
 #[cfg(feature = "rdp")]
 mod service;
@@ -66,11 +77,12 @@ mod tests {
     }
 
     #[test]
-    fn enabling_rdp_requires_feature_and_tls_and_owned_desktop() {
+    fn enabling_rdp_requires_feature_owned_desktop_and_complete_explicit_tls() {
         let mut config =
             Config::try_parse_from(["test", "--password", "some-long-secret", "--rdp"]).unwrap();
-        assert!(config.validate().is_err());
+        assert_eq!(config.validate().is_ok(), cfg!(feature = "rdp"));
         config.rdp.rdp_tls_cert = Some(PathBuf::from("cert.pem"));
+        assert!(config.validate().is_err());
         config.rdp.rdp_tls_key = Some(PathBuf::from("key.pem"));
         assert_eq!(config.validate().is_ok(), cfg!(feature = "rdp"));
         config.wayland_socket = Some(PathBuf::from("/tmp/physical-wayland"));

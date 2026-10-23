@@ -72,6 +72,7 @@ struct AudioRequest {
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
+    pub rdp: Arc<crate::rdp::settings::Manager>,
     pub(crate) mcp: Arc<crate::mcp::TokenStore>,
     pub backend: Arc<Backend>,
     pub session: Arc<Mutex<Session>>,
@@ -112,7 +113,9 @@ impl AppState {
         let mcp = Arc::new(crate::mcp::TokenStore::open(crate::mcp::settings_path(
             &config,
         )));
+        let rdp = Arc::new(crate::rdp::settings::Manager::new(&config));
         Self {
+            rdp,
             mcp,
             codec_capabilities: Arc::new(tokio::sync::OnceCell::new()),
             displays,
@@ -223,6 +226,7 @@ impl AppState {
             "physical capture and input ready"
         );
         Ok(Self {
+            rdp: self.rdp,
             codec_capabilities: self.codec_capabilities,
             mcp: self.mcp,
             displays,
@@ -294,6 +298,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/audio", get(upgrade_audio))
         .route("/desktops", get(desktops))
+        .merge(crate::rdp::settings::routes())
         .merge(crate::mcp::management(state.mcp.clone()).with_state(()));
     let desktop = mount_desktop(desktop, &state.config.subfolder)
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));

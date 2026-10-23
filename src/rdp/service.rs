@@ -33,12 +33,18 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 /// Owns only the RDP transport thread. It never owns/restarts the desktop.
 pub struct RdpService {
     shutdown: watch::Sender<bool>,
+    activate: watch::Sender<bool>,
     worker: Option<JoinHandle<Result<()>>>,
     failed: Arc<AtomicBool>,
     address: SocketAddr,
+    pub(super) fingerprint: String,
 }
 
 impl RdpService {
+    pub(super) fn activate(&self) {
+        self.activate.send_replace(true);
+    }
+
     pub fn address(&self) -> SocketAddr {
         self.address
     }
@@ -75,8 +81,18 @@ pub async fn start(state: AppState) -> Result<Option<RdpService>> {
     if !state.config.rdp.rdp {
         return Ok(None);
     }
+    start_with(state.clone(), &state.config.rdp).await.map(Some)
+}
+
+pub(super) async fn start_with(state: AppState, settings: &super::RdpConfig) -> Result<RdpService> {
+    let service = prepare(state, settings).await?;
+    service.activate();
+    Ok(service)
+}
+
+pub(super) async fn prepare(state: AppState, settings: &super::RdpConfig) -> Result<RdpService> {
     state.config.validate()?;
-    let settings = &state.config.rdp;
+    settings.validate(state.config.wayland_socket.is_some())?;
     let mut cert_reader = BufReader::new(
         File::open(
             settings
@@ -102,6 +118,14 @@ pub async fn start(state: AppState) -> Result<Option<RdpService>> {
     let key = rustls_pemfile::private_key(&mut key_reader)
         .context("reading RDP PEM private key")?
         .context("RDP private key is missing")?;
+    let fingerprint = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(certs[0].as_ref())
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .join(":")
+    };
     let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::aws_lc_rs::default_provider(),
     ))
@@ -113,9 +137,11 @@ pub async fn start(state: AppState) -> Result<Option<RdpService>> {
     let listener = TcpListener::bind(settings.rdp_listen).context("binding RDP listener")?;
     let address = listener.local_addr()?;
     listener.set_nonblocking(true)?;
-    let (shutdown, stop) = watch::channel(false);
+    let (shutdown, mut stop) = watch::channel(false);
+    let (activate, mut activation) = watch::channel(false);
     let failed = Arc::new(AtomicBool::new(false));
     let worker_failed = failed.clone();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let worker = std::thread::Builder::new()
         .name("rdp-transport".into())
         .spawn(move || {
@@ -123,7 +149,18 @@ pub async fn start(state: AppState) -> Result<Option<RdpService>> {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()?;
-                runtime.block_on(accept_connections(listener, acceptor, state, stop))
+                let _ = ready_tx.send(());
+                runtime.block_on(async move {
+                    tokio::select! {
+                        biased;
+                        _ = stop.changed() => return Ok(()),
+                        _ = activation.changed() => {},
+                    }
+                    if !*activation.borrow() {
+                        return Ok(());
+                    }
+                    accept_connections(listener, acceptor, state, stop).await
+                })
             }))
             .unwrap_or_else(|_| Err(anyhow::anyhow!("RDP worker panicked")));
             if let Err(error) = &result {
@@ -133,12 +170,19 @@ pub async fn start(state: AppState) -> Result<Option<RdpService>> {
             result
         })?;
     tracing::info!(%address, "authenticated TLS RDP listener started");
-    Ok(Some(RdpService {
+    let service = RdpService {
         shutdown,
+        activate,
         worker: Some(worker),
         failed,
         address,
-    }))
+        fingerprint,
+    };
+    if let Err(error) = ready_rx.await {
+        let _ = service.stop().await;
+        return Err(error).context("starting RDP worker");
+    }
+    Ok(service)
 }
 
 async fn accept_connections(

@@ -49,7 +49,7 @@ license notices from the installed production dependency graph into
 web/dist/NOTICE.frontend.txt; CI includes this as licenses/frontend.txt. Lucide's
 ISC/MIT notices must be retained, including inherited Feather attribution.
 
-The optional `rdp` feature uses IronRDP 0.13 and its protocol crates
+The optional `rdp` feature uses rcgen (MIT/Apache-2.0) to generate persistent self-signed TLS identities without external commands, plus IronRDP 0.13 and its protocol crates
 (MIT OR Apache-2.0), Tokio-rustls/rustls and the selected AWS-LC provider.
 The published Linux binary includes the feature with RDP disabled at runtime;
 default source builds omit it. CI traverses the locked MCP/RDP runtime dependency

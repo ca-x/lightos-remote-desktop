@@ -3,6 +3,7 @@ import { Button, Dialog, DialogBackdrop, DialogPanel, DialogTitle, Field, Input,
 import { Activity, Bot, Cable, ChevronDown, Clipboard, Expand, Grip, Keyboard, Maximize, Menu, Minimize, Monitor, Palette, RefreshCw, Settings2, SlidersHorizontal, Volume2, VolumeX, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { createClient } from "./client";
+import { RdpSettings } from "./RdpSettings";
 import { McpSettings } from "./McpSettings";
 import { MOBILE_ROWS, type MobileShortcut } from "./mobile";
 import type { ControlState, ToolbarEdge } from "./types";
@@ -205,7 +206,7 @@ function Workspace({ open, close }: { open: boolean; close: (focusable?: HTMLEle
         <DialogPanel className="settings-dialog">
           <header className="settings-heading"><div><span className="settings-eyebrow">LightOS Remote Desktop</span><DialogTitle>{t("settings")}</DialogTitle></div><Button type="button" className="icon-button" aria-label={t("closeSettings")} onClick={() => setSettingsOpen(false)} data-autofocus><X size={20} aria-hidden="true" /></Button></header>
           <TabGroup className="settings-body" selectedIndex={settingsTab} onChange={setSettingsTab}>
-            <TabList className="settings-tabs"><Tab><SlidersHorizontal size={16} aria-hidden="true" />{t("displayMenu")}</Tab><Tab><Palette size={16} aria-hidden="true" />{t("preferences")}</Tab><Tab><Bot size={16} aria-hidden="true" />MCP</Tab></TabList>
+            <TabList className="settings-tabs"><Tab><SlidersHorizontal size={16} aria-hidden="true" />{t("displayMenu")}</Tab><Tab><Palette size={16} aria-hidden="true" />{t("preferences")}</Tab><Tab><Bot size={16} aria-hidden="true" />MCP</Tab><Tab>RDP</Tab></TabList>
             <TabPanels className="settings-content">
               <TabPanel unmount={false}>
         <section id="settings-section" className="settings-section"><h3>{t("resolution")}</h3>
@@ -234,6 +235,7 @@ function Workspace({ open, close }: { open: boolean; close: (focusable?: HTMLEle
 
               </TabPanel>
               <TabPanel unmount={false}><McpSettings visible={settingsOpen && settingsTab === 2} embedded /></TabPanel>
+              <TabPanel unmount={false}><RdpSettings visible={settingsOpen && settingsTab === 3} /></TabPanel>
             </TabPanels>
           </TabGroup>
           <footer className="settings-footer"><span>{t("settingsSaved")}</span><Button type="button" onClick={() => setSettingsOpen(false)}>{t("done")}</Button></footer>

@@ -116,6 +116,25 @@ describe("React shell and Headless UI lifecycle", () => {
     expect(createClient).toHaveBeenCalledTimes(1);
   });
 
+  it("puts RDP only in Settings and cancels its request when switching tabs", async () => {
+    const fetchRdp = vi.fn((_url: unknown, _options?: RequestInit) => new Promise<Response>(() => {}));
+    vi.stubGlobal("fetch", fetchRdp);
+    render(<App />);
+    await waitFor(() => expect(createClient).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "Open desktop tools" }));
+    expect(within(screen.getByRole("toolbar", { name: "Session toolbar" })).queryByText("RDP")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    const settings = await screen.findByRole("dialog", { name: "Settings" });
+    fireEvent.click(within(settings).getByRole("tab", { name: "RDP" }));
+    await waitFor(() => expect(fetchRdp).toHaveBeenCalledOnce());
+    const signal = fetchRdp.mock.calls[0][1]?.signal;
+    expect(within(settings).getByRole("checkbox", { name: "Enable RDP" })).toBeTruthy();
+    expect(within(settings).queryByRole("combobox")).toBeNull();
+    fireEvent.click(within(settings).getByRole("tab", { name: "Display" }));
+    expect(signal?.aborted).toBe(true);
+    expect(createClient).toHaveBeenCalledTimes(1);
+  });
+
   it("dismisses portalled menus when collapsing the parent toolbar", async () => {
     render(<App />);
     await waitFor(() => expect(createClient).toHaveBeenCalledTimes(1));
