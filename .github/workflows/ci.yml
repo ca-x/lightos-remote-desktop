@@ -79,7 +79,7 @@ jobs:
           set -euo pipefail
           package=lightos-remoted-linux-x86_64
           mkdir -p "dist/$package/licenses"
-          cp target/release/lightos-remoted README.md LICENSE "dist/$package/"
+          cp target/release/lightos-remoted README.md README.en.md LICENSE "dist/$package/"
           cp -r docs "dist/$package/"
           registry="${CARGO_HOME:-$HOME/.cargo}/registry/src"
           jpeg_license=$(find "$registry" -path '*/turbojpeg-sys-1.2.0/libjpeg-turbo/LICENSE.md' -print -quit)
