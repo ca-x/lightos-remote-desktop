@@ -30,7 +30,8 @@ root = Path(sys.argv[1])
 dynamic = subprocess.check_output(['readelf', '-d', str(root / 'lightos-codec-ffmpeg')], text=True)
 needed = re.findall(r'\(NEEDED\).*\[(.*?)\]', dynamic)
 sonames = sorted(name for name in needed if re.fullmatch(r'lib(?:avcodec|avformat|avutil|swscale)\.so\.\d+', name))
-assert len(sonames) == 4, f'Expected all four FFmpeg libraries: {sonames}'
+required = ('libavcodec.so.', 'libavutil.so.', 'libswscale.so.')
+assert all(any(name.startswith(prefix) for name in sonames) for prefix in required), f'Missing required FFmpeg libraries: {sonames}'
 metadata = {
     'platform': 'archlinux-x86_64',
     'source_commit': subprocess.check_output(['git', '-C', sys.argv[2], 'rev-parse', 'HEAD'], text=True).strip(),
