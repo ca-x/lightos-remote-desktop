@@ -1,0 +1,86 @@
+name: Build Arch codec
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing stable release tag (vX.Y.Z)
+        required: true
+        type: string
+      dispatch_aur:
+        description: Publish AUR after uploading the worker
+        default: true
+        type: boolean
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: arch-codec-${{ inputs.version }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    timeout-minutes: 45
+    env:
+      TURBOJPEG_SOURCE: vendor
+      TURBOJPEG_STATIC: '1'
+      RELEASE_TAG: ${{ inputs.version }}
+    steps:
+      - name: Install Arch build and runtime dependencies
+        run: pacman -Syu --noconfirm --needed git rust clang cmake nasm pkgconf ffmpeg python github-cli
+      - name: Validate stable release tag
+        shell: bash
+        run: '[[ $RELEASE_TAG =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          path: tooling
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.version }}
+          path: source
+      - name: Verify existing release and tag source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" --json tagName --jq .tagName | grep -Fx "$RELEASE_TAG"
+          expected=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)
+          test "$(git -C source rev-parse HEAD)" = "$expected"
+      - name: Test native worker on Arch FFmpeg
+        working-directory: source
+        run: |
+          cargo fetch --locked --target x86_64-unknown-linux-gnu
+          cargo test -p media-codec-ffmpeg --locked --features native,media-codec/bundled-jpeg
+      - name: Build only the optional worker
+        working-directory: source
+        run: cargo build -p media-codec-ffmpeg --release --locked --features native,media-codec/bundled-jpeg
+      - name: Package worker, ABI manifest and runtime notices
+        shell: bash
+        run: bash tooling/scripts/package-arch-codec.sh "$PWD/source" "$PWD/dist"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lightos-codec-ffmpeg-linux-x86_64-archlinux
+          path: dist/*
+          if-no-files-found: error
+      - name: Add Arch assets to the existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/*.sha256
+      - name: Dispatch AUR for a public release
+        if: inputs.dispatch_aur
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease --jq '.isDraft == false and .isPrerelease == false')" = true
+          gh workflow run aur.yml --ref main -f "version=$RELEASE_TAG"

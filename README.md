@@ -31,7 +31,7 @@ H.264 只在有发送额度时读取最新原始帧，不会丢弃已编码的�
 
 ## AUR 安装与更新
 
-包名为 `lightos-remoted-bin`，命令为 `lightos-remoted`，可执行文件安装到 `/usr/lib/lightos-remoted/lightos-remoted`。GitHub 二进制压缩包名为 `lightos-remoted-linux-x86_64.tar.gz`。可选 AUR 包 `lightos-codec-ffmpeg` 提供原生 FFmpeg 编码 worker，可探测硬件 H.264 编码。它从同版本源码单独构建，链接本机 FFmpeg，安装到 `/usr/lib/lightos-remoted/lightos-codec-ffmpeg`，主程序会自动发现。无需安装该包即可使用内置软件 H.264 和 JPEG；硬件编码是否可用仍取决于 GPU、驱动和 FFmpeg 能力。
+包名为 `lightos-remoted-bin`，命令为 `lightos-remoted`，可执行文件安装到 `/usr/lib/lightos-remoted/lightos-remoted`。GitHub 二进制压缩包名为 `lightos-remoted-linux-x86_64.tar.gz`。可选 AUR 包 `lightos-codec-ffmpeg-bin` 提供原生 FFmpeg 编码 worker，可探测硬件 H.264 编码。它在 Arch 构建环境中从同版本源码预编译，链接对应 ABI 的系统 FFmpeg，安装到 `/usr/lib/lightos-remoted/lightos-codec-ffmpeg`，主程序会自动发现。无需安装该包即可使用内置软件 H.264 和 JPEG；硬件编码是否可用仍取决于 GPU、驱动和 FFmpeg 能力。
 
 ```sh
 yay -S lightos-remoted-bin
@@ -41,7 +41,7 @@ yay -Syu
 需要可选硬件编码时，安装扩展包：
 
 ```sh
-yay -S lightos-codec-ffmpeg
+yay -S lightos-codec-ffmpeg-bin
 ```
 
 全新安装会自动初始化认证并启动服务，无需手动安装 unit 或执行 `enable`。配置和认证信息保存在 `/etc/lightos/remote-desktop.env`，已有值会保留。LightOS 平台脚本依赖原有服务名，因此继续使用 `lightos-remote-desktop.service` 和 `lightos-remote-desktop-session.service`。服务定义和初始化逻辑以二进制内置版本为准：AUR 打包时从二进制导出两个 unit，安装钩子调用程序完成激活，文件由 pacman 管理。常规包升级只重启 HTTP 传输服务，保留常驻桌面及其应用。参见 [AUR 服务与打包说明](docs/aur.md)。

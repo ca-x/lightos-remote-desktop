@@ -105,9 +105,9 @@ ACK feedback. GPU capture and remote cursor-shape streaming are not implemented.
 The package is `lightos-remoted-bin`; the command is `lightos-remoted` and the
 installed executable is `/usr/lib/lightos-remoted/lightos-remoted`. GitHub
 binary archives use `lightos-remoted-linux-x86_64.tar.gz`.
-The optional AUR package `lightos-codec-ffmpeg` provides a native FFmpeg encoding
-worker with hardware H.264 probing. It builds separately from the matching source
-tag against the host FFmpeg and installs beside the main executable at
+The optional AUR package `lightos-codec-ffmpeg-bin` provides a native FFmpeg encoding
+worker with hardware H.264 probing. It is prebuilt in Arch from the matching source
+tag against the corresponding system FFmpeg ABI and installs beside the main executable at
 `/usr/lib/lightos-remoted/lightos-codec-ffmpeg`, where it is discovered automatically.
 Built-in software H.264 and JPEG work without this package. Hardware encoding
 availability depends on the GPU, driver and FFmpeg capabilities.
@@ -120,7 +120,7 @@ yay -Syu
 For optional hardware encoding, install the worker:
 
 ```sh
-yay -S lightos-codec-ffmpeg
+yay -S lightos-codec-ffmpeg-bin
 ```
 
 A fresh installation initializes authentication and starts the services without

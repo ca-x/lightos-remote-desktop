@@ -187,7 +187,7 @@ jobs:
           else
             gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes
           fi
-      - name: Dispatch AUR after an automatically published stable release
+      - name: Build Arch worker before publishing AUR
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -195,5 +195,5 @@ jobs:
         run: |
           # GITHUB_TOKEN release events do not start another workflow.
           if [[ $(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease --jq '.isDraft == false and .isPrerelease == false') == true ]]; then
-            gh workflow run aur.yml --ref main -f "version=$RELEASE_TAG"
+            gh workflow run arch-codec.yml --ref main -f "version=$RELEASE_TAG" -f dispatch_aur=true
           fi
