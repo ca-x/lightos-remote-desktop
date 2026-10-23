@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/logo.png" width="160" height="160" alt="LightOS Remote Desktop logo" />
+</p>
+
 # LightOS Remote Desktop
 
 [简体中文](README.md) | English
@@ -7,10 +11,11 @@ does not embed CPython or invoke the original Selkies Python launcher.
 
 ## Current implementation
 
-- Embedded React/TypeScript frontend with Headless UI and Lucide React icons.
+- Embedded React/TypeScript frontend with Radix UI menus, Headless UI dialogs and Lucide React icons.
   A compact action toolbar opens contextual display, keyboard, clipboard and
-  connection popovers; a separate tabbed Settings dialog holds resolution,
-  encoding, appearance, MCP and RDP preferences. The appearance tab offers Chinese/English/browser language and
+  connection menus; a separate tabbed Settings dialog holds resolution,
+  encoding, appearance, MCP and RDP preferences. Its final About tab shows the
+  application version, MIT license and project links. The appearance tab offers Chinese/English/browser language and
   light/dark/system theme preferences, stored locally without reconnecting.
   These themes affect only the controls, not the captured desktop.
 - Authenticated same-origin WebSocket client with canvas display and reconnect.
@@ -29,7 +34,8 @@ does not embed CPython or invoke the original Selkies Python launcher.
 - Drag the floating toolbar handle to dock on any screen edge; its position is
   saved in this browser. Click to open, or focus it and use Alt+arrow keys to
   dock left/right/top/bottom. Menus open inward, adjust at screen edges and
-  remain scrollable in small windows. Settings and menus also work in fullscreen.
+  remain scrollable in small windows, with hover switching, arrow-key navigation
+  and nested choices. Fullscreen is directly available at the right of the toolbar. Settings and menus also work in fullscreen.
 - Manually entering fullscreen requests all available keys via the browser Keyboard Lock API,
   without application-specific shortcut mappings. It requires browser support
   and permission, generally a secure context; OS/compositor-reserved shortcuts
@@ -62,7 +68,7 @@ does not embed CPython or invoke the original Selkies Python launcher.
   video pipeline's frame rate and latency.
 - Isolated Cage/wlroots host with nested Hyprland, a private D-Bus, and owned
   process-group cleanup. No UWSM source modification.
-- Persistent encoding (Auto/H.264/JPEG) and scheduling (Auto/Low latency/Smooth)
+- Persistent encoding (Auto/H.264/JPEG) and scheduling (Auto/Low latency/Smooth/Quality first)
   choices. Independent display-control, media-codec and stream-scheduler crates;
   see [runtime platform boundaries](docs/runtime-platforms.md) for desktop backends,
   real capability probes and current platform limits.

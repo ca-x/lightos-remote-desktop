@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/logo.png" width="160" height="160" alt="LightOS Remote Desktop logo" />
+</p>
+
 # LightOS Remote Desktop
 
 简体中文 | [English](README.en.md)
@@ -6,11 +10,11 @@
 
 ## 当前功能
 
-- 内嵌 React / TypeScript 前端，使用 Headless UI 和 Lucide React 图标。紧凑工具栏提供显示、键盘、剪贴板和连接信息菜单；独立的设置窗口管理分辨率、编码、外观、MCP 和 RDP。界面支持中文、英文或跟随浏览器，以及浅色、深色或跟随系统主题。偏好保存在本地，修改时无需重连；主题只影响控制界面，不改变远程桌面的画面。
+- 内嵌 React / TypeScript 前端，使用 Radix UI 菜单、Headless UI 设置窗口和 Lucide React 图标。紧凑工具栏提供显示、键盘、剪贴板和连接信息菜单；独立的设置窗口管理分辨率、编码、外观、MCP 和 RDP；「设置 → 关于」显示版本、MIT 许可证及项目链接。界面支持中文、英文或跟随浏览器，以及浅色、深色或跟随系统主题。偏好保存在本地，修改时无需重连；主题只影响控制界面，不改变远程桌面的画面。
 - 通过同源认证 WebSocket 传输画面，在 Canvas 中显示，并支持自动重连。
 - 在「设置 → RDP」中启用或关闭 TLS RDP，并设置端口，与浏览器共用同一个虚拟桌面。默认关闭，监听地址默认是回环地址；远程连接可通过 SSH 转发，具体地址和 TLS 指纹会显示在设置中。没有指定证书时自动生成并保存私有 TLS 身份，也支持显式配置证书。启停或更换端口不重启 HTTP 服务和桌面 owner；RDP 画质由客户端能力和协议协商决定，不受浏览器编码或画质设置影响。参见 [RDP 配置与限制](docs/rdp.md)。
 - 可选 MCP Streamable HTTP 接口，使用独立的观察或控制 token。在「设置 → MCP」中创建或撤销 token，通过截图、鼠标和键盘工具操作现有桌面。默认关闭，参见 [MCP 接入与 Cua 兼容性](docs/mcp.md)。
-- 拖动悬浮工具栏手柄可将其停靠在屏幕任意边缘，位置保存在当前浏览器。点击手柄展开工具栏，也可聚焦手柄后用 Alt + 方向键停靠。菜单向屏幕内侧展开，在边缘自动避让，小窗口中可滚动；菜单和设置在全屏模式下仍可使用。
+- 拖动悬浮工具栏手柄可将其停靠在屏幕任意边缘，位置保存在当前浏览器。菜单支持悬停切换、方向键导航和二级选项；全屏按钮位于工具栏右侧。点击手柄展开工具栏，也可聚焦手柄后用 Alt + 方向键停靠。菜单向屏幕内侧展开，在边缘自动避让，小窗口中可滚动；菜单和设置在全屏模式下仍可使用。
 - 点击页面的全屏按钮后，会通过浏览器 Keyboard Lock API 请求捕获所有可用按键，不依赖应用专用快捷键映射。此功能需要浏览器支持和授权，通常还需要 HTTPS 等安全上下文；系统或合成器保留的快捷键仍可能无法到达页面。失去焦点、断开连接或退出全屏时，会释放捕获和按住的按键。Ctrl + Alt + Shift + Esc 可释放捕获并打开工具栏，浏览器长按 Escape 退出全屏的功能也保留。
   键盘菜单可组合任意受支持的物理按键与 Ctrl / Alt / Shift / Super，直接发送到远程机器，绕过本地快捷键拦截，无需修改宿主机绑定。窗口模式不会自动进入全屏；浏览器 F11 全屏不会启用 Keyboard Lock API。每次通过页面进入全屏都会重新尝试捕获，包含上级元素覆盖桌面的情况；授权失败后，点击全屏桌面可重试。捕获状态下 Ctrl + V 使用远程剪贴板，窗口模式下粘贴会传入本地文本。
   如果 Super 或 Alt + Tab 仍作用于本机 Omarchy / Hyprland，可用 `--ozone-platform=wayland` 让 Chrome / Chromium 原生运行在 Wayland 上，以便请求合成器的快捷键抑制协议。以顶层 HTTPS 或 localhost 页面打开桌面，并允许键盘权限。参见 [Chrome Keyboard Lock 要求](https://developer.chrome.com/docs/capabilities/web-apis/keyboard-lock)和 [Chromium Wayland 实现](https://chromium.googlesource.com/chromium/src/+/main/ui/ozone/platform/wayland/host/wayland_keyboard.cc)。

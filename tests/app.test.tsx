@@ -24,14 +24,14 @@ beforeEach(async () => {
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-describe("React shell and Headless UI lifecycle", () => {
-  it("waits for Headless UI IDs and creates exactly one client during effect replay", async () => {
+describe("React shell, menus and dialog lifecycle", () => {
+  it("waits for persistent client controls and creates exactly one client during effect replay", async () => {
     const view = render(<StrictMode><App /></StrictMode>);
     await waitFor(() => expect(createClient).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole("button", { name: "Open desktop tools" }));
-    expect(screen.queryByRole("button", { name: "Fit window" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Display" }));
-    expect(await screen.findByRole("button", { name: "Fit window" })).toBeDefined();
+    expect(screen.queryByRole("menuitemradio", { name: "Fit window" })).toBeNull();
+    fireEvent.pointerDown(screen.getByRole("menuitem", { name: "Display" }), { button: 0, ctrlKey: false });
+    expect(await screen.findByRole("menuitemradio", { name: "Fit window" })).toBeDefined();
     view.unmount();
     expect(destroy).toHaveBeenCalledTimes(1);
   });
@@ -79,17 +79,17 @@ describe("React shell and Headless UI lifecycle", () => {
     expect(createClient).toHaveBeenCalledTimes(1);
   });
 
-  it("navigates toolbar actions with arrows and skips disabled audio", async () => {
+  it("navigates the menu strip with arrows and Home", async () => {
     render(<App />);
     await waitFor(() => expect(createClient).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole("button", { name: "Open desktop tools" }));
     const toolbar = screen.getByRole("toolbar", { name: "Session toolbar" });
-    const clipboard = within(toolbar).getByRole("button", { name: "Text & clipboard" });
+    const clipboard = within(toolbar).getByRole("menuitem", { name: "Clipboard" });
     clipboard.focus();
     fireEvent.keyDown(clipboard, { key: "ArrowRight" });
-    expect(document.activeElement).toBe(within(toolbar).getByRole("button", { name: "Connection information" }));
+    await waitFor(() => expect(document.activeElement).toBe(within(toolbar).getByRole("menuitem", { name: "Connection information" })));
     fireEvent.keyDown(document.activeElement!, { key: "Home" });
-    expect(document.activeElement).toBe(within(toolbar).getByRole("button", { name: "Disconnect" }));
+    await waitFor(() => expect(document.activeElement).toBe(within(toolbar).getByRole("menuitem", { name: "Display" })));
   });
 
   it("clears one-time MCP tokens when switching settings tabs or closing the dialog", async () => {
@@ -139,13 +139,31 @@ describe("React shell and Headless UI lifecycle", () => {
     render(<App />);
     await waitFor(() => expect(createClient).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole("button", { name: "Open desktop tools" }));
-    fireEvent.click(screen.getByRole("button", { name: "Display" }));
-    await screen.findByRole("dialog", { name: "Display" });
+    fireEvent.pointerDown(screen.getByRole("menuitem", { name: "Display" }), { button: 0, ctrlKey: false });
+    await screen.findByRole("menu", { name: "Display" });
     fireEvent.click(document.getElementById("tools-toggle")!);
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Display" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "Display" })).toBeNull());
     fireEvent.click(screen.getByRole("button", { name: "Open desktop tools" }));
-    expect(screen.queryByRole("dialog", { name: "Display" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Display" }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("menu", { name: "Display" })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Display" }).getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("keeps fullscreen directly accessible and About last in Settings with a compact logo", async () => {
+    render(<App />);
+    await waitFor(() => expect(createClient).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "Open desktop tools" }));
+    expect(screen.getByRole("button", { name: "Fullscreen" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    const settings = await screen.findByRole("dialog", { name: "Settings" });
+    const tabs = within(settings).getAllByRole("tab");
+    expect(tabs.at(-1)?.textContent).toBe("About");
+    fireEvent.click(tabs.at(-1)!);
+    expect(within(settings).getByRole("heading", { name: "LightOS Remote Desktop" })).toBeTruthy();
+    const image = settings.querySelector(".about-brand img")!;
+    expect(image.getAttribute("width")).toBe("48");
+    expect(image.getAttribute("height")).toBe("48");
+    expect(within(settings).getByRole("link", { name: "Release notes" }).getAttribute("href")).toContain("/releases");
+    expect(within(settings).getByText("MIT")).toBeTruthy();
   });
 
 });

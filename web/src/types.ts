@@ -30,7 +30,21 @@ export interface ControlState {
 
 export type ToolbarEdge = "left" | "right" | "top" | "bottom";
 
+export interface SessionView {
+  mode: "fit" | "actual";
+  fullscreen: boolean;
+  autoResolution: boolean;
+  strategy: "auto" | "low_latency" | "smooth" | "quality_first";
+  width: number;
+  height: number;
+  keyboardCaptured: boolean;
+  version: string;
+  output: string;
+}
+
 export interface ClientOptions {
+  onStatus?: (id: "state" | "performance" | "video-details" | "message" | "desktop-status", text: string) => void;
+  onSessionView?: (view: SessionView) => void;
   onToolbarDock?: (edge: ToolbarEdge) => void;
   translate?: (text: string) => string;
   onControls?: (state: ControlState) => void;

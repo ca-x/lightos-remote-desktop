@@ -3,7 +3,9 @@
   "private": true,
   "license": "MIT",
   "type": "module",
-  "engines": { "node": "^24.15.0 || >=26.0.0" },
+  "engines": {
+    "node": "^24.15.0 || >=26.0.0"
+  },
   "scripts": {
     "build": "tsc --noEmit && vite build && node scripts/frontend-assets.mjs",
     "test": "node --test tests/frontend.mjs tests/preferences.mjs tests/audio-worklet.mjs tests/audio-worker.mjs && vitest run",
@@ -11,6 +13,7 @@
   },
   "dependencies": {
     "@headlessui/react": "^2.2.10",
+    "@radix-ui/react-menubar": "^1.2.1",
     "i18next": "^26.5.4",
     "lucide-react": "^1.61.0",
     "react": "^19.3.1",

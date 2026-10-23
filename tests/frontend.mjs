@@ -183,6 +183,42 @@ test("React receives control snapshots without owning frame presentation", () =>
   assert.equal(states.at(-1).wanted, false);
 });
 
+test("menu view state does not republish on every frame and updates after real changes", async () => {
+  const views = [];
+  const app = harness("/", new Map(), { onSessionView: (view) => views.push(view) });
+  const socket = app.ready();
+  const count = views.length;
+  for (let frame = 0; frame < 3; frame++) {
+    socket.binary(jpeg(frame));
+    app.decodes.at(-1).resolve(bitmap());
+    await flush();
+  }
+  assert.equal(views.length, count);
+  socket.binary(jpeg(4));
+  app.decodes.at(-1).resolve(bitmap(1600, 900));
+  await flush();
+  assert.equal(views.at(-1).width, 1600);
+  assert.equal(views.at(-1).height, 900);
+  assert.equal(views.length, count + 1);
+  app.nodes["stream-strategy"].value = "quality_first";
+  app.nodes["stream-strategy"].fire("change");
+  assert.equal(views.at(-1).strategy, "quality_first");
+});
+
+test("portalled menus receive translated connection and desktop status while closed", () => {
+  const statuses = new Map();
+  let prefix = "";
+  const app = harness("/", new Map(), { onStatus: (id, text) => statuses.set(id, text), translate: (text) => prefix + text });
+  const socket = app.ready();
+  desktopReady(socket);
+  assert.equal(statuses.get("state"), "Connected");
+  assert.match(statuses.get("desktop-status"), /已连接/);
+  prefix = "translated:";
+  app.run("client.refreshLanguage()");
+  assert.equal(statuses.get("state"), "translated:Connected");
+  assert.match(statuses.get("desktop-status"), /^translated:/);
+});
+
 test("changing UI language refreshes text and desktop choices without reconnecting", () => {
   let prefix = "";
   const app = harness("/", new Map(), { translate: (value) => prefix + value });

@@ -1,6 +1,6 @@
 import { encoderBackendKey, encoderBackends, readPreference, savePreference, videoCodecKey, videoCodecs, streamStrategyKey, streamStrategies } from "./preferences";
 import { supportedVideoConfig } from "./video-codec";
-import type { ClientOptions, DesktopChoice, DesktopOutput, Elements } from "./types";
+import type { ClientOptions, DesktopChoice, DesktopOutput, Elements, SessionView } from "./types";
 import { createMobileControls, mobileResolution } from "./mobile";
 import audioWorkerUrl from "./audio-worker.js?url";
 import audioWorkletUrl from "./audio-worklet.js?url";
@@ -44,6 +44,7 @@ export function createClient(options: ClientOptions = {}) {
     if (texts.get(id) === value) return;
     texts.set(id, value);
     element(id).textContent = translate(value);
+    if (id === "state" || id === "performance" || id === "video-details" || id === "message" || id === "desktop-status") options.onStatus?.(id, translate(value));
   };
   const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
   type Timer = ReturnType<typeof setTimeout>;
@@ -136,6 +137,7 @@ export function createClient(options: ClientOptions = {}) {
   let refreshingDesktops = false;
   let mobile: ReturnType<typeof createMobileControls> | null = null;
   let discoveryReason = "";
+  let publishedView: SessionView | undefined;
 
   function desktopLabel() {
     return desktopMode === "physical" ? "物理桌面" : "虚拟桌面";
@@ -227,6 +229,7 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   function updateKeyboardCapture() {
+    publishSessionView();
     element("keyboard-capture").setAttribute("aria-pressed", String(keyboardCaptured));
     setText("keyboard-capture", keyboardCaptured ? "释放键盘捕获" : "全屏捕获键盘");
   }
@@ -420,12 +423,28 @@ export function createClient(options: ClientOptions = {}) {
 
   function resizeCanvas(width: number, height: number) {
     if (lastRequestedSize === `${width}x${height}`) lastRequestedSize = null;
+    const changed = canvas.width !== width || canvas.height !== height;
     if (canvas.width !== width) canvas.width = width;
     if (canvas.height !== height) canvas.height = height;
     canvas.style.setProperty("--desktop-aspect", String(width / height));
+    if (changed) publishSessionView();
+  }
+
+  function publishSessionView() {
+    if (!options.onSessionView) return;
+    const next: SessionView = {
+      mode: isDesktopFullscreen() || windowMode !== "actual" ? "fit" : "actual",
+      fullscreen: isDesktopFullscreen(), autoResolution: element("auto-resolution").checked,
+      strategy: strategyPreference, width: canvas.width, height: canvas.height,
+      keyboardCaptured, version: element("software-version").textContent ?? "", output: selectedOutput ?? "",
+    };
+    if (publishedView && (Object.keys(next) as (keyof SessionView)[]).every((key) => publishedView![key] === next[key])) return;
+    publishedView = next;
+    options.onSessionView(next);
   }
 
   function updateControls() {
+    publishSessionView();
     mobile?.update();
     options.onControls?.({ ready, wanted, audioAvailable, audioEnabled, resizeAvailable, desktopMode,
       switchingDesktop, refreshingDesktops, choices: desktopChoices, outputs: desktopOutputs });
@@ -881,6 +900,7 @@ export function createClient(options: ClientOptions = {}) {
     strategyPreference = streamStrategies.includes(element("stream-strategy").value as typeof strategyPreference) ? element("stream-strategy").value as typeof strategyPreference : "auto";
     savePreference(streamStrategyKey, strategyPreference);
     configureStreamStrategy();
+    publishSessionView();
   });
 
   function fallbackVideo() {
@@ -1370,6 +1390,7 @@ export function createClient(options: ClientOptions = {}) {
     }
   }
   function updateDisplayMode() {
+    publishSessionView();
     const mode = isDesktopFullscreen() ? "fullscreen" : windowMode;
     element("mode-fit").setAttribute("aria-pressed", String(mode === "fit"));
     element("mode-actual").setAttribute("aria-pressed", String(mode === "actual"));
@@ -1407,7 +1428,7 @@ export function createClient(options: ClientOptions = {}) {
     }, 250);
   }
   listen(window, "resize", scheduleAutoResize);
-  listen(element("auto-resolution"), "change", () => { lastAutoResolution = null; scheduleAutoResize(); });
+  listen(element("auto-resolution"), "change", () => { lastAutoResolution = null; scheduleAutoResize(); publishSessionView(); });
   listen(element("fullscreen"), "click", async () => {
     await displayMode(isDesktopFullscreen() ? windowMode : "fullscreen");
   });
@@ -1494,6 +1515,7 @@ export function createClient(options: ClientOptions = {}) {
     autoResizeTimer = null;
     lastRequestedSize = null;
     if (send({ type: "resize", width, height })) message("Resize requested; waiting for the server.");
+    publishSessionView();
   });
   listen(element("send-text"), "click", () => { if (!composing) typeText(textBox.value); });
   listen(element("clipboard-get"), "click", () => {
@@ -1553,7 +1575,10 @@ export function createClient(options: ClientOptions = {}) {
   if (drawing) connect();
   else { disconnect(); message("Canvas rendering is unavailable in this browser."); }
   return { destroy, refreshLanguage() {
-    for (const [id, text] of texts) element(id).textContent = translate(text);
+    for (const [id, text] of texts) {
+      element(id).textContent = translate(text);
+      if (id === "state" || id === "performance" || id === "video-details" || id === "message" || id === "desktop-status") options.onStatus?.(id, translate(text));
+    }
     if (desktopChoices.length) populateDesktops({ desktops: desktopChoices, outputs: desktopOutputs, reason: discoveryReason });
     updateControls(); updateDisplayMode(); layoutTools();
   }, layoutTools };

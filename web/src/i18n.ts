@@ -21,6 +21,9 @@ const en = {
   rdpDisabled: "RDP is off. Enabling it creates a private TLS identity automatically unless the server has an explicit certificate. Verify the fingerprint in your client.",
   rdpSaving: "Loading or applying RDP settings…",
 
+  pictureSize: "Picture scale", customResolution: "Custom resolution…", moreDisplaySettings: "Display settings…",
+  keyboardMenu: "Keyboard", clipboardMenu: "Clipboard", releaseCapture: "Release keyboard capture", keyboardHelpTitle: "Keyboard help…", exitFullscreen: "Exit fullscreen",
+  about: "About", aboutDescription: "Your Linux desktop, in the browser.", developmentBuild: "Development build", license: "License", projectRepository: "Source code", releaseNotes: "Release notes", reportIssue: "Report an issue",
   toolbar: "Session toolbar", displayMenu: "Display", connectionInfo: "Connection information", dismissMenu: "Close menu", closeSettings: "Close settings", settingsSaved: "Preferences save automatically; apply resolution separately", done: "Done",
   encoderBackend: "H.264 encoder", softwareEncoding: "Software (OpenH264)",
   mcpTitle: "MCP agent access", mcpHelp: "Agents can observe this desktop with a token. Control tokens can also send input to the virtual desktop; Disconnect the browser to hand over control. Physical desktops are read-only.",
@@ -63,6 +66,9 @@ const zh: Record<keyof typeof en, string> = {
   rdpDisabled: "RDP 已关闭。启用后会自动创建私有 TLS 身份，除非服务器已指定证书。请在客户端核验证书指纹。",
   rdpSaving: "正在加载或应用 RDP 设置…",
 
+  pictureSize: "画面缩放", customResolution: "自定义分辨率…", moreDisplaySettings: "显示设置…",
+  keyboardMenu: "键盘", clipboardMenu: "剪贴板", releaseCapture: "释放键盘捕获", keyboardHelpTitle: "键盘使用帮助…", exitFullscreen: "退出全屏",
+  about: "关于", aboutDescription: "在浏览器中，使用你的 Linux 桌面。", developmentBuild: "开发版本", license: "许可证", projectRepository: "源代码", releaseNotes: "版本记录", reportIssue: "反馈问题",
   toolbar: "会话工具栏", displayMenu: "显示", connectionInfo: "连接信息", dismissMenu: "关闭菜单", closeSettings: "关闭设置", settingsSaved: "偏好自动保存，分辨率需点击应用", done: "完成",
   encoderBackend: "H.264 编码后端", softwareEncoding: "软件编码（OpenH264）",
   mcpTitle: "MCP 智能体接入", mcpHelp: "智能体可凭令牌查看此桌面。控制令牌还可向虚拟桌面发送输入；请先断开浏览器连接以交出控制权。物理桌面仅允许查看。",

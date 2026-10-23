@@ -2,15 +2,15 @@
 
 ## Requirements
 
-- Replace the combined settings panel with a compact toolbar inspired by RustDesk's display, keyboard and control action groups. Use existing Headless UI primitives and Lucide icons; add no parallel UI library.
-- Put display modes/source selection, keyboard shortcuts, clipboard and connection information in contextual popovers. Keep sound and connection actions directly accessible.
-- Put resolution, encoding/streaming preferences, appearance/language and MCP management in a separate tabbed dialog. Preserve DOM nodes and client listeners while hidden. Clear one-time MCP tokens and abort pending requests when leaving their settings surface.
+- Replace the combined settings panel with a compact toolbar inspired by RustDesk's display, keyboard and control action groups. Use Radix Menubar for real command lists and nested menus, Headless UI for form dialogs and Lucide icons.
+- Put display modes/source selection, keyboard shortcuts, clipboard and connection information in compact contextual menus; place fullscreen directly at the toolbar’s right end. Keep sound and connection actions directly accessible.
+- Put resolution, encoding/streaming preferences, appearance/language, MCP, RDP and About in a separate tabbed dialog. Preserve canonical form DOM nodes and client listeners while hidden; menu portals mount only while open. Publish control snapshots only when changed, and bridge translated status text separately. About uses a 48px logo; bilingual READMEs use a 160px logo. Clear one-time MCP tokens and abort pending requests when leaving their settings surface.
 - Retain four-edge dragging and Alt+Arrow alternatives. Menus open inward, avoid viewport edges, remain scrollable and close with their parent toolbar. Fullscreen includes portalled UI. Measure layout without animation transforms.
 - Use coherent dark/light surface tokens, 44px toolbar targets and visible focus. Pointer-opened popovers use 160ms opacity/transform transitions and settings use 200ms; keyboard actions are immediate and reduced motion removes scaling.
 
 ## Distribution contract
 
-- Version: 0.1.11. License: MIT; third-party licenses remain separate.
+- Version: 0.1.13. License: MIT; third-party licenses remain separate.
 - Public binary/command: `lightos-remoted`; core archive: `lightos-remoted-linux-x86_64.tar.gz`.
 - AUR package: `lightos-remoted-bin`, using the organization's existing AUR secrets and the snout release workflow as reference.
 - Package payload: `/usr/lib/lightos-remoted/lightos-remoted`, command entry `/usr/bin/lightos-remoted`; the optional `lightos-codec-ffmpeg` retains its name and requires a matching host ABI.

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 
@@ -17,8 +17,11 @@ const notices = ["Frontend third-party components. Generated from the locked pro
 for (const root of [...new Set(roots)].sort()) {
   const info = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   notices.push(`\n=== ${info.name}@${info.version} (${info.license ?? "see package notices"}) ===\n`);
-  const files = readdirSync(root).filter((name) => /^(licen[cs]e|copying|notice)(\.|$)/i.test(name));
+  const noticeRoot = readdirSync(root).some((name) => /^(licen[cs]e|copying|notice)(\.|$)/i.test(name))
+    ? root : join("docs/licenses/frontend", `${info.name}-${info.version}`);
+  if (!existsSync(noticeRoot)) throw new Error(`No license notice found for ${info.name}`);
+  const files = readdirSync(noticeRoot).filter((name) => /^(licen[cs]e|copying|notice)(\.|$)/i.test(name));
   if (!files.length) throw new Error(`No license notice found for ${info.name}`);
-  for (const file of files) notices.push(readFileSync(join(root, file), "utf8"));
+  for (const file of files) notices.push(readFileSync(join(noticeRoot, file), "utf8"));
 }
 writeFileSync("web/dist/NOTICE.frontend.txt", notices.join("\n"));
