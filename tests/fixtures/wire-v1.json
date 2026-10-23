@@ -1,0 +1,78 @@
+[
+  {
+    "command": {
+      "type": "frame_ack",
+      "id": 1000
+    },
+    "hex": "08e807"
+  },
+  {
+    "command": {
+      "type": "frame_ack",
+      "id": 9007199254740991
+    },
+    "hex": "08ffffffffffffff0f"
+  },
+  {
+    "command": {
+      "type": "move",
+      "x": 0.25,
+      "y": 0.75
+    },
+    "hex": "121209000000000000d03f11000000000000e83f"
+  },
+  {
+    "command": {
+      "type": "move",
+      "x": 0,
+      "y": 0
+    },
+    "hex": "1200"
+  },
+  {
+    "command": {
+      "type": "button",
+      "button": 0,
+      "pressed": false
+    },
+    "hex": "1a00"
+  },
+  {
+    "command": {
+      "type": "button",
+      "button": 2,
+      "pressed": true
+    },
+    "hex": "1a0408021001"
+  },
+  {
+    "command": {
+      "type": "key",
+      "code": 30,
+      "pressed": true
+    },
+    "hex": "2204081e1001"
+  },
+  {
+    "command": {
+      "type": "key",
+      "code": 767,
+      "pressed": false
+    },
+    "hex": "220308ff05"
+  },
+  {
+    "command": {
+      "type": "scroll",
+      "x": -1.5,
+      "y": 2.25
+    },
+    "hex": "2a1209000000000000f8bf110000000000000240"
+  },
+  {
+    "command": {
+      "type": "release"
+    },
+    "hex": "3001"
+  }
+]

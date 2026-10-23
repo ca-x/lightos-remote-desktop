@@ -34,6 +34,7 @@ anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 bytes = "1"
+prost = "0.14"
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }

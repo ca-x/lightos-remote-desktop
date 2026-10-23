@@ -1,3 +1,4 @@
+import { encodeBinaryCommand, requestedProtocols, protobufProtocol, videoHeader } from "./wire";
 import { encoderBackendKey, encoderBackends, readPreference, savePreference, videoCodecKey, videoCodecs, streamStrategyKey, streamStrategies } from "./preferences";
 import { supportedVideoConfig } from "./video-codec";
 import type { ClientOptions, DesktopChoice, DesktopOutput, Elements, SessionView } from "./types";
@@ -479,7 +480,7 @@ export function createClient(options: ClientOptions = {}) {
       return false;
     }
     try {
-      socket.send(JSON.stringify(command));
+      socket.send((socket.protocol === protobufProtocol ? encodeBinaryCommand(command) : null) ?? JSON.stringify(command));
       return true;
     } catch {
       closeSocket(socket);
@@ -645,7 +646,7 @@ export function createClient(options: ClientOptions = {}) {
     if (desktopMode === "physical" && selectedOutput) url.searchParams.set("output", selectedOutput);
     if (desktopChoices.length) desktopStatus(`正在连接${desktopLabel()}，尚未确认${selectedOutput ? ` · ${selectedOutput}` : ""}。`);
     let current;
-    try { current = new WebSocket(url); } catch (error) {
+    try { current = new WebSocket(url, requestedProtocols(location.href)); } catch (error) {
       connectionFailure = `Could not connect: ${errorMessage(error)}`;
       message(connectionFailure);
       scheduleRetry();
@@ -672,17 +673,18 @@ export function createClient(options: ClientOptions = {}) {
         receiveJSON(event.data);
       } else if (ready && !desktopPaused && event.data instanceof ArrayBuffer && event.data.byteLength > 1) {
         const kind = new Uint8Array(event.data, 0, 1)[0];
-        if (kind === 1 && event.data.byteLength <= 16777216) {
-          pendingFrame = { data: event.data.slice(1), generation, videoToken, id: pendingFrameId };
-          pendingFrameId = null;
-          void decodeFrames();
-        } else if (kind === 2) {
+        if (kind === 2) {
           if (audioSession === null) receiveAudio(event.data);
-        } else if (kind === 3 && event.data.byteLength <= 16777216) {
-          const id = pendingFrameId;
-          pendingFrameId = null;
-          receiveVideo(event.data, id);
+          return;
         }
+        const header = videoHeader(event.data, current.protocol === "lightos.frames.v1" || current.protocol === protobufProtocol);
+        if (!header) return;
+        const id = header.id ?? pendingFrameId;
+        pendingFrameId = null;
+        if (header.kind === "jpeg") {
+          pendingFrame = { data: event.data.slice(header.offset), generation, videoToken, id };
+          void decodeFrames();
+        } else receiveVideo(event.data, id);
       }
     };
     current.onerror = () => {
@@ -1022,20 +1024,20 @@ export function createClient(options: ClientOptions = {}) {
 
   function receiveVideo(data: ArrayBuffer, id: number | null) {
     if (waitingForBackend) return;
-    if (data.byteLength <= 10) { fallbackVideo(); return; }
+    const header = videoHeader(data, true);
+    if (!header || header.kind !== "h264") { fallbackVideo(); return; }
     if (configuringVideo) {
       if (pendingVideo) { fallbackVideo(); return; }
       pendingVideo = { data, id };
       return;
     }
     if (!videoDecoder || videoDecoder.state !== "configured" || videoDecoder.decodeQueueSize > 2) { fallbackVideo(); return; }
-    const view = new DataView(data);
-    const timestamp = view.getUint32(2, true) + view.getUint32(6, true) * 4294967296;
+    const timestamp = header.timestamp;
     try {
       videoFrameIds.set(timestamp, id);
       videoDecodeStarted.set(timestamp, performance.now());
       updateVideoWatchdog();
-      videoDecoder.decode(new window.EncodedVideoChunk({ type: view.getUint8(1) === 1 ? "key" : "delta", timestamp, data: new Uint8Array(data, 10) }));
+      videoDecoder.decode(new window.EncodedVideoChunk({ type: header.key ? "key" : "delta", timestamp, data: new Uint8Array(data, header.offset) }));
     } catch { fallbackVideo(); }
   }
 

@@ -1,3 +1,6 @@
+import { fromBinary } from "@bufbuild/protobuf";
+import { CommandSchema } from "../web/src/gen/wire_pb.js";
+import { encodeBinaryCommand, requestedProtocols, protobufProtocol, videoHeader } from "../web/src/wire.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -92,8 +95,10 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}) {
     readyState = 0;
     bufferedAmount = 0;
     sent = [];
-    constructor(url) { this.url = String(url); sockets.push(this); }
-    send(data) { assert.equal(this.readyState, 1); this.sent.push(JSON.parse(data)); }
+    protocol = "";
+    rawSent = [];
+    constructor(url, protocols = []) { this.url = String(url); this.protocols = protocols; sockets.push(this); }
+    send(data) { assert.equal(this.readyState, 1); this.rawSent.push(data); this.sent.push(typeof data === "string" ? JSON.parse(data) : { type: "binary" }); }
     close(code) {
       assert.ok(code === undefined || code === 1000 || (code >= 3000 && code <= 4999), "Browser-legal close code");
       this.readyState = 2;
@@ -133,7 +138,7 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}) {
   }
   window.AudioContext = AudioContext;
   const navigator = { clipboard: { readText: async () => "local text" } };
-  const context = vm.createContext({ document, window, navigator, AbortController, WebSocket, clientOptions,
+  const context = vm.createContext({ encodeBinaryCommand, requestedProtocols, protobufProtocol, videoHeader, document, window, navigator, AbortController, WebSocket, clientOptions,
     URL, location: { href: `https://desktop.test${pathname}`, pathname, protocol: "https:" },
     ArrayBuffer, Uint8Array, DataView, TextEncoder, Blob, performance: { now: () => now },
     localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
@@ -1824,4 +1829,38 @@ test("desktop pause clears old video and input while preserving the connection f
   assert.equal(app.draws.length, 1);
   assert.equal(socket.readyState, 1);
   assert.equal(app.sockets.length, 1);
+});
+
+for (const mode of ["frames", "protobuf"]) {
+  test(`negotiated ${mode} renders an inline frame ID and returns the matching ACK`, async () => {
+    const app = harness(`/?wire=${mode}`);
+    const socket = app.sockets.at(-1);
+    assert.deepEqual(Array.from(socket.protocols), [`lightos.${mode}.v1`]);
+    socket.protocol = socket.protocols[0];
+    socket.open();
+    socket.json({type:"ready",width:1280,height:720,frame_ack:true,frame_ids:true});
+    const packet = new ArrayBuffer(10);
+    const view = new DataView(packet);
+    view.setUint8(0,5);view.setBigUint64(1,1234n,true);view.setUint8(9,42);
+    socket.binary(packet);
+    assert.equal(app.decodes.length,1);
+    app.decodes[0].resolve(bitmap());await flush();
+    if (mode === "protobuf") {
+      const bytes = socket.rawSent.at(-1);
+      assert.ok(bytes instanceof Uint8Array);
+      assert.equal(fromBinary(CommandSchema,bytes).kind.value,1234n);
+      app.nodes.desktop.focus();app.fireKey("KeyA");
+      const command = fromBinary(CommandSchema,socket.rawSent.at(-1));
+      assert.equal(command.kind.case,"key");assert.equal(command.kind.value.code,30);
+    } else assert.deepEqual(socket.sent.at(-1),{type:"frame_ack",id:1234});
+  });
+}
+test("connections without an experimental subprotocol keep JSON commands and legacy video", async () => {
+  const app = harness("/");
+  const socket = app.ready();
+  assert.equal(socket.protocol,"");
+  socket.binary(jpeg(1));app.decodes.at(-1).resolve(bitmap());await flush();
+  app.nodes.desktop.focus();app.fireKey("KeyA");
+  assert.equal(typeof socket.rawSent.at(-1),"string");
+  assert.equal(socket.sent.at(-1).type,"key");
 });

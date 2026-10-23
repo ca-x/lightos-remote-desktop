@@ -1,0 +1,17 @@
+syntax = "proto3";
+package lightos.wire.v1;
+
+// Only frequent upstream messages. Setup and management retain JSON / HTTP.
+message Command {
+  oneof kind {
+    uint64 frame_ack = 1;
+    Point move = 2;
+    Button button = 3;
+    Key key = 4;
+    Point scroll = 5;
+    bool release = 6;
+  }
+}
+message Point { double x = 1; double y = 2; }
+message Button { uint32 button = 1; bool pressed = 2; }
+message Key { uint32 code = 1; bool pressed = 2; }

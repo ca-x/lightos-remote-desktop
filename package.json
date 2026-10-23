@@ -9,9 +9,11 @@
   "scripts": {
     "build": "tsc --noEmit && vite build && node scripts/frontend-assets.mjs",
     "test": "node --test tests/frontend.mjs tests/preferences.mjs tests/audio-worklet.mjs tests/audio-worker.mjs && vitest run",
-    "dev": "vite --host 127.0.0.1"
+    "dev": "vite --host 127.0.0.1",
+    "generate:wire": "node scripts/generate-wire.mjs"
   },
   "dependencies": {
+    "@bufbuild/protobuf": "^2.16.0",
     "@headlessui/react": "^2.2.10",
     "@radix-ui/react-menubar": "^1.2.1",
     "i18next": "^26.5.4",
@@ -21,6 +23,7 @@
     "react-i18next": "^17.1.0"
   },
   "devDependencies": {
+    "@bufbuild/protoc-gen-es": "^2.16.0",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^26.6.5",
     "@types/react": "^19.3.0",

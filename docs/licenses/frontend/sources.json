@@ -8,5 +8,25 @@
     "file": "react-remove-scroll-bar-2.3.8/LICENSE",
     "sha256": "a79aae0c0f21990d9d963bb3c5a79cdcea9a46f8523ba55c58d7fe776b6ebc84",
     "reason": "The published npm package declares MIT but omits its license file. Include the upstream author's MIT notice."
+  },
+  {
+    "name": "@bufbuild/protobuf",
+    "version": "2.16.0",
+    "repository": "bufbuild/protobuf-es",
+    "ref": "v2.16.0",
+    "upstream_path": "LICENSE",
+    "file": "@bufbuild/protobuf-2.16.0/LICENSE",
+    "sha256": "c04b4216f1cd4c5a4f7fb2f2a1b0ae70d847e9e0cac7c9dee9bf8cc03177c449",
+    "reason": "The npm package omits license files. Include the upstream Apache license and the varint BSD notice."
+  },
+  {
+    "name": "@bufbuild/protobuf",
+    "version": "2.16.0",
+    "repository": "bufbuild/protobuf-es",
+    "ref": "v2.16.0",
+    "upstream_path": "packages/protobuf/src/wire/varint.ts",
+    "file": "@bufbuild/protobuf-2.16.0/NOTICE.BSD",
+    "sha256": "a9474515aff906daa193766356ebe400efe3dd8fdd1c46e2932154cab9de9a22",
+    "reason": "The npm package omits license files. Include the upstream Apache license and the varint BSD notice."
   }
 ]

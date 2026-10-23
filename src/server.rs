@@ -690,6 +690,7 @@ async fn upgrade(
     let started = Instant::now();
     tracing::info!(connection_id, desktop = ?mode, "desktop connection accepted");
     upgrade
+        .protocols([crate::wire::PROTOBUF_PROTOCOL, crate::wire::FRAMES_PROTOCOL])
         .max_message_size(128 * 1024)
         .max_frame_size(128 * 1024)
         .on_upgrade(move |mut socket| async move {
@@ -816,11 +817,19 @@ async fn connection(
     connection_id: u64,
     connection_started: Instant,
 ) -> Option<ConnectionEnd> {
+    let wire =
+        crate::wire::WireMode::negotiated(socket.protocol().and_then(|value| value.to_str().ok()));
     let (mut writer, reader) = socket.split();
     let (control_tx, mut controls) = mpsc::channel(16);
     let (pacing_tx, mut pacing) =
         watch::channel(FrameScheduler::new(state.config.fps).expect("validated frame rate"));
-    let receive = receive_commands(reader, state.backend.input(), control_tx, pacing_tx.clone());
+    let receive = receive_commands(
+        reader,
+        state.backend.input(),
+        control_tx,
+        pacing_tx.clone(),
+        wire,
+    );
     let mut frames = state.backend.frames();
     let dimensions = frames
         .borrow()
@@ -989,11 +998,7 @@ async fn connection(
                                         discard_stale_frame!(frame_epoch);
                                         codec = Some(configuration);
                                 }
-                                let mut bytes = Vec::with_capacity(encoded.data.len() + 10);
-                                bytes.extend_from_slice(&[3, u8::from(encoded.key)]);
-                                bytes.extend_from_slice(&(video_started.elapsed().as_micros() as u64).to_le_bytes());
-                                bytes.extend_from_slice(&encoded.data);
-                                packet = Some(bytes);
+                                packet = Some(wire.h264(frame_id + 1, encoded.key, video_started.elapsed().as_micros() as u64, &encoded.data));
                             }
                             Err(error) => {
                                 tracing::warn!(%error, ?selected_backend, "H264 backend failed; selecting fallback");
@@ -1039,14 +1044,13 @@ async fn connection(
                                 }
                             };
                             discard_stale_frame!(frame_epoch);
-                            let mut packet = Vec::with_capacity(jpeg.len() + 1);
-                            packet.push(1); packet.extend_from_slice(&jpeg); packet
+                            wire.jpeg(frame_id + 1, &jpeg)
                         }
                     };
                     discard_stale_frame!(frame_epoch);
                     frame_id += 1;
                     pacing_tx.send_modify(|flow| flow.sent(frame_id, Instant::now()));
-                    if pacing.borrow().sequenced() {
+                    if pacing.borrow().sequenced() && !wire.inline_ids() {
                         discard_stale_frame!(frame_epoch);
                         let metadata = Message::Text(json!({"type":"frame_id","id":frame_id}).to_string().into());
                         if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(metadata)).await, Ok(Ok(()))) { break; }
@@ -1139,7 +1143,7 @@ async fn connection(
                 }
             };
             if let Some(message) = outgoing {
-                let video_packet = matches!(&message, Message::Binary(bytes) if matches!(bytes.first(), Some(1 | 3)));
+                let video_packet = matches!(&message, Message::Binary(bytes) if matches!(bytes.first(), Some(1 | 3 | 5 | 6)));
                 if let Some(epoch) = outgoing_epoch {
                     discard_stale_frame!(epoch);
                 }
@@ -1228,9 +1232,28 @@ async fn receive_commands(
     input: mpsc::Sender<InputCommand>,
     controls: mpsc::Sender<String>,
     pacing: watch::Sender<FrameScheduler>,
+    wire: crate::wire::WireMode,
 ) -> bool {
     while let Ok(Some(Ok(message))) = timeout(Duration::from_secs(60), reader.next()).await {
         match message {
+            Message::Binary(bytes) if wire == crate::wire::WireMode::Protobuf => {
+                match crate::wire::decode_command(&bytes) {
+                    Ok(crate::wire::DecodedCommand::Ack(id)) => {
+                        pacing.send_modify(|flow| {
+                            flow.acknowledge(Some(id), Instant::now());
+                        });
+                    }
+                    Ok(crate::wire::DecodedCommand::Input(command)) => {
+                        if !matches!(
+                            timeout(Duration::from_millis(500), input.send(command)).await,
+                            Ok(Ok(()))
+                        ) {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
             Message::Text(text) => {
                 if text.len() > 96 * 1024 {
                     break;
@@ -1481,6 +1504,15 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn lock_and_unlock_during_encode_never_publish_old_pixels() {
+        for protocol in [
+            None,
+            Some(crate::wire::FRAMES_PROTOCOL),
+            Some(crate::wire::PROTOBUF_PROTOCOL),
+        ] {
+            locked_frame_wire_case(protocol).await;
+        }
+    }
+    async fn locked_frame_wire_case(protocol: Option<&str>) {
         use clap::Parser;
         use futures_util::StreamExt;
         use tokio_tungstenite::{
@@ -1573,6 +1605,11 @@ mod tests {
                 .parse()
                 .unwrap(),
         );
+        if let Some(protocol) = protocol {
+            request
+                .headers_mut()
+                .insert("sec-websocket-protocol", protocol.parse().unwrap());
+        }
         let (mut client, _) = connect_async(request).await.unwrap();
         timeout(Duration::from_secs(3), pause.entered.notified())
             .await
@@ -1598,9 +1635,11 @@ mod tests {
                 .unwrap()
                 .unwrap();
             if let ClientMessage::Binary(bytes) = event
-                && bytes.first() == Some(&1)
+                && matches!(bytes.first(), Some(1 | 5))
             {
-                let image = image::load_from_memory(&bytes[1..]).unwrap().to_rgb8();
+                let image = image::load_from_memory(&bytes[if bytes[0] == 5 { 9 } else { 1 }..])
+                    .unwrap()
+                    .to_rgb8();
                 let pixel = image.get_pixel(8, 8);
                 assert!(
                     pixel[2] > pixel[0],
@@ -1866,7 +1905,14 @@ mod tests {
                 .into_iter()
                 .map(|message| Ok(Message::Text(message.into()))),
         );
-        receive_commands(reader, input, controls, pacing).await;
+        receive_commands(
+            reader,
+            input,
+            controls,
+            pacing,
+            crate::wire::WireMode::Legacy,
+        )
+        .await;
         assert!(matches!(
             received.recv().await,
             Some(InputCommand::Move { .. })
@@ -1892,7 +1938,14 @@ mod tests {
         assert!(state.borrow().waiting());
         let reader =
             futures_util::stream::iter([Ok(Message::Text("{\"type\":\"frame_ack\"}".into()))]);
-        receive_commands(reader, input, controls, pacing).await;
+        receive_commands(
+            reader,
+            input,
+            controls,
+            pacing,
+            crate::wire::WireMode::Legacy,
+        )
+        .await;
         assert!(!state.borrow().waiting());
         assert!(state.borrow().enabled());
     }
@@ -1908,13 +1961,98 @@ mod tests {
         let reader = futures_util::stream::iter([Ok(Message::Text(
             "{\"type\":\"frame_ack\",\"id\":1}".into(),
         ))]);
-        receive_commands(reader, input.clone(), controls.clone(), pacing.clone()).await;
+        receive_commands(
+            reader,
+            input.clone(),
+            controls.clone(),
+            pacing.clone(),
+            crate::wire::WireMode::Legacy,
+        )
+        .await;
         assert!(state.borrow().waiting());
         let reader = futures_util::stream::iter([Ok(Message::Text(
             "{\"type\":\"frame_ack\",\"id\":2}".into(),
         ))]);
-        receive_commands(reader, input, controls, pacing).await;
+        receive_commands(
+            reader,
+            input,
+            controls,
+            pacing,
+            crate::wire::WireMode::Legacy,
+        )
+        .await;
         assert!(!state.borrow().waiting());
+    }
+
+    #[tokio::test]
+    async fn protobuf_keeps_input_validation_and_stale_ack_protection() {
+        use crate::wire::{Command, WireMode, command::Kind};
+        use prost::Message as _;
+        let (input, mut received) = mpsc::channel(4);
+        let (controls, _) = mpsc::channel(1);
+        let mut flow = FrameScheduler::default();
+        flow.configure(true, true, SchedulingStrategy::Auto);
+        flow.sent(2, Instant::now());
+        let (pacing, state) = watch::channel(flow);
+        let packet = |kind| Message::Binary(Command { kind: Some(kind) }.encode_to_vec().into());
+        let reader = futures_util::stream::iter([
+            Ok(packet(Kind::FrameAck(1))),
+            Ok(packet(Kind::Release(true))),
+        ]);
+        receive_commands(
+            reader,
+            input.clone(),
+            controls.clone(),
+            pacing.clone(),
+            WireMode::Protobuf,
+        )
+        .await;
+        assert!(
+            state.borrow().waiting(),
+            "stale binary ACK released a newer frame"
+        );
+        assert!(matches!(received.recv().await, Some(InputCommand::Release)));
+        let reader = futures_util::stream::iter([Ok(packet(Kind::FrameAck(2)))]);
+        receive_commands(
+            reader,
+            input.clone(),
+            controls.clone(),
+            pacing.clone(),
+            WireMode::Protobuf,
+        )
+        .await;
+        assert_eq!(state.borrow().in_flight(), 0);
+        let reader = futures_util::stream::iter([Ok(packet(Kind::Key(crate::wire::Key {
+            code: 0,
+            pressed: true,
+        })))]);
+        receive_commands(
+            reader,
+            input.clone(),
+            controls.clone(),
+            pacing.clone(),
+            WireMode::Protobuf,
+        )
+        .await;
+        assert!(
+            received.try_recv().is_err(),
+            "invalid key reached input backend"
+        );
+        for mode in [WireMode::Legacy, WireMode::Frames] {
+            let reader = futures_util::stream::iter([Ok(packet(Kind::Release(true)))]);
+            receive_commands(
+                reader,
+                input.clone(),
+                controls.clone(),
+                pacing.clone(),
+                mode,
+            )
+            .await;
+            assert!(
+                received.try_recv().is_err(),
+                "binary input accepted without Protobuf negotiation"
+            );
+        }
     }
 
     #[tokio::test]
@@ -2104,3 +2242,7 @@ mod tests {
         assert!(!origin_allowed(&headers));
     }
 }
+
+#[cfg(test)]
+#[path = "server/wire_benchmark.rs"]
+mod wire_benchmark;

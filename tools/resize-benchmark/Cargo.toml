@@ -1,0 +1,15 @@
+[package]
+name = "lightos-resize-benchmark"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+publish = false
+
+# Kept outside the application workspace: these are experiment dependencies.
+[workspace]
+
+[dependencies]
+fast_image_resize = "=6.1.0"
+image = { version = "0.25", default-features = false }
+serde_json = "1"

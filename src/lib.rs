@@ -12,3 +12,4 @@ pub mod server;
 pub mod session;
 pub mod video;
 pub mod wayland;
+pub mod wire;
