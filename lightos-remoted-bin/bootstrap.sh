@@ -32,10 +32,12 @@ environment=$root/etc/lightos/remote-desktop.env
 native_environment=$root/etc/lightos/remote-desktop-native.env
 recovery=$root/run/systemd/system/lightos-remote-desktop.service.d/90-aur-recovery.conf
 service=lightos-remote-desktop.service
+activated=$state/activated.sha256
+rejected=$state/rejected.sha256
 for directory in "$managed" "$state" "$service_home" "${environment%/*}" "${recovery%/*}"; do
     [[ $(realpath -m -- "$directory") == "$directory" ]] || fail "symlinked deployment directory: $directory"
 done
-for file in "$environment" "$native_environment" "$state/aur-lock" "$recovery"; do
+for file in "$environment" "$native_environment" "$state/aur-lock" "$recovery" "$activated" "$rejected"; do
     [[ ! -L $file && ( ! -e $file || -f $file ) ]] || fail "regular file required: $file"
 done
 [[ -f $managed/lightos-remoted && -x $managed/lightos-remoted && ! -L $managed/lightos-remoted ]] || fail 'package binary missing'
@@ -61,10 +63,12 @@ fi
 install -d -m 0755 "$state"
 exec 8>"$state/aur-lock"
 flock -n 8 || fail 'another bootstrap is running'
+payload_digest=$(sha256sum "$managed/lightos-remoted"); payload_digest=${payload_digest%% *}
 if ((snapshot_only)); then
-    # Once a failed upgrade has activated a previous copy, retain that known-good
-    # copy rather than snapshotting the unsuccessful package payload.
-    if [[ ! -e $recovery ]]; then
+    # Only a payload that completed activation may replace the recovery copy.
+    # Doctor/configuration failures happen before a recovery override exists.
+    if [[ ! -e $recovery && -f $activated && $(<"$activated") == "$payload_digest" &&
+        ( ! -f $rejected || $(<"$rejected") != "$payload_digest" ) ]]; then
         [[ ! -L $state/previous ]] || fail 'previous directory cannot be a symlink'
         staging=$(mktemp -d "$state/.previous.XXXXXXXX")
         install -m 0755 "$managed/lightos-remoted" "$staging/lightos-remoted"
@@ -79,6 +83,23 @@ if ((snapshot_only)); then
     if ((remove_package)); then "$ctl" disable "$service"; fi
     exit 0
 fi
+write_marker() {
+    local destination=$1 temporary
+    temporary=$(mktemp "$state/.activation-marker.XXXXXXXX") || return 1
+    printf '%s\n' "$payload_digest" > "$temporary" || return 1
+    mv -Tf -- "$temporary" "$destination"
+}
+backup=
+finish() {
+    local status=$?
+    trap - EXIT
+    if ((status)); then
+        write_marker "$rejected" || printf '%s\n' 'Failed to record rejected candidate; retain the previous payload.' >&2
+    fi
+    [[ -z $backup ]] || rm -rf -- "$backup"
+    exit "$status"
+}
+trap finish EXIT
 install -d -m 0755 "${environment%/*}"
 if [[ ! -e $environment ]]; then
     password=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
@@ -137,14 +158,22 @@ if [[ -n $root ]]; then
     activation_sleep() { :; }
 fi
 activation_systemctl daemon-reload
-runtime_user=$(activation_systemctl show --property=User --value "$service")
-[[ $runtime_user =~ ^([a-zA-Z_][a-zA-Z0-9_-]*[$]?|[1-9][0-9]*)$ && $runtime_user != root ]] || fail 'transport must have a nonroot User'
+# Later administrator drop-ins can override either unit. Resolve both effective
+# identities through NSS; a username other than "root" may still have UID 0.
+configured_uid=$uid
+for checked_service in "$service" lightos-remote-desktop-session.service; do
+    effective_user=$(activation_systemctl show --property=User --value "$checked_service")
+    [[ $effective_user =~ ^([a-zA-Z_][a-zA-Z0-9_-]*[$]?|[0-9]+)$ ]] || fail "invalid effective User for $checked_service"
+    effective_account=$("$lookup" passwd "$effective_user") || fail "effective User cannot be resolved for $checked_service"
+    IFS=: read -r _ _ effective_uid _ <<< "$effective_account"
+    [[ $effective_uid =~ ^[1-9][0-9]*$ && $effective_uid == "$configured_uid" ]] || fail "effective User for $checked_service must match configured nonroot UID"
+    [[ $checked_service != "$service" ]] || runtime_user=$effective_user
+done
 release=$managed
 activation_doctor || fail 'candidate doctor failed; running service left unchanged'
 was_active=0
 if activation_systemctl is-active --quiet "$service"; then was_active=1; fi
 backup=$(mktemp -d "$state/.activation.XXXXXXXX")
-trap 'rm -rf -- "$backup"' EXIT
 [[ ! -f $recovery ]] || cp -p "$recovery" "$backup/recovery.conf"
 restore() {
     install -d -m 0755 "${recovery%/*}" || return 1
@@ -164,4 +193,6 @@ if ! activate_candidate; then
     fail 'candidate activation failed (previous transport recovered where available)'
 fi
 activation_systemctl enable "$service" || fail 'activation passed but enabling boot startup failed'
+write_marker "$activated"
+rm -f -- "$rejected"
 printf '%s\n' 'LightOS remote desktop activated. Credentials: /etc/lightos/remote-desktop.env (root only).'

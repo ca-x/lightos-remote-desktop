@@ -43,7 +43,9 @@ existing service names and canonical auth file remain unchanged because LightOS
 platform setup scripts depend on them; no service aliases are installed.
 
 Before replacing a previous new-layout package, the upgrade hook snapshots its
-binary and any locally installed sibling codec helper. If activation fails, the
+binary and any locally installed sibling codec helper. Persistent digest markers
+allow only a successfully activated payload to replace this recovery copy;
+a candidate rejected by the doctor or later activation gates cannot displace it. If activation fails, the
 hook reports failure and attempts to restart the previous transport through a
 runtime systemd override. It does not overwrite package-owned files or restart
 the desktop owner. This recovery override lasts until reboot; correct the failed
@@ -74,7 +76,10 @@ drop-ins, `/etc/lightos/remote-desktop.env`,
 `/etc/lightos/remote-desktop-native.env`, and any settings/data you need. Save
 work in the old remote desktop. Stop/disable the legacy transport and then stop
 its owner `lightos-remote-desktop-session.service`; this ends that desktop's GUI
-applications. Remove the legacy units/drop-ins after saving them elsewhere,
+applications. Remove the legacy units/drop-ins after saving them elsewhere.
+In particular, the old installer's `90-native.conf` and `95-session.conf` point at
+the old payload/runtime and must not override the complete AUR units. Do not
+rewrite these live while the old desktop is running. Continue by
 preserving `/etc/lightos` and `/opt/lightos/remote-desktop` (the original Python
 payload/platform setup integration). Reload systemd, and run `sudo /usr/lib/lightos-remoted/bootstrap`. Confirm the new
 service and browser login work before deleting any old configuration, state or
@@ -87,6 +92,10 @@ retained until you remove them yourself. The canonical
 `/etc/lightos/remote-desktop.env` and optional native environment are preserved
 byte for byte. If `LIGHTOS_REMOTE_DESKTOP_USER` names an existing nonroot account,
 the bootstrap honors its UID, primary group and home in both service units.
+After reloading systemd it also resolves both effective unit users through NSS
+and requires the configured nonroot UID, including when later drop-ins override
+`User=`. Root aliases and a mismatched desktop-owner UID are rejected before
+running the candidate.
 Without a configured user, fresh installs use the dedicated account. Existing
 shell preferences and private library settings are retained; review old absolute
 paths before deliberately deleting their targets. Do not delete the platform's

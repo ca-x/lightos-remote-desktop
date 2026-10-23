@@ -17,8 +17,9 @@ fixture() {
     cat > "$root/test-bin/getent" <<'MOCK'
 #!/usr/bin/env bash
 root=${0%/test-bin/getent}
+if [[ -f $root/nss-$2 ]]; then cat "$root/nss-$2"; exit; fi
 [[ -f $root/account ]] || exit 2
-cat "$root/account"
+awk -F: -v key="$2" '$1==key || $3==key { print; found=1 } END { exit !found }' "$root/account"
 MOCK
     cat > "$root/test-bin/useradd" <<'MOCK'
 #!/usr/bin/env bash
@@ -31,12 +32,19 @@ MOCK
 set -euo pipefail
 root=${0%/test-bin/systemctl}
 printf 'systemctl %s\n' "$*" >> "$root/events"
-[[ $* != *lightos-remote-desktop-session.service* ]] || exit 99
+if [[ ${*: -1} == lightos-remote-desktop-session.service ]]; then
+    [[ $1 == show && $* == *--property=User* ]] || exit 99
+fi
 case $1 in
 is-active)
     [[ -f $root/legacy-active || -f $root/active ]] ;;
 show)
-    if [[ $* == *--property=User* ]]; then awk -F= '$1=="User" {print $2}' "$root/etc/systemd/system/lightos-remote-desktop.service.d/50-runtime-user.conf"
+    if [[ $* == *--property=User* ]]; then
+        kind=transport
+        [[ ${*: -1} != lightos-remote-desktop-session.service ]] || kind=owner
+        if [[ -f $root/$kind-user ]]; then cat "$root/$kind-user"; else
+            awk -F= '$1=="User" {print $2}' "$root/etc/systemd/system/${*: -1}.d/50-runtime-user.conf"
+        fi
     elif [[ $* == *--value* ]]; then cat "$root/pid" 2>/dev/null || printf '0\n'
     else printf 'ActiveState=active\nSubState=running\nMainPID=%s\nExecMainPID=%s\nNRestarts=0\n' "$(cat "$root/pid")" "$(cat "$root/pid")"; fi ;;
 restart)
@@ -106,6 +114,45 @@ fixture doctor
  touch "$root/fail-doctor"
 if bootstrap; then echo 'Doctor failure swallowed' >&2; exit 1; fi
 check test "$(grep -c 'systemctl restart\|systemctl enable' "$root/events" || true)" = 0
+# A doctor-rejected B must never displace successfully activated A when C arrives.
+fixture doctor-upgrades
+bootstrap
+cp "$root/usr/lib/lightos-remoted/lightos-remoted" "$root/payload-a"
+a_digest=$(sha256sum "$root/payload-a"); a_digest=${a_digest%% *}
+bootstrap --snapshot
+printf '\n# candidate B\n' >> "$root/usr/lib/lightos-remoted/lightos-remoted"
+touch "$root/fail-doctor"
+if bootstrap; then echo 'Candidate B doctor failure swallowed' >&2; exit 1; fi
+check test "$(cat "$root/var/lib/lightos-remoted-package/activated.sha256")" = "$a_digest"
+b_digest=$(sha256sum "$root/usr/lib/lightos-remoted/lightos-remoted"); b_digest=${b_digest%% *}
+check test "$(cat "$root/var/lib/lightos-remoted-package/rejected.sha256")" = "$b_digest"
+bootstrap --snapshot
+check cmp "$root/payload-a" "$root/var/lib/lightos-remoted-package/previous/lightos-remoted"
+printf '\n# candidate C\n' >> "$root/usr/lib/lightos-remoted/lightos-remoted"
+rm "$root/fail-doctor"
+touch "$root/fail-probe"
+if bootstrap; then echo 'Candidate C probe failure swallowed' >&2; exit 1; fi
+check cmp "$root/payload-a" "$root/var/lib/lightos-remoted-package/previous/lightos-remoted"
+check grep -q 'previous/lightos-remoted serve' "$root/run/systemd/system/lightos-remote-desktop.service.d/90-aur-recovery.conf"
+check test -f "$root/active"
+# Both effective unit users must resolve to the configured nonroot UID.
+for condition in transport-alias-zero owner-root owner-wrong-uid; do
+    fixture "effective-$condition"
+    case $condition in
+        transport-alias-zero)
+            printf 'superuser\n' > "$root/transport-user"
+            printf 'superuser:x:0:0::/root:/bin/bash\n' > "$root/nss-superuser" ;;
+        owner-root)
+            printf 'root\n' > "$root/owner-user"
+            printf 'root:x:0:0::/root:/bin/bash\n' > "$root/nss-root" ;;
+        owner-wrong-uid)
+            printf 'other\n' > "$root/owner-user"
+            printf 'other:x:1000:1000::/home/other:/bin/bash\n' > "$root/nss-other" ;;
+    esac
+    if bootstrap; then echo "Invalid effective user accepted: $condition" >&2; exit 1; fi
+    check test "$(grep -c 'systemd-run\|systemctl restart\|systemctl enable' "$root/events" || true)" = 0
+    check test -s "$root/var/lib/lightos-remoted-package/rejected.sha256"
+done
 # Existing secrets/config (including custom library/shell settings) are byte exact.
 fixture config
 mkdir -p "$root/etc/lightos"
