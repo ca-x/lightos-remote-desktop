@@ -221,7 +221,7 @@ printf preserve > "$root/target"
 ln -s "$root/target" "$root/etc/lightos/remote-desktop.env"
 if bootstrap; then echo 'Symlink accepted' >&2; exit 1; fi
 check test "$(cat "$root/target")" = preserve
-# Removal disables only the transport and retains account/config/session/payload.
+# Removal disables future startup of both units and retains the running owner/config/payload.
 fixture removal
 bootstrap
 bootstrap --snapshot
@@ -229,6 +229,8 @@ bootstrap --remove
 check test -f "$root/active"
 check test -s "$root/etc/lightos/remote-desktop.env"
 check grep -q '^systemctl disable lightos-remote-desktop.service$' "$root/events"
+check grep -q '^systemctl disable lightos-remote-desktop-session.service$' "$root/events"
+check test "$(grep -c '^systemctl stop lightos-remote-desktop-session.service$' "$root/events" || true)" = 0
 check test -x "$root/var/lib/lightos-remoted-package/previous/lightos-remoted"
 # Standalone installs use the same lifecycle and keep units separate from local overrides.
 fixture standalone

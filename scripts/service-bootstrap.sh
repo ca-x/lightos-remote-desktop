@@ -80,7 +80,10 @@ if ((snapshot_only)); then
         chmod 0755 "$staging"
         mv -T -- "$staging" "$state/previous"
     fi
-    if ((remove_package)); then "$ctl" disable "$service"; fi
+    if ((remove_package)); then
+        "$ctl" disable "$service"
+        "$ctl" disable lightos-remote-desktop-session.service
+    fi
     exit 0
 fi
 write_marker() {
