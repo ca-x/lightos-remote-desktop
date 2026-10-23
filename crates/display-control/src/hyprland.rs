@@ -26,6 +26,10 @@ struct Monitor {
     width: u32,
     height: u32,
     #[serde(default)]
+    x: i32,
+    #[serde(default)]
+    y: i32,
+    #[serde(default)]
     transform: u32,
     #[serde(default = "default_scale")]
     scale: f64,
@@ -120,13 +124,20 @@ impl HyprlandDisplay {
                 height,
                 scale,
             } = resolution;
+            let (width, height) = if selected.transform % 2 == 1 {
+                (height, width)
+            } else {
+                (width, height)
+            };
+            let position = format!("{}x{}", selected.x, selected.y);
+            let transform = selected.transform;
             let mut reply = self
                 .request(&format!(
-                    "keyword monitor {name},{width}x{height}@{fps},auto,{scale}"
+                    "keyword monitor {name},{width}x{height}@{fps},{position},{scale},transform,{transform}"
                 ))
                 .await?;
             if reply.trim() == LUA_REQUIRED {
-                reply = self.request(&format!("eval hl.monitor({{ output = \"{name}\", mode = \"{width}x{height}@{fps}\", position = \"auto\", scale = {scale} }})")).await?;
+                reply = self.request(&format!("eval hl.monitor({{ output = \"{name}\", mode = \"{width}x{height}@{fps}\", position = \"{position}\", scale = {scale}, transform = {transform} }})")).await?;
             }
             ensure!(
                 reply.trim() == "ok",
@@ -140,7 +151,11 @@ impl HyprlandDisplay {
                 .iter()
                 .find(|m| m.name == *name)
                 .context("selected output disconnected")?;
-            if monitor.resolution() == resolution {
+            if monitor.resolution() == resolution
+                && monitor.x == selected.x
+                && monitor.y == selected.y
+                && monitor.transform == selected.transform
+            {
                 return Ok(resolution);
             }
             sleep(Duration::from_millis(25)).await;
@@ -216,7 +231,7 @@ mod tests {
             reply(&listener, "j/monitors", OLD).await;
             reply(
                 &listener,
-                "keyword monitor WAYLAND-1,800x600@30,auto,1",
+                "keyword monitor WAYLAND-1,800x600@30,0x0,1,transform,0",
                 "ok\n",
             )
             .await;
@@ -225,6 +240,84 @@ mod tests {
         assert_eq!(control.resize(None, size(), 30).await.unwrap(), size());
         server.await.unwrap();
     }
+    async fn resize_preserves_layout_and_transform(lua: bool) {
+        for (transform, native_width, native_height) in [
+            (1, 600, 800),
+            (0, 800, 600),
+            (2, 800, 600),
+            (3, 600, 800),
+            (4, 800, 600),
+            (5, 600, 800),
+            (6, 800, 600),
+            (7, 600, 800),
+        ] {
+            let (_dir, control, listener) = controller();
+            let server = tokio::spawn(async move {
+                let state = |width, height| {
+                    serde_json::json!([
+                        {"name":"WAYLAND-1", "width":width, "height":height,
+                         "x":-1280, "y":-120, "transform":transform},
+                        {"name":"DP-2", "width":1920, "height":1080,
+                         "x":0, "y":0, "transform":0}
+                    ])
+                    .to_string()
+                };
+                let old = state(1280, 720);
+                let new = state(native_width, native_height);
+                reply(&listener, "j/monitors", &old).await;
+                reply(
+                        &listener,
+                        &format!("keyword monitor WAYLAND-1,{native_width}x{native_height}@30,-1280x-120,1,transform,{transform}"),
+                        if lua { LUA_REQUIRED } else { "ok" },
+                    ).await;
+                if lua {
+                    reply(
+                            &listener,
+                            &format!("eval hl.monitor({{ output = \"WAYLAND-1\", mode = \"{native_width}x{native_height}@30\", position = \"-1280x-120\", scale = 1, transform = {transform} }})"),
+                            "ok",
+                        ).await;
+                }
+                reply(&listener, "j/monitors", &old).await;
+                reply(&listener, "j/monitors", &new).await;
+            });
+            let result = control.resize(Some("WAYLAND-1"), size(), 30).await;
+            server.await.unwrap();
+            assert_eq!(result.unwrap(), size(), "transform={transform}, lua={lua}");
+        }
+    }
+    #[tokio::test]
+    async fn legacy_resize_preserves_layout_and_transform() {
+        resize_preserves_layout_and_transform(false).await;
+    }
+    #[tokio::test]
+    async fn lua_resize_preserves_layout_and_transform() {
+        resize_preserves_layout_and_transform(true).await;
+    }
+    #[tokio::test]
+    async fn matching_dimensions_cannot_hide_changed_position_or_transform() {
+        for (x, transform) in [(0, 0), (-1280, 2)] {
+            let (_dir, control, listener) = controller();
+            let server = tokio::spawn(async move {
+                let old =
+                    r#"[{"name":"WAYLAND-1","width":1280,"height":720,"x":-1280,"transform":0}]"#;
+                let changed = serde_json::json!([
+                    {"name":"WAYLAND-1", "width":800, "height":600, "x":x, "transform":transform}
+                ])
+                .to_string();
+                reply(&listener, "j/monitors", old).await;
+                reply(
+                    &listener,
+                    "keyword monitor WAYLAND-1,800x600@30,-1280x0,1,transform,0",
+                    "ok",
+                )
+                .await;
+                reply(&listener, "j/monitors", &changed).await;
+            });
+            assert!(control.resize(Some("WAYLAND-1"), size(), 30).await.is_err());
+            server.await.unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn lua_resize_uses_eval_only_for_explicit_capability_reply() {
         let (_dir, control, listener) = controller();
@@ -232,11 +325,11 @@ mod tests {
             reply(&listener, "j/monitors", OLD).await;
             reply(
                 &listener,
-                "keyword monitor WAYLAND-1,800x600@30,auto,1",
+                "keyword monitor WAYLAND-1,800x600@30,0x0,1,transform,0",
                 LUA_REQUIRED,
             )
             .await;
-            reply(&listener, "eval hl.monitor({ output = \"WAYLAND-1\", mode = \"800x600@30\", position = \"auto\", scale = 1 })", "ok").await;
+            reply(&listener, "eval hl.monitor({ output = \"WAYLAND-1\", mode = \"800x600@30\", position = \"0x0\", scale = 1, transform = 0 })", "ok").await;
             reply(&listener, "j/monitors", NEW).await;
         });
         assert_eq!(control.resize(None, size(), 30).await.unwrap(), size());
@@ -249,11 +342,11 @@ mod tests {
             reply(&listener, "j/monitors", NEW).await;
             reply(
                 &listener,
-                "keyword monitor WAYLAND-1,800x600@30,auto,2",
+                "keyword monitor WAYLAND-1,800x600@30,0x0,2,transform,0",
                 LUA_REQUIRED,
             )
             .await;
-            reply(&listener, "eval hl.monitor({ output = \"WAYLAND-1\", mode = \"800x600@30\", position = \"auto\", scale = 2 })", "ok").await;
+            reply(&listener, "eval hl.monitor({ output = \"WAYLAND-1\", mode = \"800x600@30\", position = \"0x0\", scale = 2, transform = 0 })", "ok").await;
             reply(&listener, "j/monitors", NEW).await;
             reply(
                 &listener,
@@ -277,7 +370,7 @@ mod tests {
             reply(&listener, "j/monitors", OLD).await;
             reply(
                 &listener,
-                "keyword monitor WAYLAND-1,800x600@30,auto,1",
+                "keyword monitor WAYLAND-1,800x600@30,0x0,1,transform,0",
                 "invalid monitor mode",
             )
             .await;
@@ -365,7 +458,7 @@ mod tests {
             reply(&listener, "j/monitors", OLD).await;
             reply(
                 &listener,
-                "keyword monitor WAYLAND-1,800x600@30,auto,1",
+                "keyword monitor WAYLAND-1,800x600@30,0x0,1,transform,0",
                 "ok",
             )
             .await;
@@ -390,6 +483,8 @@ mod tests {
             name: "DP-1".into(),
             width: 600,
             height: 800,
+            x: 0,
+            y: 0,
             transform: 1,
             scale: 1.0,
         };
