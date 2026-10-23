@@ -148,8 +148,10 @@ are left in their old deployment rather than copied across incompatible layouts.
 `.github/workflows/aur.yml` runs for published releases or a manual dispatch with
 an explicit `vX.Y.Z` tag. It rejects draft/prerelease/malformed/downgrade inputs,
 requires successful tag CI, checks the exact four release assets and core checksum,
-and verifies the renamed ELF and LICENSE. If GitHub's own release token does not
-trigger the release event, dispatch it after publication:
+and verifies the renamed ELF and LICENSE. Tag CI explicitly dispatches the AUR
+workflow after automatically publishing a stable release, since events created by
+GitHub's own token do not trigger another workflow. Draft releases wait until
+publication. If a dispatch needs to be retried, run:
 
 ```sh
 gh workflow run aur.yml -f version=v0.1.11

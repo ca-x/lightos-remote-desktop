@@ -50,6 +50,7 @@ jobs:
         run: |
           bash tests/aur-bootstrap.sh
           bash tests/aur-release.sh
+          LRD_AUR_EXPORT_BINARY="$PWD/target/debug/lightos-remoted" bash tests/aur-package.sh
       - run: bash tests/installer.sh
       - run: bash scripts/test-install-compat.sh
   build:
@@ -168,6 +169,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -184,4 +186,14 @@ jobs:
             gh release upload "$RELEASE_TAG" dist/* --clobber
           else
             gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes
+          fi
+      - name: Dispatch AUR after an automatically published stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          # GITHUB_TOKEN release events do not start another workflow.
+          if [[ $(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease --jq '.isDraft == false and .isPrerelease == false') == true ]]; then
+            gh workflow run aur.yml --ref main -f "version=$RELEASE_TAG"
           fi
