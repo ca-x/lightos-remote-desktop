@@ -45,3 +45,14 @@ Files: `README.md`, `README.en.md`, release notes, CI archive inputs and plan co
 
 - [ ] Keep complete Chinese/English README content, commands and migration conditions aligned with mutual links. Include both README files in release archives.
 - [ ] Independently review installer/AUR integration, run covering tests and exact-SHA CI, then merge main and publish v0.1.11 plus AUR. User installs production themselves.
+
+## Task 4: RDP settings entry
+
+User requirements: RDP belongs in the independent Settings dialog, with an enable switch and port field only. RDP picture quality remains client/protocol negotiated; browser streaming preferences must not affect RDP.
+
+Files: `src/rdp*`, RDP state wiring in `src/main.rs` / `src/server.rs`, `web/src/RdpSettings.tsx`, settings tab and translations, focused tests, `docs/rdp.md`.
+
+- [ ] Add authenticated same-origin GET/PUT `/api/rdp`, private atomic persistence, strict port validation and unsupported/attached-desktop responses.
+- [ ] Manage listener changes without restarting HTTP or the desktop. Prepare TLS/bind/save before replacing the old service; failures retain the previous configuration/listener. Shutdown releases held input. Preserve existing explicit TLS configuration; otherwise generate and persist a private self-signed identity with an established Rust crate. Retain the current bind-address policy and show the real endpoint/fingerprint.
+- [ ] Add Settings tab with two editable controls, visible status/errors and canceled pending UI requests when hidden. No toolbar action or RDP quality control.
+- [ ] Run focused backend/component tests and static checks, then independent review. User requested unit tests for this increment rather than repeated full builds; the final release workflow builds tag artifacts.
