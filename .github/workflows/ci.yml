@@ -43,6 +43,10 @@ jobs:
           rdp_client=$(command -v xfreerdp3 || command -v xfreerdp)
           rdp_xvfb=$(command -v Xvfb)
           LRD_TEST_FREERDP="$rdp_client" LRD_TEST_XVFB="$rdp_xvfb" cargo test --locked --features bundled-jpeg,rdp freerdp_tcp_tls_bitmap_input_resize_reconnect_and_denials -- --ignored --nocapture
+      - name: AUR bootstrap, recovery and published-release guards
+        run: |
+          bash tests/aur-bootstrap.sh
+          bash tests/aur-release.sh
       - run: bash tests/installer.sh
       - run: bash scripts/test-install-compat.sh
   build:
