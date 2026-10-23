@@ -1,3 +1,4 @@
+import { createPictureZoom } from "./picture-zoom";
 import { encoderBackendKey, encoderBackends, readPreference, savePreference, videoCodecKey, videoCodecs, streamStrategyKey, streamStrategies } from "./preferences";
 import { supportedVideoConfig } from "./video-codec";
 import type { ClientOptions, DesktopChoice, DesktopOutput, Elements, SessionView } from "./types";
@@ -352,7 +353,17 @@ export function createClient(options: ClientOptions = {}) {
   let pingSequence = 0;
   let pendingPing: {id: number; started: number} | null = null;
   let latestRtt: number | null = null;
-  const cursor = createCursorLayer(canvas, element("remote-cursor"), () => latestRtt ?? 0);
+  function pictureBounds() {
+    const mobileBounds = mobile?.bounds();
+    if (mobileBounds) return { left: mobileBounds.left, top: mobileBounds.top,
+      right: mobileBounds.left + mobileBounds.width, bottom: mobileBounds.top + Math.max(0, mobileBounds.height - mobileBounds.bar) };
+    const rect = viewport.getBoundingClientRect();
+    return { left: rect.left, top: rect.top, right: rect.left + (viewport.clientWidth || rect.width), bottom: rect.top + (viewport.clientHeight || rect.height) };
+  }
+  const cursor = createCursorLayer(canvas, element("remote-cursor"), () => latestRtt ?? 0, pictureBounds);
+  const pictureZoom = createPictureZoom({ canvas, viewport, bounds: pictureBounds,
+    enabled: () => ready && !desktopPaused && desktopMode === "physical",
+    touching: () => mobile?.touching() ?? false, changed: () => { cursor.layout(); scheduleVideoScale(); } });
   const frameCursorModes = new Map<number, boolean>();
   const rttSamples: number[] = [];
   const renderSamples: number[] = [];
@@ -460,7 +471,8 @@ export function createClient(options: ClientOptions = {}) {
     const source = typeof id === "number" ? frameSourceSizes.get(id) : undefined;
     const nextWidth = source?.width ?? (videoScaling ? sourceWidth : width);
     const nextHeight = source?.height ?? (videoScaling ? sourceHeight : height);
-    const changed = canvas.width !== width || canvas.height !== height || sourceWidth !== nextWidth || sourceHeight !== nextHeight;
+    const sourceChanged = sourceWidth !== nextWidth || sourceHeight !== nextHeight;
+    const changed = canvas.width !== width || canvas.height !== height || sourceChanged;
     sourceWidth = nextWidth;
     sourceHeight = nextHeight;
     if (lastRequestedSize === `${sourceWidth}x${sourceHeight}`) lastRequestedSize = null;
@@ -468,6 +480,8 @@ export function createClient(options: ClientOptions = {}) {
     if (canvas.height !== height) canvas.height = height;
     canvas.style.setProperty("--desktop-aspect", String(sourceWidth / sourceHeight));
     updateCanvasDensity();
+    if (sourceChanged) pictureZoom.reset();
+    else if (changed) pictureZoom.layout();
     if (changed) publishSessionView();
   }
 
@@ -584,6 +598,7 @@ export function createClient(options: ClientOptions = {}) {
 
   function resetSession() {
     desktopInitializing = false;
+    pictureZoom.reset();
     cursorSession = null;
     cursor.reset(); frameCursorModes.clear(); frameSourceSizes.clear();
     videoScaling = false;
@@ -1023,7 +1038,7 @@ export function createClient(options: ClientOptions = {}) {
   function configureVideoScale() {
     if (!ready || !videoScaling || document.hidden || destroyed) return;
     const bounds = mobile?.bounds();
-    const native = strategyPreference === "quality_first" || (!isDesktopFullscreen() && windowMode === "actual");
+    const native = strategyPreference === "quality_first" || pictureZoom.active() || (!isDesktopFullscreen() && windowMode === "actual");
     if (!native && mobile?.keyboardActive()) return;
     const maxSize = native ? null : encodingBounds(bounds?.width ?? viewport.clientWidth,
       bounds ? bounds.height - bounds.bar : viewport.clientHeight, window.devicePixelRatio);
@@ -1463,7 +1478,7 @@ export function createClient(options: ClientOptions = {}) {
   });
   listen(canvas, "contextmenu", (event) => event.preventDefault());
   listen(canvas, "wheel", (event) => {
-    if (!ready) return;
+    if (!ready || event.ctrlKey || event.metaKey) return;
     event.preventDefault();
     const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? canvas.clientHeight : 1;
     const bounded = (value: number) => Number.isFinite(value) ? Math.max(-1000, Math.min(1000, value * scale)) : 0;
@@ -1558,6 +1573,7 @@ export function createClient(options: ClientOptions = {}) {
     }
   });
   async function displayMode(mode: string) {
+    pictureZoom.reset();
     try {
       if (mode === "fullscreen") {
         // Include portalled menus and dialogs in the browser fullscreen tree.
@@ -1737,6 +1753,7 @@ export function createClient(options: ClientOptions = {}) {
     disconnect();
     destroyed = true;
     mobile?.dispose();
+    pictureZoom.dispose();
     cursor.dispose();
     toolObserver?.disconnect();
     listeners.abort();
@@ -1765,7 +1782,7 @@ export function createClient(options: ClientOptions = {}) {
   });
   mobile = createMobileControls({
     canvas, viewport, input: element("mobile-input"), bar: element("mobile-shortcuts"), toggle: element("mobile-keyboard"),
-    ready: () => ready && !desktopPaused, send, text: typeText, move, tools: (open) => setToolsOpen(open), translate,
+    ready: () => ready && !desktopPaused, zoom: pictureZoom, send, text: typeText, move, tools: (open) => setToolsOpen(open), translate,
     hardwareKey: (event) => hardwareKey(event, true), composition: release,
     hardwareInput: (event) => {
       const pending = pendingHardwareKey;
@@ -1775,7 +1792,7 @@ export function createClient(options: ClientOptions = {}) {
     },
     paste: (event) => { void clipboard.paste(event); },
     chord: (codes) => { if (ready && codes.every((code) => Object.hasOwn(KEY_CODES, code))) sendChord(codes.map((code) => KEY_CODES[code])); },
-    layout: () => { updateCanvasDensity(); layoutTools(); scheduleAutoResize(); scheduleVideoScale(); },
+    layout: () => { updateCanvasDensity(); pictureZoom.layout(); layoutTools(); scheduleAutoResize(); scheduleVideoScale(); },
   });
   wanted = true;
   setToolsOpen(false);

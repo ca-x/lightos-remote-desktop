@@ -4,7 +4,7 @@ interface CursorState {
   hotspot_x: number; hotspot_y: number; units_width: number; units_height: number;
   png?: string;
 }
-export function createCursorLayer(canvas: HTMLCanvasElement, overlay: HTMLImageElement, rtt: () => number = () => 0) {
+export function createCursorLayer(canvas: HTMLCanvasElement, overlay: HTMLImageElement, rtt: () => number = () => 0, clipBounds?: () => { left: number; top: number; right: number; bottom: number }) {
   let socket: WebSocket | null = null, generation = 0, imageRevision = 0;
   let embedded = true, shape: CursorState | null = null, latest: CursorState | null = null;
   let url: string | null = null, inside = false, touch = false, corrected = false;
@@ -29,7 +29,10 @@ export function createCursorLayer(canvas: HTMLCanvasElement, overlay: HTMLImageE
     const position = point && (touch ? performance.now() - localAt < Math.max(150, rtt() * 2) : inside && !corrected) ? point : latest;
     overlay.src = url;
     overlay.style.width = `${width}px`; overlay.style.height = `${height}px`;
-    overlay.style.transform = `translate3d(${bounds.left + position.x * bounds.width - hx}px, ${bounds.top + position.y * bounds.height - hy}px, 0)`;
+    const left = bounds.left + position.x * bounds.width - hx, top = bounds.top + position.y * bounds.height - hy;
+    overlay.style.transform = `translate3d(${left}px, ${top}px, 0)`;
+    const clip = clipBounds?.();
+    overlay.style.clipPath = clip ? `inset(${Math.max(0, clip.top - top)}px ${Math.max(0, left + width - clip.right)}px ${Math.max(0, top + height - clip.bottom)}px ${Math.max(0, clip.left - left)}px)` : "";
     overlay.hidden = false;
   }
   function layout() { bounds = canvas.getBoundingClientRect(); render(); }

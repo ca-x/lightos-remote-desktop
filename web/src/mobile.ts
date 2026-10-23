@@ -52,6 +52,10 @@ interface MobileOptions {
   tools: (open: boolean) => void;
   layout: () => void;
   translate: (text: string) => string;
+  zoom?: {
+    active: () => boolean;
+    gesture: (from: { x: number; y: number }, to: { x: number; y: number }, ratio: number) => void;
+  };
   hardwareKey?: (event: KeyboardEvent) => boolean;
   hardwareInput?: (event: InputEvent) => boolean;
   composition?: () => void;
@@ -96,7 +100,8 @@ export function createMobileControls(options: MobileOptions) {
   let rightClicked = false;
   let multiTouch = false;
   let centroid: { x: number; y: number; distance: number } | null = null;
-  let pinching = false;
+  let gestureOrigin: { x: number; y: number; distance: number } | null = null;
+  let gestureMode: "pending" | "scroll" | "zoom" | "pan" = "pending";
   let shortcutPointer: { id: number; button: HTMLButtonElement; x: number; y: number; moved: boolean; repeated: boolean } | null = null;
   let repeatTimer: ReturnType<typeof setTimeout> | null = null;
   let suppressClick: HTMLButtonElement | null = null;
@@ -142,9 +147,7 @@ export function createMobileControls(options: MobileOptions) {
     frame = null;
     if (!touch || disposed) return;
     const bounds = geometry();
-    const scale = window.visualViewport?.scale ?? 1;
-    const zoomed = scale > 1.01;
-    if (focused() && !zoomed) {
+    if (focused()) {
       if (bounds.height < keyboardReference - 80) keyboardWasVisible = true;
       else if (keyboardWasVisible && bounds.height >= keyboardReference - 40) {
         hideKeyboard(); // Android Back can dismiss the IME without blurring its input.
@@ -152,31 +155,19 @@ export function createMobileControls(options: MobileOptions) {
       }
     }
     const inset = Math.max(0, window.innerHeight - bounds.height - bounds.top);
-    // Preserve native pinch zoom instead of fitting the desktop back into the
-    // smaller visual viewport and cancelling the user's magnification.
-    viewport.style.setProperty("--mobile-height", `${bounds.height * (zoomed ? scale : 1)}px`);
-    viewport.style.setProperty("--mobile-width", `${bounds.width * (zoomed ? scale : 1)}px`);
-    viewport.style.setProperty("--mobile-top", `${zoomed ? 0 : bounds.top}px`);
-    viewport.style.setProperty("--mobile-left", `${zoomed ? 0 : bounds.left}px`);
+    viewport.style.setProperty("--mobile-height", `${bounds.height}px`);
+    viewport.style.setProperty("--mobile-width", `${bounds.width}px`);
+    viewport.style.setProperty("--mobile-top", `${bounds.top}px`);
+    viewport.style.setProperty("--mobile-left", `${bounds.left}px`);
     viewport.style.setProperty("--dock-width", `${bounds.width}px`);
     viewport.style.setProperty("--dock-left", `${bounds.left}px`);
     viewport.style.setProperty("--dock-top", `${bounds.top}px`);
     viewport.style.setProperty("--visible-height", `${bounds.height}px`);
     viewport.style.setProperty("--keyboard-inset", `${inset}px`);
     viewport.classList.toggle("software-keyboard-open", focused() || closingTimer !== null);
-    const keyboardVisible = !zoomed && (inset > 80 || ((focused() || closingTimer !== null) && bounds.height < keyboardReference - 80));
+    const keyboardVisible = inset > 80 || ((focused() || closingTimer !== null) && bounds.height < keyboardReference - 80);
     viewport.classList.toggle("software-keyboard-visible", keyboardVisible);
     viewport.style.setProperty("--mobile-bar-height", `${bar.getBoundingClientRect().height}px`);
-    // Native pinch zoom keeps the picture's layout size. Clip its visible
-    // portion above the independently docked bar without cancelling zoom.
-    if (zoomed) {
-      const picture = canvas.getBoundingClientRect();
-      const safe = contentBounds();
-      const bottom = Math.min(bar.getBoundingClientRect().top, bounds.top + bounds.height);
-      canvas.style.clipPath = `inset(${Math.max(0, safe.top - picture.top)}px ${Math.max(0, picture.right - safe.left - safe.width)}px ${Math.max(0, picture.bottom - bottom)}px ${Math.max(0, safe.left - picture.left)}px)`;
-    } else {
-      canvas.style.removeProperty("clip-path");
-    }
     options.layout();
   }
 
@@ -369,7 +360,8 @@ export function createMobileControls(options: MobileOptions) {
     dragging = false;
     rightClicked = false;
     multiTouch = false;
-    pinching = false;
+    gestureOrigin = null;
+    gestureMode = "pending";
     centroid = null;
     const ids = [...activeTouches.keys()];
     activeTouches.clear();
@@ -403,7 +395,11 @@ export function createMobileControls(options: MobileOptions) {
         dragging = false;
         multiTouch = true;
         const [a, b] = [...activeTouches.values()];
-        if (b) centroid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, distance: Math.hypot(a.x - b.x, a.y - b.y) };
+        if (b && activeTouches.size === 2) {
+          centroid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, distance: Math.hypot(a.x - b.x, a.y - b.y) };
+          gestureOrigin = centroid;
+          gestureMode = options.zoom?.active() ? "pan" : "pending";
+        } else { centroid = gestureOrigin = null; }
       }
       requestLayout();
       return true;
@@ -417,8 +413,16 @@ export function createMobileControls(options: MobileOptions) {
         if (activeTouches.size !== 2 || !centroid) return true;
         const [a, b] = [...activeTouches.values()];
         const next = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, distance: Math.hypot(a.x - b.x, a.y - b.y) };
-        if (Math.abs(next.distance - centroid.distance) > 12) pinching = true;
-        if (!pinching) options.send({ type: "scroll", x: Math.max(-1000, Math.min(1000, centroid.x - next.x)), y: Math.max(-1000, Math.min(1000, centroid.y - next.y)) });
+        const origin = gestureOrigin ?? centroid;
+        const distanceChanged = Math.abs(next.distance - origin.distance) > Math.max(8, origin.distance * .06);
+        const from = gestureMode === "pending" ? origin : centroid;
+        if (distanceChanged) gestureMode = "zoom";
+        else if (gestureMode === "pending" && Math.hypot(next.x - origin.x, next.y - origin.y) > 8) gestureMode = "scroll";
+        if (gestureMode === "zoom" || gestureMode === "pan") {
+          options.zoom?.gesture(from, next, gestureMode === "zoom" && from.distance > 0 ? next.distance / from.distance : 1);
+        } else if (gestureMode === "scroll") {
+          options.send({ type: "scroll", x: Math.max(-1000, Math.min(1000, from.x - next.x)), y: Math.max(-1000, Math.min(1000, from.y - next.y)) });
+        }
         centroid = next;
       } else if (!rightClicked && Math.hypot(current.x - current.startX, current.y - current.startY) > 8) {
         cancelHold();
@@ -438,7 +442,7 @@ export function createMobileControls(options: MobileOptions) {
       dragging = false;
       activeTouches.delete(event.pointerId);
       if (canvas.hasPointerCapture?.(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
-      if (!activeTouches.size) { multiTouch = false; centroid = null; pinching = false; }
+      if (!activeTouches.size) { multiTouch = false; centroid = gestureOrigin = null; gestureMode = "pending"; }
     }
     return true;
   }
@@ -475,7 +479,8 @@ export function createMobileControls(options: MobileOptions) {
       if (!focused()) { resetField(); input.focus({ preventScroll: true }); }
       return true;
     },
-    keyboardActive: () => touch && (focused() || closingTimer !== null || (window.visualViewport?.scale ?? 1) > 1.01),
+    keyboardActive: () => touch && (focused() || closingTimer !== null),
+    touching: () => activeTouches.size > 0,
     lostPointer: (id: number) => { if (activeTouches.has(id)) cancelTouches(); },
     bounds: () => touch ? contentBounds() : null,
     dispose() {
@@ -488,7 +493,6 @@ export function createMobileControls(options: MobileOptions) {
       viewport.classList.toggle("touch-desktop", false);
       viewport.classList.toggle("software-keyboard-open", false);
       viewport.classList.toggle("software-keyboard-visible", false);
-      canvas.style.removeProperty("clip-path");
     },
   };
 }

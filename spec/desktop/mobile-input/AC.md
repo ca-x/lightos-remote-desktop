@@ -52,6 +52,20 @@ ID: SC-MOBILE-RETURN-TO-LIGHTOS
 Profile: draft
 Gate: required
 Given 用户从 LightOS 管理页进入移动端远程桌面
-When 用户点击键盘按钮右侧的主页图标
+When 用户点击第二行菜单按钮右侧的主页图标
 Then 当前页面返回同一 LightOS 管理入口
 And 返回操作不依赖远程桌面连接是否就绪
+
+# 场景 7：只缩放物理桌面画面
+ID: SC-PHYSICAL-PICTURE-ZOOM
+Profile: draft
+Gate: required
+Given PC 或手机已连接物理桌面，底栏或工具栏处于当前操作状态
+When 用户在画面内双指捏合放大、缩小或用触控板捏合
+Then 只改变物理桌面画面的显示比例，页面视口与底栏尺寸和操作状态保持不变
+And 放大后可双指平移查看局部，点按对应的远端位置仍然正确
+And 捏合不向远端发送点击或滚动，且不改变远端分辨率
+When 用户在虚拟桌面、底栏或其他页面区域捏合，或触发页面缩放快捷键
+Then 页面保持当前比例，虚拟桌面及底栏不被放大或缩小
+When 用户切换桌面或断开连接
+Then 原物理画面的局部缩放状态被清理

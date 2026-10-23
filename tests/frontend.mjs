@@ -4,6 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
 
+const zoomSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/picture-zoom.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const cursorSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/cursor.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const updatesSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/desktop-updates.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const resolutionSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/resolution.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
@@ -11,7 +12,7 @@ const mobileSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/mobil
 const clipboardSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/clipboard.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const codecSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/video-codec.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const preferenceSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/preferences.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
-const source = cursorSource + "\n" + updatesSource + "\n" + resolutionSource + "\n" + mobileSource + "\n" + clipboardSource + "\n" + preferenceSource + "\n" + codecSource + "\n" + stripTypeScriptTypes(readFileSync(new URL("../web/src/client.ts", import.meta.url), "utf8"))
+const source = zoomSource + "\n" + cursorSource + "\n" + updatesSource + "\n" + resolutionSource + "\n" + mobileSource + "\n" + clipboardSource + "\n" + preferenceSource + "\n" + codecSource + "\n" + stripTypeScriptTypes(readFileSync(new URL("../web/src/client.ts", import.meta.url), "utf8"))
 
   .replace(/^import .* from .*;$/gm, "")
   .replace(/^export /gm, "") + '\nconst audioWorkerUrl = "./audio-worker.js"; const audioWorkletUrl = "./audio-worklet.js"; const client = createClient(clientOptions);';
@@ -39,7 +40,7 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}, pixelR
     textContent = "";
     captures = new Set();
     attributes = {};
-    style = { values: {}, setProperty(name, value) { this.values[name] = value; }, removeProperty(name) { const value = this.values[name] ?? ""; delete this.values[name]; return value; } };
+    style = { values: {}, setProperty(name, value) { this.values[name] = value; }, removeProperty(name) { const value = this.values[name] ?? this[name] ?? ""; delete this.values[name]; delete this[name]; return value; } };
     classList = {
       values: new Set(),
       toggle(name, enabled) { if (enabled) this.values.add(name); else this.values.delete(name); },
@@ -2103,4 +2104,26 @@ test("older peers and lossless updates do not negotiate video downscaling", () =
     socket.json({ type: "ready", width: 1280, height: 800, ...extra });
     assert.equal(socket.sent.some(p => p.type === "video_scale"), false);
   }
+});
+
+test("physical picture zoom requests native video and survives encoding-size changes", async () => {
+  const app = harness();
+  app.nodes.viewport.clientWidth = 640; app.nodes.viewport.clientHeight = 400;
+  const socket = app.sockets.at(-1); socket.open();
+  socket.json({ type: "ready", width: 1280, height: 800, desktop: "physical", resize: false,
+    frame_ack: true, frame_ids: true, video_scaling: true });
+  socket.json({ type: "frame_id", id: 1, source_width: 1280, source_height: 800 });
+  socket.binary(jpeg(1)); app.decodes[0].resolve(bitmap(640, 400)); await flush();
+  app.document.fire("wheel", { target: app.nodes.desktop, ctrlKey: true, deltaY: -100,
+    clientX: 110, clientY: 70, stopPropagation() {} });
+  const magnification = app.nodes.desktop.style.transform.match(/scale\([^)]+\)/)[0];
+  for (const [id, timer] of [...app.timers]) if (timer.delay === 250) { app.timers.delete(id); timer.callback(); }
+  assert.equal(socket.sent.filter(p => p.type === "video_scale").at(-1).max_size, null);
+  socket.json({ type: "frame_id", id: 2, source_width: 1280, source_height: 800 });
+  socket.binary(jpeg(2)); app.decodes[1].resolve(bitmap(1280, 800)); await flush();
+  assert.ok(app.nodes.desktop.style.transform.includes(magnification), "encoding change must preserve local picture zoom");
+  app.nodes["mode-fit"].fire("click"); await flush();
+  assert.equal(app.nodes.desktop.style.transform, undefined);
+  assert.deepEqual(socket.sent.filter(p => p.type === "video_scale").at(-1).max_size, { width: 640, height: 400 });
+  assert.equal(socket.sent.some(p => p.type === "resize"), false);
 });
