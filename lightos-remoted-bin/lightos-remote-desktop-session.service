@@ -1,0 +1,20 @@
+[Unit]
+Description=LightOS Persistent Remote Desktop Session
+
+[Service]
+Type=simple
+User=lightos-remoted
+Group=lightos-remoted
+SupplementaryGroups=video render
+Environment=HOME=/var/lib/lightos-remoted
+EnvironmentFile=/etc/lightos/remote-desktop.env
+EnvironmentFile=-/etc/lightos/remote-desktop-native.env
+Environment=XDG_RUNTIME_DIR=/run/lightos-remoted-session
+RuntimeDirectory=lightos-remoted-session
+RuntimeDirectoryMode=0700
+ExecStart=/usr/lib/lightos-remoted/lightos-remoted desktop-session --runtime-dir /run/lightos-remoted-session
+KillMode=control-group
+TimeoutStartSec=45
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=3

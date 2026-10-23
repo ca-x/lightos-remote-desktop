@@ -1,0 +1,25 @@
+[Unit]
+Description=LightOS Remote Desktop Transport
+After=network.target lightos-remote-desktop-session.service
+Requires=lightos-remote-desktop-session.service
+
+[Service]
+Type=simple
+User=lightos-remoted
+Group=lightos-remoted
+SupplementaryGroups=video render
+Environment=HOME=/var/lib/lightos-remoted
+EnvironmentFile=/etc/lightos/remote-desktop.env
+EnvironmentFile=-/etc/lightos/remote-desktop-native.env
+Environment=XDG_RUNTIME_DIR=/run/lightos-remoted
+Environment=LIGHTOS_REMOTE_DESKTOP_SESSION_RUNTIME=/run/lightos-remoted-session
+RuntimeDirectory=lightos-remoted
+RuntimeDirectoryMode=0700
+ExecStart=/usr/lib/lightos-remoted/lightos-remoted serve
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=45
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
