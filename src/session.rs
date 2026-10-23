@@ -90,6 +90,8 @@ impl Session {
     }
 
     pub fn physical_target(config: &Config) -> Result<SessionTarget> {
+        let owner = unsafe { libc::geteuid() };
+        let login_runtime = PathBuf::from(format!("/run/user/{owner}"));
         let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
         let wayland = std::env::var_os("WAYLAND_DISPLAY").map(PathBuf::from);
         let xauthority = std::env::var_os("XAUTHORITY")
@@ -100,8 +102,13 @@ impl Session {
             .map(PathBuf::from);
         physical_target_from_environment(
             config,
-            unsafe { libc::geteuid() },
-            runtime.as_deref(),
+            owner,
+            physical_discovery_runtime(
+                config,
+                runtime.as_deref(),
+                wayland.as_deref(),
+                &login_runtime,
+            ),
             wayland.as_deref(),
             std::env::var("DISPLAY").ok().as_deref(),
             xauthority.as_deref(),
@@ -634,6 +641,24 @@ fn wayland_sockets(directory: &Path, owner: u32) -> Result<Vec<PathBuf>> {
     Ok(sockets)
 }
 
+fn physical_discovery_runtime<'a>(
+    config: &Config,
+    runtime: Option<&'a Path>,
+    wayland_display: Option<&Path>,
+    login_runtime: &'a Path,
+) -> Option<&'a Path> {
+    // A persistent desktop's HTTP service has its own RuntimeDirectory. That
+    // directory is not the user's graphical login. Preserve an explicit
+    // WAYLAND_DISPLAY/runtime pair; otherwise discover the same user's login.
+    if config.session_runtime.is_some()
+        && !wayland_display.is_some_and(|display| !display.as_os_str().is_empty())
+    {
+        Some(login_runtime)
+    } else {
+        runtime
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // One explicit snapshot keeps session discovery and its tests independent of process-global environment changes.
 fn physical_target_from_environment(
     config: &Config,
@@ -1008,6 +1033,71 @@ mod tests {
                 Some(Path::new("wayland-missing"))
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn persistent_transport_discovers_physical_login_outside_its_private_runtime() {
+        use clap::Parser;
+        use std::os::unix::net::UnixListener;
+        let service = private_runtime();
+        let login = private_runtime();
+        let _private_socket = UnixListener::bind(service.path().join("wayland-1")).unwrap();
+        let physical = login.path().join("wayland-1");
+        let _physical = UnixListener::bind(&physical).unwrap();
+        let mut config = Config::try_parse_from(["test"]).unwrap();
+        config.session_runtime = Some(service.path().into());
+        let runtime = physical_discovery_runtime(&config, Some(service.path()), None, login.path());
+        let target = physical_target_from_environment(
+            &config,
+            unsafe { libc::geteuid() },
+            runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(target.wayland_socket.as_deref(), Some(physical.as_path()));
+        assert_eq!(target.runtime, login.path());
+        // Multiple physical logins still require explicit selection.
+        let _second = UnixListener::bind(login.path().join("wayland-2")).unwrap();
+        assert!(
+            physical_target_from_environment(
+                &config,
+                unsafe { libc::geteuid() },
+                runtime,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("多个 Wayland")
+        );
+    }
+
+    #[test]
+    fn physical_discovery_keeps_explicit_display_runtime_and_interactive_environment() {
+        use clap::Parser;
+        let mut config = Config::try_parse_from(["test"]).unwrap();
+        let service = Path::new("/run/remote-service");
+        let login = Path::new("/run/user/1000");
+        assert_eq!(
+            physical_discovery_runtime(&config, Some(service), None, login),
+            Some(service)
+        );
+        config.session_runtime = Some("/run/owned-desktop".into());
+        assert_eq!(
+            physical_discovery_runtime(&config, Some(service), Some(Path::new("wayland-2")), login),
+            Some(service)
+        );
+        assert_eq!(
+            physical_discovery_runtime(&config, Some(service), Some(Path::new("")), login),
+            Some(login)
         );
     }
 

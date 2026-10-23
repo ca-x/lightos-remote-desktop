@@ -44,6 +44,9 @@ Physical mode attaches to an existing same-user Wayland or X11 session. The
 resolver honors a validated `XDG_RUNTIME_DIR` and exact `WAYLAND_DISPLAY`, and
 requires an explicit target when ambient protocols or multiple sockets are
 ambiguous. A Wayland session is never replaced by an XWayland `DISPLAY`.
+When transport is attached to an owned persistent desktop and has no explicit
+`WAYLAND_DISPLAY`, physical discovery uses `/run/user/<uid>`: the transport's
+private systemd runtime directory does not identify the graphical login.
 `--physical-wayland-socket` can identify a nonstandard physical socket while the
 service retains its owned virtual desktop. The browser never supplies a socket,
 display or authority path. No session means an unavailable option with a reason.
