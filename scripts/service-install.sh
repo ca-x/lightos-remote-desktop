@@ -122,7 +122,11 @@ if [[ -f $managed/lightos-remoted && -f $recovery_state/rejected.sha256 && -f $r
     digest=$(sha256sum "$managed/lightos-remoted"); digest=${digest%% *}
     if [[ $(<"$recovery_state/rejected.sha256") == "$digest" ]]; then
         install -m 0755 "$recovery_state/previous/lightos-remoted" "$snapshot/binary"
-        if [[ -f $recovery_state/previous/lightos-codec-ffmpeg ]]; then install -m 0755 "$recovery_state/previous/lightos-codec-ffmpeg" "$snapshot/helper"; fi
+        if [[ -f $recovery_state/previous/lightos-codec-ffmpeg ]]; then
+            install -m 0755 "$recovery_state/previous/lightos-codec-ffmpeg" "$snapshot/helper"
+        else
+            rm -f -- "$snapshot/helper"
+        fi
     fi
 fi
 # Recover file-write failures. Activation failures use the shared known-good payload.
@@ -140,7 +144,9 @@ mv -Tf -- "$candidate" "$managed/lightos-remoted"
 helper=${binary%/*}/lightos-codec-ffmpeg
 if [[ -e $helper ]]; then
     [[ -f $helper && -x $helper && ! -L $helper ]] || fail 'codec helper must be a regular executable'
-    install -m 0755 "$helper" "$managed/lightos-codec-ffmpeg"
+    if [[ ! $helper -ef $managed/lightos-codec-ffmpeg ]]; then
+        install -m 0755 "$helper" "$managed/lightos-codec-ffmpeg"
+    fi
 fi
 install -m 0644 "$repository/systemd/lightos-remoted-transport.service" "$transport"
 install -m 0644 "$repository/systemd/lightos-remoted-session.service" "$owner"

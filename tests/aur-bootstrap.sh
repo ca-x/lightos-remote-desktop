@@ -260,4 +260,34 @@ check cmp "$root/candidate-a" "$root/var/lib/lightos-remoted-install/latest/bina
 rm "$root/fail-doctor"
 bash "$repository/scripts/service-install.sh" --rollback --test-root "$root" > "$root/install-output" 2>&1
 check cmp "$root/candidate-a" "$root/usr/lib/lightos-remoted/lightos-remoted"
+# Rerunning the installed standalone CLI must preserve a sibling helper in place.
+fixture same-helper
+rm -f "$root/usr/lib/lightos-remoted/lightos-remoted" "$root/usr/lib/systemd/system/"*.service
+printf '#!/bin/sh\nexit 0\n# candidate A\n' > "$root/candidate"
+printf '#!/bin/sh\nexit 0\n# existing helper\n' > "$root/lightos-codec-ffmpeg"
+chmod +x "$root/candidate" "$root/lightos-codec-ffmpeg"
+install_standalone
+bash "$repository/scripts/service-install.sh" --binary "$root/usr/lib/lightos-remoted/lightos-remoted" --stage-only --test-root "$root" > "$root/install-output" 2>&1
+check cmp "$root/lightos-codec-ffmpeg" "$root/usr/lib/lightos-remoted/lightos-codec-ffmpeg"
+check test -x "$root/usr/lib/lightos-remoted/lightos-codec-ffmpeg"
+# Restoring a known-good helper-less release must remove a rejected candidate's helper.
+fixture rejected-helper
+rm -f "$root/usr/lib/lightos-remoted/lightos-remoted" "$root/usr/lib/systemd/system/"*.service
+printf '#!/bin/sh\nexit 0\n# candidate A\n' > "$root/candidate"
+chmod +x "$root/candidate"
+install_standalone
+cp "$root/candidate" "$root/candidate-a"
+printf '# candidate B\n' >> "$root/candidate"
+printf '#!/bin/sh\nexit 0\n# rejected B helper\n' > "$root/lightos-codec-ffmpeg"
+chmod +x "$root/lightos-codec-ffmpeg"
+touch "$root/fail-doctor"
+if install_standalone; then echo 'Rejected helper candidate B unexpectedly activated' >&2; exit 1; fi
+check test -x "$root/usr/lib/lightos-remoted/lightos-codec-ffmpeg"
+rm "$root/lightos-codec-ffmpeg"
+printf '# candidate C\n' >> "$root/candidate"
+if install_standalone; then echo 'Rejected helper candidate C unexpectedly activated' >&2; exit 1; fi
+check test ! -e "$root/var/lib/lightos-remoted-install/latest/helper"
+bash "$repository/scripts/service-install.sh" --rollback --stage-only --test-root "$root" > "$root/install-output" 2>&1
+check cmp "$root/candidate-a" "$root/usr/lib/lightos-remoted/lightos-remoted"
+check test ! -e "$root/usr/lib/lightos-remoted/lightos-codec-ffmpeg"
 printf 'AUR/shared bootstrap: %s checks passed (mock activation; no host service changes).\n' "$checks"
