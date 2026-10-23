@@ -150,6 +150,10 @@ AUR 检测到旧版手动安装时，会保留当前服务和桌面，不自动�
    sudo /usr/lib/lightos-remoted/bootstrap
    ```
 
+   旧的 `90-native.conf`、`95-session.conf` 随上述旧 drop-in 目录一起移除；
+   AUR 的完整 unit 已包含程序路径和 session 依赖，无需重新安装这两个文件。
+   pacman 不会自动删除这些旧手动安装的文件。若目录内还有自定义配置，先备份并逐项迁移。
+
    `/etc/lightos/remote-desktop.env` 要保留：LightOS 仍通过它管理认证和开关。
    新服务沿用这个文件中有效的非 root 用户和认证配置。
 
