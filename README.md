@@ -213,7 +213,7 @@ bundle the SIMD JPEG library; Wayland, xkbcommon and glibc remain system librari
 ### Install the downloaded executable
 
 ```sh
-./lightos-remote-desktop install-service --dry-run
+./lightos-remoted install-service --dry-run
 sudo ./lightos-remoted install-service
 sudo ./lightos-remoted rollback-service
 ```

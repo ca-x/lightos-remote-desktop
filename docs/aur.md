@@ -112,6 +112,14 @@ library has generated dependencies on the actual hyprutils/display-info SONAMEs.
 If Arch changes these ABIs, update/rebuild and revalidate the package before
 upgrading; a different compositor ABI is not silently accepted.
 
+Before deleting an old compatibility-library directory, use `sudoedit
+/etc/lightos/remote-desktop-native.env` and set
+`LIGHTOS_REMOTE_DESKTOP_AQUAMARINE_DIR=/usr/lib/lightos-remoted/aquamarine`.
+Remove or update any other assignment of this key in that file, then run the
+bootstrap and verify the desktop after a planned owner restart. Changing the
+owner library requires ending that desktop session, so save application work
+first. Keep the old library until that verification succeeds.
+
 Fresh installations include the Cage/Hyprland desktop, Mesa, private D-Bus and
 PipeWire/Pulse/WirePlumber audio programs, Ghostty, and a usable font. They use the
 generic minimal desktop under the dedicated account. When an existing
