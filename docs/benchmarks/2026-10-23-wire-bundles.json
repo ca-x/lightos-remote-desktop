@@ -1,0 +1,14 @@
+{
+  "baseline": {
+    "rawBytes": 549699,
+    "gzipBytes": 182539
+  },
+  "candidate": {
+    "rawBytes": 616990,
+    "gzipBytes": 200365
+  },
+  "baselineSource": "9a9e136aad0962ad4728e8bbc57e5e6a2e78b93c",
+  "experimentSource": "267de060679266bcd1c552e32db9be71b964d856",
+  "gzipLevel": 9,
+  "method": "Archived baseline web source and candidate source built with the same installed Vite toolchain; gzipSync level 9."
+}
