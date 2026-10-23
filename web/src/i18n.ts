@@ -43,7 +43,7 @@ const en = {
   help: "Click the desktop to control it. In the virtual desktop, Super+Space opens apps and Super+Enter opens a terminal. Physical sessions use their own shortcuts. Ctrl+Alt+Shift+Esc releases capture and opens tools. Clipboard access happens only when requested. Switching sources keeps virtual apps running.",
   drag: "Drag to any screen edge. Alt+Arrow moves this toolbar with the keyboard.",
   physicalResize: "Physical monitor resolution cannot be changed here.",
-  mobileInput: "Remote desktop keyboard input", mobileShortcuts: "Desktop shortcuts", mobileRow1: "Keyboard and navigation", mobileRow2: "Shortcuts and symbols", mobileMenu: "Desktop menu",
+  mobileInput: "Remote desktop keyboard input", mobileShortcuts: "Desktop shortcuts", mobileRow1: "Keyboard and navigation", mobileRow2: "Shortcuts and symbols", mobileMenu: "Desktop menu", mobileHome: "Return to LightOS",
   showKeyboard: "Show keyboard", hideKeyboard: "Hide keyboard", stickyKey: "Sticky {{key}}", arrowUp: "Up arrow", arrowDown: "Down arrow", arrowLeft: "Left arrow", arrowRight: "Right arrow", backspace: "Backspace",
   touchHelp: "Tap to click, drag with one finger, hold to right-click, and scroll with two fingers. Use the leftmost keyboard button to show or hide the keyboard. Highlighted modifiers apply to the next key.",
 };
@@ -87,7 +87,7 @@ const zh: Record<keyof typeof en, string> = {
   metrics: "FPS 为最近一秒实际绘制帧数，静止桌面不重复发送。RTT 为 WebSocket 应用层往返时间，包含排队，不等于操作到画面的端到端延迟。",
   help: "点击桌面即可控制。虚拟桌面中 Super+Space 打开应用，Super+Enter 打开终端；物理桌面遵循本机会话的快捷键。Ctrl+Alt+Shift+Esc 释放捕获并打开工具栏。剪贴板只在主动粘贴时读取。切换来源不会关闭虚拟桌面中的应用。",
   drag: "拖动到屏幕任意边缘；Alt+方向键也可调整工具栏位置。", physicalResize: "物理桌面不支持在此更改显示器分辨率。",
-  mobileInput: "远程桌面键盘输入", mobileShortcuts: "桌面快捷键", mobileRow1: "键盘与导航", mobileRow2: "组合键与符号", mobileMenu: "桌面菜单",
+  mobileInput: "远程桌面键盘输入", mobileShortcuts: "桌面快捷键", mobileRow1: "键盘与导航", mobileRow2: "组合键与符号", mobileMenu: "桌面菜单", mobileHome: "返回 LightOS 管理页",
   showKeyboard: "展开键盘", hideKeyboard: "收起键盘", stickyKey: "粘滞 {{key}}", arrowUp: "向上", arrowDown: "向下", arrowLeft: "向左", arrowRight: "向右", backspace: "退格",
   touchHelp: "点按点击，单指拖动，长按右键，双指滚动。使用第一行最左侧的键盘按钮展开或收起键盘；高亮的修饰键作用于下一次按键。",
 };

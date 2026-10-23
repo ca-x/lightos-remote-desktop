@@ -1564,7 +1564,7 @@ export function createClient(options: ClientOptions = {}) {
       const target = scaled ? (bounds
         ? mobileResolution(bounds.width, bounds.height - bounds.bar, window.devicePixelRatio || 1)
         : captureResolution(viewport.clientWidth, viewport.clientHeight, window.devicePixelRatio || 1, resizeScales)) : {
-        width: Math.max(320, Math.min(3840, Math.floor(viewport.clientWidth / 2) * 2)),
+        width: Math.max(320, Math.min(3840, Math.floor((bounds?.width ?? viewport.clientWidth) / 2) * 2)),
         height: Math.max(200, Math.min(2160, Math.floor((bounds ? bounds.height - bounds.bar : viewport.clientHeight) / 2) * 2)), scale: 1,
       };
       const { width, height, scale } = target;

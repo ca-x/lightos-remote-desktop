@@ -1,4 +1,5 @@
 :root { font-family: system-ui, sans-serif; color-scheme: dark; --surface: #24272b; --control: #30343a; --field: #1b1e22; --text: #eef0f5; --muted: #acb2bf; --border: #3c414c; --accent: #96b5f6; --selected: #31435f; --shadow: 0 8px 30px #0004; --ease-out: cubic-bezier(0.23, 1, 0.32, 1); }
+:root { --lzc-safe-area-inset-top: var(--lzc-safe-area-top, env(safe-area-inset-top, 0px)); --lzc-safe-area-inset-right: var(--lzc-safe-area-right, env(safe-area-inset-right, 0px)); --lzc-safe-area-inset-bottom: var(--lzc-safe-area-bottom, env(safe-area-inset-bottom, 0px)); --lzc-safe-area-inset-left: var(--lzc-safe-area-left, env(safe-area-inset-left, 0px)); }
 :root[data-theme="light"] { color-scheme: light; --surface: #faf9f6; --control: #efefec; --field: #fff; --text: #202632; --muted: #596475; --border: #ced4de; --accent: #2458bd; --selected: #dce8fd; --shadow: 0 8px 30px #172c4c26; }
 * { box-sizing: border-box; }
 html, body, #root { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #101115; }
@@ -76,26 +77,29 @@ footer { font-size: 10px; color: var(--muted); padding-top: 12px; }
 @media (max-width: 420px) { .panel { padding: 12px; } .primary-controls { gap: 4px; } .icon-button { width: 40px; } }
 @media (pointer: coarse) { button, select { min-height: 44px; } .icon-button, .tool-handle { min-width: 44px; } }
 
-.mobile-input { position: fixed; top: calc(var(--dock-top, 0px) + 8px); left: calc(var(--dock-left, 0px) + 8px); width: 16px; height: 16px; min-height: 16px; max-height: 16px; padding: 0; margin: 0; border: 0; opacity: .01; color: transparent; background: transparent; caret-color: transparent; pointer-events: none; font: 16px/16px monospace; resize: none; }
+.mobile-input { position: fixed; top: calc(var(--dock-top, 0px) + var(--lzc-safe-area-inset-top) + 8px); left: calc(var(--dock-left, 0px) + var(--lzc-safe-area-inset-left) + 8px); width: 16px; height: 16px; min-height: 16px; max-height: 16px; padding: 0; margin: 0; border: 0; opacity: .01; color: transparent; background: transparent; caret-color: transparent; pointer-events: none; font: 16px/16px monospace; resize: none; }
 .mobile-shortcuts, .mobile-help { display: none; }
-#viewport.touch-desktop { position: fixed; left: var(--mobile-left, 0px); top: var(--mobile-top, 0px); width: var(--mobile-width, 100vw); height: var(--mobile-height, 100dvh); padding-bottom: 0; overscroll-behavior: none; }
+/* The dock owns its space at the viewport edge. The picture fits independently
+   inside the remaining safe area, so letterboxing never moves the controls. */
+#viewport.touch-desktop { --desktop-area-width: max(0px, calc(var(--mobile-width, 100vw) - var(--lzc-safe-area-inset-left) - var(--lzc-safe-area-inset-right))); --desktop-area-height: max(0px, calc(var(--mobile-height, 100dvh) - var(--mobile-bar-height, calc(77px + var(--lzc-safe-area-inset-bottom))) - var(--lzc-safe-area-inset-top))); position: fixed; left: var(--mobile-left, 0px); top: var(--mobile-top, 0px); width: var(--mobile-width, 100vw); height: calc(var(--mobile-height, 100dvh) - var(--mobile-bar-height, calc(77px + var(--lzc-safe-area-inset-bottom)))); padding: var(--lzc-safe-area-inset-top) var(--lzc-safe-area-inset-right) 0 var(--lzc-safe-area-inset-left); overscroll-behavior: none; }
 #viewport.touch-desktop.fit { flex-direction: column; }
-#viewport.touch-desktop:not(.fit), #viewport.touch-desktop.software-keyboard-open { height: calc(var(--mobile-height, 100dvh) - var(--mobile-bar-height, 104px)); }
-#viewport.touch-desktop.fit #desktop { width: min(var(--mobile-width, 100vw), calc((var(--mobile-height, 100dvh) - var(--mobile-bar-height, 104px)) * var(--desktop-aspect, 1.777778))); max-height: calc(var(--mobile-height, 100dvh) - var(--mobile-bar-height, 104px)); touch-action: pinch-zoom; }
+#viewport.touch-desktop.fit #desktop { flex-shrink: 0; width: min(var(--desktop-area-width), calc(var(--desktop-area-height) * var(--desktop-aspect, 1.777778))); max-height: var(--desktop-area-height); touch-action: pinch-zoom; }
 .touch-desktop #desktop { touch-action: pinch-zoom; -webkit-touch-callout: none; }
 .touch-desktop .mobile-help { display: block; }
 .touch-desktop #tools-toggle { opacity: 0; pointer-events: none; }
-.touch-desktop .mobile-shortcuts { position: static; flex-shrink: 0; left: var(--dock-left, 0px); bottom: var(--keyboard-inset, 0px); width: var(--dock-width, 100vw); z-index: 12; display: flex; flex-direction: column; gap: 4px; padding: 6px max(6px, env(safe-area-inset-right, 0px)) calc(6px + env(safe-area-inset-bottom, 0px)) max(6px, env(safe-area-inset-left, 0px)); background: var(--surface); color: var(--text); border-top: 1px solid var(--border); }
-.touch-desktop:not(.fit) .mobile-shortcuts, .touch-desktop.software-keyboard-open .mobile-shortcuts { position: fixed; }
-.touch-desktop.software-keyboard-open .mobile-shortcuts { padding-bottom: 6px; }
+.touch-desktop .mobile-shortcuts { position: fixed; left: var(--dock-left, 0px); bottom: var(--keyboard-inset, 0px); width: var(--dock-width, 100vw); z-index: 12; display: flex; flex-direction: column; gap: 4px; padding: 8px max(5px, var(--lzc-safe-area-inset-right)) calc(8px + var(--lzc-safe-area-inset-bottom)) max(5px, var(--lzc-safe-area-inset-left)); background: var(--surface); color: var(--text); border-top: 1px solid var(--border); }
+.touch-desktop.software-keyboard-visible .mobile-shortcuts { padding-bottom: 8px; }
 .mobile-shortcut-row { display: flex; gap: 6px; min-width: 0; }
-.mobile-key-scroll { display: flex; gap: 4px; min-width: 0; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: none; touch-action: pan-x; }
+.mobile-key-scroll { display: flex; gap: 6px; min-width: 0; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: none; touch-action: pan-x; }
 .mobile-key-scroll::-webkit-scrollbar { display: none; }
-.mobile-key { flex: 0 0 auto; min-width: 44px; height: 44px; min-height: 44px; padding: 0 10px; font-size: 13px; border-color: transparent; border-radius: 6px; background: transparent; white-space: nowrap; touch-action: pan-x; }
-.mobile-keyboard { position: relative; border-color: var(--border); background: var(--control); touch-action: manipulation; }
+.mobile-key { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; min-width: 28px; height: 28px; min-height: 28px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent; color: inherit; font-size: 12px; font-weight: 600; line-height: 1; text-decoration: none; white-space: nowrap; touch-action: pan-x; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.mobile-keyboard, .mobile-home { width: 28px; padding: 0; touch-action: manipulation; }
+#mobile-menu { width: 40px; min-width: 40px; padding: 0; }
+.mobile-key svg { width: 18px; height: 18px; }
+.mobile-key:active:not(:disabled) { transform: translateY(1px); opacity: .72; }
 .mobile-key[aria-pressed="true"] { background: var(--selected); color: var(--accent); border-color: var(--accent); }
 .touch-desktop input, .touch-desktop textarea, .touch-desktop select { font-size: 16px; }
-.touch-desktop .panel { max-height: calc(var(--visible-height, 100dvh) - var(--mobile-bar-height, 104px) - 24px); max-width: calc(var(--dock-width, 100vw) - 24px); }
+.touch-desktop .panel { max-height: max(0px, calc(var(--visible-height, 100dvh) - var(--mobile-bar-height, 77px) - var(--lzc-safe-area-inset-top) - 24px)); max-width: max(0px, calc(var(--dock-width, 100vw) - var(--lzc-safe-area-inset-left) - var(--lzc-safe-area-inset-right) - 24px)); }
 
 .mcp-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
 .mcp-create { display: grid; gap: 10px; margin-top: 12px; }
@@ -126,8 +130,8 @@ footer { font-size: 10px; color: var(--muted); padding-top: 12px; }
 .settings-shell.is-open { visibility: visible; pointer-events: auto; transition: visibility 0s; }
 .settings-backdrop { position: fixed; inset: 0; background: #090c12a6; opacity: 0; transition: opacity 200ms var(--ease-out); }
 .settings-shell.is-open .settings-backdrop { opacity: 1; }
-.settings-positioner { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
-.settings-dialog { display: flex; flex-direction: column; width: 600px; max-width: 100%; max-height: calc(100dvh - 32px); background: var(--surface); border: 1px solid var(--border); border-radius: 20px; box-shadow: 0 24px 80px #0005; opacity: 0; transform: scale(.97); transform-origin: center; transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out); }
+.settings-positioner { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: max(var(--settings-gap, 16px), var(--lzc-safe-area-inset-top)) max(var(--settings-gap, 16px), var(--lzc-safe-area-inset-right)) max(var(--settings-gap, 16px), var(--lzc-safe-area-inset-bottom)) max(var(--settings-gap, 16px), var(--lzc-safe-area-inset-left)); }
+.settings-dialog { display: flex; flex-direction: column; width: 600px; max-width: 100%; max-height: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: 20px; box-shadow: 0 24px 80px #0005; opacity: 0; transform: scale(.97); transform-origin: center; transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out); }
 .settings-shell.is-open .settings-dialog { opacity: 1; transform: scale(1); }
 .settings-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 24px 24px 16px; }
 .settings-heading h2 { margin: 4px 0 0; font-size: 24px; line-height: 1.25; letter-spacing: -.04em; font-weight: 650; }
@@ -161,8 +165,8 @@ button:active:not(:disabled) { transform: scale(.97); }
   .toolbar-actions { display: flex; gap: 2px; }
   .remote-toolbar .icon-button { width: 44px; }
   .collapse-toolbar { margin-left: 0; border: 0 !important; }
-  .settings-positioner { padding: 12px; }
-  .settings-dialog { border-radius: 16px; max-height: calc(100dvh - 24px); }
+  .settings-positioner { --settings-gap: 12px; }
+  .settings-dialog { border-radius: 16px; max-height: 100%; }
   .settings-heading { padding: 20px 16px 16px; }
   .settings-tabs { margin: 0 16px; }
   .settings-tabs button { font-size: 12px; gap: 5px; }

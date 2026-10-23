@@ -293,9 +293,10 @@ transactional layout explicitly, use `install-service --legacy` and
 
 ### Desktop controls
 
-Touch devices have a two-row shortcut bar with a pinned keyboard toggle. The
-bar sits below the desktop image while the keyboard is closed and follows the
-visible viewport above the open keyboard. Touch supports taps, dragging, hold
+Touch devices have a compact two-row shortcut bar matching WebShell, with pinned
+keyboard and LightOS home icons. The bar stays at the bottom of the visible page;
+the picture fits proportionally in the area above it. The bar follows the open
+keyboard and respects Lazycat client immersion and automatic safe areas. Touch supports taps, dragging, hold
 for right-click and two-finger scrolling. See [docs/mobile-input.md](docs/mobile-input.md).
 
 The desktop fills the page. The right-hand icon opens floating controls;

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button, Dialog, DialogBackdrop, DialogPanel, DialogTitle, Field, Input, Label, Select, Tab, TabGroup, TabList, TabPanel, TabPanels, Textarea } from "@headlessui/react";
-import { Activity, Bot, Cable, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clipboard, Expand, Info, Keyboard, Menu, Monitor, Palette, Settings2, Shrink, SlidersHorizontal, Volume2, VolumeX, X } from "lucide-react";
+import { Activity, Bot, Cable, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clipboard, Expand, House, Info, Keyboard, Menu, Monitor, Palette, Settings2, Shrink, SlidersHorizontal, Volume2, VolumeX, X } from "lucide-react";
 import logo from "./assets/logo.webp?inline";
 import * as Menubar from "@radix-ui/react-menubar";
 import { useTranslation } from "react-i18next";
@@ -160,11 +160,12 @@ function Workspace() {
       autoCapitalize="off" autoCorrect="off" autoComplete="off" spellCheck={false} inputMode="text" enterKeyHint="enter" />
     <nav id="mobile-shortcuts" className="mobile-shortcuts" aria-label={t("mobileShortcuts")}>
       <div className="mobile-shortcut-row" role="toolbar" aria-label={t("mobileRow1")}>
-        <button id="mobile-keyboard" className="mobile-key mobile-keyboard" type="button" disabled={!controls.ready} aria-label={t("showKeyboard")} title={t("showKeyboard")} aria-pressed="false"><Keyboard size={21} aria-hidden="true" /></button>
+        <button id="mobile-keyboard" className="mobile-key mobile-keyboard" type="button" disabled={!controls.ready} aria-label={t("showKeyboard")} title={t("showKeyboard")} aria-pressed="false"><Keyboard size={18} aria-hidden="true" /></button>
+        <a id="mobile-home" className="mobile-key mobile-home" href="/" aria-label={t("mobileHome")} title={t("mobileHome")}><House size={18} aria-hidden="true" /></a>
         <div className="mobile-key-scroll">{MOBILE_ROWS[0].map(shortcut)}</div>
       </div>
       <div className="mobile-shortcut-row" role="toolbar" aria-label={t("mobileRow2")}>
-        <button id="mobile-menu" className="mobile-key" type="button" data-mobile-action="menu" disabled={!controls.ready} aria-label={t("mobileMenu")} title={t("mobileMenu")}><Menu size={19} aria-hidden="true" /></button>
+        <button id="mobile-menu" className="mobile-key" type="button" data-mobile-action="menu" disabled={!controls.ready} aria-label={t("mobileMenu")} title={t("mobileMenu")}><Menu size={18} aria-hidden="true" /></button>
         <div className="mobile-key-scroll">{MOBILE_ROWS[1].map(shortcut)}</div>
       </div>
     </nav>

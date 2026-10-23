@@ -39,7 +39,7 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}, pixelR
     textContent = "";
     captures = new Set();
     attributes = {};
-    style = { values: {}, setProperty(name, value) { this.values[name] = value; } };
+    style = { values: {}, setProperty(name, value) { this.values[name] = value; }, removeProperty(name) { const value = this.values[name] ?? ""; delete this.values[name]; return value; } };
     classList = {
       values: new Set(),
       toggle(name, enabled) { if (enabled) this.values.add(name); else this.values.delete(name); },

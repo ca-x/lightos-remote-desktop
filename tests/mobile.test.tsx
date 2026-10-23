@@ -58,12 +58,15 @@ it("toggles the IME input and docks the bar using visual viewport height and pan
   expect(document.activeElement).toBe(input);
   expect(toggle.getAttribute("aria-pressed")).toBe("true");
   expect(controls.keyboardActive()).toBe(true);
+  vi.advanceTimersByTime(20);
+  expect(viewport.classList.contains("software-keyboard-visible")).toBe(false);
   visual.height = 500;
   visual.offsetTop = 40;
   visual.dispatchEvent(new Event("resize"));
   vi.advanceTimersByTime(20);
   expect(viewport.style.getPropertyValue("--keyboard-inset")).toBe("304px");
   expect(viewport.style.getPropertyValue("--mobile-height")).toBe("500px");
+  expect(viewport.classList.contains("software-keyboard-visible")).toBe(true);
   toggle.click();
   expect(document.activeElement).not.toBe(input);
   expect(controls.keyboardActive()).toBe(true);
@@ -174,4 +177,13 @@ it("reset releases a drag, clears modifiers and prevents delayed hold/repeat act
   expect(commands.length).toBe(count);
   expect(commands.at(-1)).toEqual({ type: "button", button: 0, pressed: false });
   expect(document.querySelector('[data-mobile-key="ControlLeft"]')!.getAttribute("aria-pressed")).toBe("false");
+});
+
+it("excludes host safe areas from the area used for capture and toolbar placement", () => {
+  viewport.style.padding = "47px 20px 0 16px";
+  vi.spyOn(document.querySelector("nav")!, "getBoundingClientRect").mockReturnValue({ height: 111 } as DOMRect);
+  expect(controls.bounds()).toEqual({ top: 47, left: 16, width: 354, height: 797, bar: 111 });
+  visual.width = 844; visual.height = 390;
+  viewport.style.padding = "0px 47px 0 47px";
+  expect(controls.bounds()).toEqual({ top: 0, left: 47, width: 750, height: 390, bar: 111 });
 });

@@ -164,8 +164,33 @@ export function createMobileControls(options: MobileOptions) {
     viewport.style.setProperty("--visible-height", `${bounds.height}px`);
     viewport.style.setProperty("--keyboard-inset", `${inset}px`);
     viewport.classList.toggle("software-keyboard-open", focused() || closingTimer !== null);
+    const keyboardVisible = !zoomed && (inset > 80 || ((focused() || closingTimer !== null) && bounds.height < keyboardReference - 80));
+    viewport.classList.toggle("software-keyboard-visible", keyboardVisible);
     viewport.style.setProperty("--mobile-bar-height", `${bar.getBoundingClientRect().height}px`);
+    // Native pinch zoom keeps the picture's layout size. Clip its visible
+    // portion above the independently docked bar without cancelling zoom.
+    if (zoomed) {
+      const picture = canvas.getBoundingClientRect();
+      const safe = contentBounds();
+      const bottom = Math.min(bar.getBoundingClientRect().top, bounds.top + bounds.height);
+      canvas.style.clipPath = `inset(${Math.max(0, safe.top - picture.top)}px ${Math.max(0, picture.right - safe.left - safe.width)}px ${Math.max(0, picture.bottom - bottom)}px ${Math.max(0, safe.left - picture.left)}px)`;
+    } else {
+      canvas.style.removeProperty("clip-path");
+    }
     options.layout();
+  }
+
+  function contentBounds() {
+    const bounds = geometry();
+    const style = window.getComputedStyle(viewport);
+    const top = parseFloat(style.paddingTop) || 0;
+    const left = parseFloat(style.paddingLeft) || 0;
+    const right = parseFloat(style.paddingRight) || 0;
+    return {
+      top: bounds.top + top, left: bounds.left + left,
+      width: Math.max(0, bounds.width - left - right), height: Math.max(0, bounds.height - top),
+      bar: bar.getBoundingClientRect().height,
+    };
   }
 
   function requestLayout() {
@@ -437,6 +462,10 @@ export function createMobileControls(options: MobileOptions) {
   listen(coarse, "change", () => { touch = !!coarse?.matches || (navigator.maxTouchPoints ?? 0) > 0; update(); requestLayout(); });
   const observer = window.ResizeObserver ? new window.ResizeObserver(requestLayout) : null;
   observer?.observe(bar);
+  // Host-injected safe areas can change without a window resize. Observing
+  // the content box also catches top/side padding and orientation changes.
+  observer?.observe(viewport);
+  observer?.observe(canvas);
   update();
   requestLayout();
   return {
@@ -448,7 +477,7 @@ export function createMobileControls(options: MobileOptions) {
     },
     keyboardActive: () => touch && (focused() || closingTimer !== null || (window.visualViewport?.scale ?? 1) > 1.01),
     lostPointer: (id: number) => { if (activeTouches.has(id)) cancelTouches(); },
-    bounds: () => touch ? { ...geometry(), bar: bar.getBoundingClientRect().height } : null,
+    bounds: () => touch ? contentBounds() : null,
     dispose() {
       reset();
       disposed = true;
@@ -458,6 +487,8 @@ export function createMobileControls(options: MobileOptions) {
       if (frame !== null) cancelAnimationFrame(frame);
       viewport.classList.toggle("touch-desktop", false);
       viewport.classList.toggle("software-keyboard-open", false);
+      viewport.classList.toggle("software-keyboard-visible", false);
+      canvas.style.removeProperty("clip-path");
     },
   };
 }
