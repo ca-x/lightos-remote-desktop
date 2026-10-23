@@ -30,4 +30,13 @@ The formal matrix contains two resolutions, static/scrolling input, four scaling
 
 `quality.html` displays native-size text crops. The compression-only comparison uses the uncompressed scaler result at encoder resolution; the desktop comparison enlarges decoded output using `image` Triangle as a common display approximation. FFmpeg PSNR/SSIM are computed on these text crops in YUV444, not the full desktop, and are not a test of perceived legibility or actual GPU rendering. No-scale and downscaled images contain different amounts of information.
 
-This tool uses the repository's current OpenH264 dependencies, including `wide`/`safe_arch` versions requiring Rust 1.89. It is measured using Rust 1.99.1; it does not establish that the application's declared Rust 1.88 lower bound works. The FIR dependency itself declares Rust 1.87.
+This tool uses the repository's current OpenH264 dependencies, including `wide`/`safe_arch` versions requiring Rust 1.89. The standalone tool therefore declares Rust 1.89. It is measured using Rust 1.99.1; it does not establish that the application's declared Rust 1.88 lower bound works. The FIR dependency itself declares Rust 1.87.
+
+The formal 3 px/input scroll becomes a fractional 1.5 px/input displacement at half resolution. To isolate alignment effects, the optional `aligned-scroll-control` mode tests only 4K scrolling, default-bitrate H.264, and native/FIR bilinear/FIR Lanczos3 with 4 px/input (2 px/input at half resolution):
+
+```sh
+tools/resize-benchmark/target/release/codec-pipeline tools/resize-benchmark/fixtures .local/encoder-scaling/aligned 60 3 aligned-scroll-control
+python3 tools/resize-benchmark/analyze-pipeline.py .local/encoder-scaling/aligned
+```
+
+This control changes motion and is not interchangeable with the formal workload. Compare each method to its own native baseline. A reduction here cannot be generalized to arbitrary motion, content or network conditions.

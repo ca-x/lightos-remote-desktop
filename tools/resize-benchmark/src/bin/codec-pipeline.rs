@@ -109,14 +109,15 @@ fn h264_encoder(bitrate: u32) -> Result<Encoder> {
 
 fn render(base: &RgbaImage, output: &mut RgbaImage, scene: &str, index: usize) {
     output.as_mut().copy_from_slice(base.as_raw());
-    if scene == "scroll" {
+    if scene.starts_with("scroll") {
         // Scroll content below the title; preserve desktop and panel geometry.
         let left = 240usize;
         let right = (base.width() - 30) as usize;
         let top = 190usize;
         let bottom = (base.height() - 70) as usize;
         let stride = base.width() as usize * 4;
-        let shift = index * 3 % (bottom - top);
+        let step = if scene == "scroll4" { 4 } else { 3 };
+        let shift = index * step % (bottom - top);
         for y in top..bottom {
             let from = top + (y - top + shift) % (bottom - top);
             output.as_mut()[y * stride + left * 4..y * stride + right * 4].copy_from_slice(
@@ -337,6 +338,12 @@ fn main() -> Result<()> {
         (5..=300).contains(&frames) && (1..=10).contains(&repeats),
         "invalid sample count"
     );
+    let aligned_control = match args.next().as_deref() {
+        None => false,
+        Some("aligned-scroll-control") => true,
+        Some(other) => anyhow::bail!("unsupported mode: {other}"),
+    };
+    ensure!(args.next().is_none(), "unexpected extra arguments");
     fs::create_dir_all(&output)?;
     let command = |program: &str, arguments: &[&str]| -> Result<String> {
         let value = std::process::Command::new(program)
@@ -346,6 +353,7 @@ fn main() -> Result<()> {
         Ok(String::from_utf8(value.stdout)?.trim().to_string())
     };
     let metadata = json!({
+        "mode":if aligned_control {"aligned-scroll-control"} else {"formal"},
         "source": command("git", &["rev-parse", "HEAD"])?,
         "source_status": command("git", &["status", "--porcelain"])?,
         "started_at": command("date", &["-u", "+%Y-%m-%dT%H:%M:%SZ"])?,
@@ -363,6 +371,9 @@ fn main() -> Result<()> {
     let mut rows = vec![];
     let mut warmups = 0;
     for (width, height, target) in [(1920, 1080, (1280, 720)), (3840, 2160, (1920, 1080))] {
+        if aligned_control && width != 3840 {
+            continue;
+        }
         let base =
             image::open(fixtures.join(format!("desktop-{width}x{height}.png")))?.into_rgba8();
         ensure!(base.dimensions() == (width, height), "fixture dimensions");
@@ -370,11 +381,22 @@ fn main() -> Result<()> {
             base.pixels().all(|p| p[3] == 255),
             "FIR experiment requires opaque source pixels"
         );
-        for scene in ["static", "scroll"] {
+        let scenes: &[&str] = if aligned_control {
+            &["scroll4"]
+        } else {
+            &["static", "scroll"]
+        };
+        for scene in scenes {
             for profile in PROFILES {
+                if aligned_control && profile != "h264_default" {
+                    continue;
+                }
                 for repeat in 0..repeats {
                     for offset in 0..METHODS.len() {
                         let method = METHODS[(offset + repeat) % METHODS.len()];
+                        if aligned_control && method == "image_triangle" {
+                            continue;
+                        }
                         run(&base, target, method, profile, scene, 10, None)?;
                         warmups += 1;
                         let artifact = (repeat == 0).then(|| {

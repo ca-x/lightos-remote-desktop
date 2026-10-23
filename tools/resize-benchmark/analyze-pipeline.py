@@ -15,7 +15,8 @@ args = parser.parse_args()
 directory = args.directory
 results = json.loads((directory / 'results.json').read_text())
 rows = results['rows']
-expected = 2 * 2 * 3 * 4 * results['repeats']
+control = results.get('metadata', {}).get('mode') == 'aligned-scroll-control'
+expected = (3 if control else 2 * 2 * 3 * 4) * results['repeats']
 assert len(rows) == expected, (len(rows), expected)
 assert results['warmups'] == expected
 for row in rows:
@@ -72,9 +73,9 @@ parts = ['<!doctype html><meta charset="utf-8"><title>Encoder scaling comparison
          '<style>body{font:14px system-ui;margin:24px;color:#202735;background:#edf0f4}section{background:white;padding:20px;margin:24px 0}figure{margin:16px 0}img{display:block;max-width:none;border:1px solid #cad1da}small{color:#53657a}</style>',
          '<h1>Decoded text at native display size</h1>',
          '<p>Each image is a 640 × 220 crop shown at 1:1. The desktop remains at its source resolution. Downscaled streams are enlarged with a common bilinear display approximation. Static is the last repeated input; scrolling includes any stale final output.</p>']
-for source in [1920, 3840]:
-    for scene in ['static', 'scroll']:
-        for profile in ['jpeg_q75', 'h264_default', 'h264_3mbps']:
+for source in sorted({r["source"][0] for r in rows}):
+    for scene in sorted({r['scene'] for r in rows}):
+        for profile in sorted({r['profile'] for r in rows}):
             parts.append(f'<section><h2>{source}px · {scene} · {profile}</h2>')
             selection = [r for r in rows if r['source'][0] == source and r['scene'] == scene and r['profile'] == profile and r['repeat'] == 0]
             first = Path(selection[0]['artifacts']).relative_to(directory)
@@ -87,13 +88,15 @@ for source in [1920, 3840]:
 (directory / 'quality.html').write_text('\n'.join(parts) + '\n')
 
 aggregates = []
-for source in [1920, 3840]:
-    for scene in ['static', 'scroll']:
-        for profile in ['jpeg_q75', 'h264_default', 'h264_3mbps']:
+for source in sorted({r["source"][0] for r in rows}):
+    for scene in sorted({r['scene'] for r in rows}):
+        for profile in sorted({r['profile'] for r in rows}):
             selection = [r for r in rows if r['source'][0] == source and r['scene'] == scene and r['profile'] == profile]
             base = statistics.median(r['payload_bytes'] for r in selection if r['method'] == 'native')
             for method in ['native', 'image_triangle', 'fir_bilinear', 'fir_lanczos3']:
                 group = [r for r in selection if r['method'] == method]
+                if not group:
+                    continue
                 aggregates.append({'source_width': source, 'scene': scene, 'profile': profile, 'method': method,
                     **{stage + '_p50_ms': statistics.median(r[stage]['p50_ms'] for r in group) for stage in ['scale', 'convert', 'encode', 'pipeline']},
                     'pipeline_p95_ms': statistics.median(r['pipeline']['p95_ms'] for r in group),

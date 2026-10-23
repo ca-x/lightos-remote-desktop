@@ -20,8 +20,12 @@
 ## Tasks
 
 - [x] Add repeatable desktop fixtures and standalone pipeline harness; run a short pilot and validate timing/sample accounting, decode dimensions, bitrate settings and artifact generation.
-- [ ] Run the bounded formal matrix (60 frames × 3 repeats per case) once; inspect skipped frames and decoded text/fine-line artifacts.
+- [x] Run the bounded formal matrix (60 frames × 3 repeats per case) once; inspect skipped frames and decoded text/fine-line artifacts.
 - [ ] Analyze compressed payload and full processing results alongside the original microbenchmark. Write a report and raw JSON under `docs/benchmarks` with limitations and reproduction commands.
 - [ ] Run formatting / focused harness checks, review the diff, commit and push the experiment branch. Do not merge or release.
 
 Pilot evidence: 48 measured configurations × 5 inputs and corresponding 10-frame warmups completed; every nonempty JPEG/H.264 access unit decoded with the expected dimensions. Offline accounting and 48 PSNR/SSIM crop comparisons passed. Fixture PNG SHA256 values match the committed manifest. Release build, standalone all-target Clippy (`-D warnings`), format, JS syntax and Python syntax checks passed. Fixed the pointer trajectory to remain inside both fixtures for the full supported frame count. The new compiler's `chunks_exact` lint in the original experiment was resolved with the equivalent `as_chunks` API.
+
+Formal matrix completed at source `0f9a76e`: 144 measured runs, 144 × 10-frame warmups, 8,640 requested / 8,601 decoded / 39 rate-control skipped measured inputs. All accounting checks and 48 offline quality comparisons passed.
+
+Additional control: 4K/3 px-per-input H.264 scaled output unexpectedly used more bytes. Add a bounded 4 px-per-input alignment control (three methods × three repeats, 60 inputs), rather than inferring universal bandwidth savings. Default experiment pixels/configuration stay unchanged. Set only the standalone tool's declared Rust floor to 1.89 because its new repository-matched OpenH264 transitive dependencies require that version; application manifests remain unchanged.
