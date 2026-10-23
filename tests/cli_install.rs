@@ -273,3 +273,25 @@ fn standalone_refuses_package_files_and_legacy_units_without_modification() {
         assert!(!root.join("usr/lib/lightos-remoted").exists());
     }
 }
+
+#[test]
+fn exported_units_share_a_short_private_session_runtime() {
+    let export = |kind| {
+        let output = Command::new(env!("CARGO_BIN_EXE_lightos-remoted"))
+            .args(["install-service", "--print-unit", kind])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let owner = export("session");
+    let transport = export("transport");
+    let runtime = lightos_remote_desktop::session::DEFAULT_SESSION_RUNTIME;
+    assert!(owner.contains(&format!("Environment=XDG_RUNTIME_DIR={runtime}\n")));
+    assert!(owner.contains(&format!(" --runtime-dir {runtime}\n")));
+    assert!(owner.contains("RuntimeDirectory=lrd-session\n"));
+    assert!(owner.contains("RuntimeDirectoryMode=0700\n"));
+    assert!(transport.contains(&format!(
+        "Environment=LIGHTOS_REMOTE_DESKTOP_SESSION_RUNTIME={runtime}\n"
+    )));
+}

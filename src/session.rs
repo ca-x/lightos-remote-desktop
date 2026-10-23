@@ -3,7 +3,7 @@ use std::{
     io::{Read, Write},
     os::unix::{
         fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
-        net::UnixStream,
+        net::{SocketAddr as UnixSocketAddr, UnixStream},
         process::CommandExt,
     },
     path::{Path, PathBuf},
@@ -19,6 +19,21 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::config::Config;
+
+pub const DEFAULT_SESSION_RUNTIME: &str = "/run/lrd-session";
+pub const PREVIOUS_SESSION_RUNTIME: &str = "/run/lightos-remoted-session";
+
+/// Reserve 64 bytes for Hyprland's commit/timestamp/random instance signature.
+pub(crate) fn validate_runtime_socket_paths(runtime: &Path) -> Result<()> {
+    let socket = runtime
+        .join("hypr")
+        .join("x".repeat(64))
+        .join(".socket2.sock");
+    UnixSocketAddr::from_pathname(&socket).with_context(|| {
+        format!("runtime directory {} is too long for Hyprland IPC sockets; use {DEFAULT_SESSION_RUNTIME} or a shorter --runtime-dir", runtime.display())
+    })?;
+    Ok(())
+}
 
 pub struct Session {
     pub socket: PathBuf,
@@ -104,18 +119,20 @@ impl Session {
             && let Some(runtime) = &config.session_runtime
         {
             let deadline = Instant::now() + Duration::from_secs(30);
-            while !runtime.join("session.json").exists() {
+            loop {
                 ensure!(
                     !cancelled.load(Ordering::Acquire),
                     "persistent desktop connection cancelled"
                 );
+                if let Some(session) = crate::handoff::attach_persistent(runtime)? {
+                    return Ok(session);
+                }
                 ensure!(
                     Instant::now() < deadline,
                     "persistent desktop owner did not become ready"
                 );
                 thread::sleep(Duration::from_millis(100));
             }
-            return crate::handoff::Descriptor::read(runtime)?.attach(runtime);
         }
         if let Some(socket) = &config.wayland_socket {
             let runtime = socket
@@ -150,6 +167,7 @@ impl Session {
             .runtime_dir
             .clone()
             .unwrap_or_else(|| temporary.as_ref().unwrap().path().to_path_buf());
+        validate_runtime_socket_paths(&runtime)?;
         secure_directory(&runtime)?;
         let lock = OpenOptions::new()
             .create(true)
@@ -702,6 +720,16 @@ mod tests {
         fs::remove_file(&display).unwrap();
         assert!(!command.status().unwrap().success());
         assert!(!display.exists());
+    }
+
+    #[test]
+    fn runtime_socket_budget_covers_hyprland_signature_and_event_socket() {
+        assert!(validate_runtime_socket_paths(Path::new(DEFAULT_SESSION_RUNTIME)).is_ok());
+        let error = validate_runtime_socket_paths(Path::new(PREVIOUS_SESSION_RUNTIME)).unwrap_err();
+        assert!(error.to_string().contains("shorter --runtime-dir"));
+        assert!(validate_runtime_socket_paths(Path::new(&format!("/{}", "x".repeat(22)))).is_ok());
+        assert!(validate_runtime_socket_paths(Path::new(&format!("/{}", "x".repeat(23)))).is_err());
+        assert!(validate_runtime_socket_paths(Path::new(&format!("/{}", "界".repeat(8)))).is_err());
     }
 
     #[test]

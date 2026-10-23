@@ -153,6 +153,32 @@ impl Descriptor {
     }
 }
 
+// A transport upgrade must keep attaching to an older live owner until that
+// owner is explicitly restarted. The /run fallback disappears on reboot.
+pub(crate) fn attach_persistent(runtime: &Path) -> Result<Option<Session>> {
+    let previous = (runtime == Path::new(crate::session::DEFAULT_SESSION_RUNTIME))
+        .then(|| Path::new(crate::session::PREVIOUS_SESSION_RUNTIME));
+    attach_with_previous(runtime, previous)
+}
+
+fn attach_with_previous(runtime: &Path, previous: Option<&Path>) -> Result<Option<Session>> {
+    if runtime.join(NAME).exists() {
+        return Descriptor::read(runtime)?.attach(runtime).map(Some);
+    }
+    if let Some(previous) = previous
+        && previous.join(NAME).exists()
+    {
+        match Descriptor::read(previous).and_then(|descriptor| descriptor.attach(previous)) {
+            Ok(session) => {
+                tracing::info!(runtime = %previous.display(), "preserving the running desktop at its previous runtime path");
+                return Ok(Some(session));
+            }
+            Err(error) => tracing::debug!(%error, "ignoring stale previous desktop descriptor"),
+        }
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +241,22 @@ mod tests {
             assert!(socket.exists());
             assert!(dir.path().join(NAME).exists());
         }
+        // A missing new runtime must preserve a live pre-upgrade owner without
+        // creating a second desktop or even a new runtime directory.
+        let next = dir.path().join("next");
+        let transport = attach_with_previous(&next, Some(dir.path()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(transport.runtime, dir.path());
+        assert!(!next.exists());
+        drop(transport);
+        assert!(attach_with_previous(&next, None).unwrap().is_none());
+        // Prefer a published primary runtime over any fallback.
+        assert!(
+            attach_with_previous(dir.path(), Some(&next))
+                .unwrap()
+                .is_some()
+        );
         let source = fs::read_to_string(dir.path().join(NAME)).unwrap();
         let mut data: serde_json::Value = serde_json::from_str(&source).unwrap();
         data["version"] = 2.into();
@@ -224,6 +266,12 @@ mod tests {
         data["owner_start"] = "stale".into();
         fs::write(dir.path().join(NAME), data.to_string()).unwrap();
         assert!(Descriptor::read(dir.path()).is_err());
+        assert!(
+            attach_with_previous(&next, Some(dir.path()))
+                .unwrap()
+                .is_none()
+        );
+        assert!(attach_with_previous(dir.path(), Some(&next)).is_err());
         fs::write(dir.path().join(NAME), &source).unwrap();
         fs::set_permissions(dir.path().join(NAME), fs::Permissions::from_mode(0o644)).unwrap();
         assert!(Descriptor::read(dir.path()).is_err());

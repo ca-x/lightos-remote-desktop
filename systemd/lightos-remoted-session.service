@@ -9,10 +9,10 @@ SupplementaryGroups=video render
 Environment=HOME=/var/lib/lightos-remoted
 EnvironmentFile=/etc/lightos/remote-desktop.env
 EnvironmentFile=-/etc/lightos/remote-desktop-native.env
-Environment=XDG_RUNTIME_DIR=/run/lightos-remoted-session
-RuntimeDirectory=lightos-remoted-session
+Environment=XDG_RUNTIME_DIR=/run/lrd-session
+RuntimeDirectory=lrd-session
 RuntimeDirectoryMode=0700
-ExecStart=/usr/lib/lightos-remoted/lightos-remoted desktop-session --runtime-dir /run/lightos-remoted-session
+ExecStart=/usr/lib/lightos-remoted/lightos-remoted desktop-session --runtime-dir /run/lrd-session
 KillMode=control-group
 TimeoutStartSec=45
 TimeoutStopSec=15

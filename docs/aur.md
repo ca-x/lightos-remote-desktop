@@ -60,7 +60,7 @@ a shell script. Edit it with `sudoedit /etc/lightos/remote-desktop.env`; an opti
 | Configuration | `/etc/lightos/remote-desktop.env` |
 | Desktop account home/data | `/var/lib/lightos-remoted` |
 | Root-owned package recovery data | `/var/lib/lightos-remoted-package` |
-| Transport / desktop runtime | `/run/lightos-remoted` / `/run/lightos-remoted-session` |
+| Transport / desktop runtime | `/run/lightos-remoted` / `/run/lrd-session` |
 
 The release executable owns both service definitions and all installation
 behavior. During packaging, `makepkg` exports the two units with
@@ -221,3 +221,21 @@ installation. The installer fixtures exercise initialization, preservation,
 transport-only upgrades, activation recovery, legacy detection and removal
 without changing host services. A successful fixture run alone does not establish
 that every supported GPU or fresh Arch machine can run the nested desktop.
+
+## v0.1.12 runtime-path correction
+
+The persistent desktop now uses `/run/lrd-session` with mode `0700`. The previous
+longer default could exceed the Unix socket path limit after Hyprland appended
+its instance signature and IPC socket name. Explicit owner runtime directories
+are checked before child processes start, including a budget for the signature.
+
+A transport upgrade can reuse a validated live desktop at the previous default
+`/run/lightos-remoted-session`, preserving its applications until the owner is
+explicitly restarted. After reboot, the owner uses the new short default. This
+fallback applies only to the managed default, not arbitrary custom paths.
+
+The shared installer removes the paired `60-short-runtime.conf` workaround from
+v0.1.11 only when both files exactly match the known generated contents and are
+regular files. Modified, partial or symlinked administrator overrides remain.
+The new exported units provide the same settings; AUR maintains no separate
+service definitions. This cleanup does not restart the desktop owner.

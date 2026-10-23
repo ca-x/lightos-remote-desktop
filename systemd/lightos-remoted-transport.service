@@ -11,7 +11,7 @@ Environment=HOME=/var/lib/lightos-remoted
 EnvironmentFile=/etc/lightos/remote-desktop.env
 EnvironmentFile=-/etc/lightos/remote-desktop-native.env
 Environment=XDG_RUNTIME_DIR=/run/lightos-remoted
-Environment=LIGHTOS_REMOTE_DESKTOP_SESSION_RUNTIME=/run/lightos-remoted-session
+Environment=LIGHTOS_REMOTE_DESKTOP_SESSION_RUNTIME=/run/lrd-session
 RuntimeDirectory=lightos-remoted
 RuntimeDirectoryMode=0700
 ExecStart=/usr/lib/lightos-remoted/lightos-remoted serve

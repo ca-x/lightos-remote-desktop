@@ -154,6 +154,16 @@ for name in lightos-remote-desktop lightos-remote-desktop-session; do
     chmod 0644 "$temporary"
     mv -Tf -- "$temporary" "$override"
 done
+# Remove only the exact paired workaround installed for v0.1.11. Modified,
+# partial or symlinked administrator overrides remain administrator-owned.
+short_owner=$root/etc/systemd/system/lightos-remote-desktop-session.service.d/60-short-runtime.conf
+short_transport=$root/etc/systemd/system/lightos-remote-desktop.service.d/60-short-runtime.conf
+if [[ -f $short_owner && ! -L $short_owner && -f $short_transport && ! -L $short_transport ]] &&
+    cmp -s "$short_owner" <(printf '%s\n' '[Service]' 'Environment=XDG_RUNTIME_DIR=/run/lrd-session' 'RuntimeDirectory=' 'RuntimeDirectory=lrd-session' 'ExecStart=' 'ExecStart=/usr/lib/lightos-remoted/lightos-remoted desktop-session --runtime-dir /run/lrd-session' 'RuntimeDirectoryMode=0700') &&
+    cmp -s "$short_transport" <(printf '%s\n' '[Service]' 'Environment=LIGHTOS_REMOTE_DESKTOP_SESSION_RUNTIME=/run/lrd-session'); then
+    unlink -- "$short_owner"
+    unlink -- "$short_transport"
+fi
 # Reuse the tested doctor/probe/PID/restart stability gates with the new layout.
 # shellcheck source=scripts/service-activation.sh
 source "$(dirname -- "${BASH_SOURCE[0]}")/service-activation.sh"

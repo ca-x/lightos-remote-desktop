@@ -290,4 +290,42 @@ check test ! -e "$root/var/lib/lightos-remoted-install/latest/helper"
 bash "$repository/scripts/service-install.sh" --rollback --stage-only --test-root "$root" > "$root/install-output" 2>&1
 check cmp "$root/candidate-a" "$root/usr/lib/lightos-remoted/lightos-remoted"
 check test ! -e "$root/usr/lib/lightos-remoted/lightos-codec-ffmpeg"
+# v0.1.11's exact paired local fix is redundant with the new exported units.
+short_pair() {
+    mkdir -p "$root/etc/systemd/system/lightos-remote-desktop-session.service.d" "$root/etc/systemd/system/lightos-remote-desktop.service.d"
+    printf '%s\n' '[Service]' 'Environment=XDG_RUNTIME_DIR=/run/lrd-session' 'RuntimeDirectory=' 'RuntimeDirectory=lrd-session' 'ExecStart=' 'ExecStart=/usr/lib/lightos-remoted/lightos-remoted desktop-session --runtime-dir /run/lrd-session' 'RuntimeDirectoryMode=0700' > "$root/etc/systemd/system/lightos-remote-desktop-session.service.d/60-short-runtime.conf"
+    printf '%s\n' '[Service]' 'Environment=LIGHTOS_REMOTE_DESKTOP_SESSION_RUNTIME=/run/lrd-session' > "$root/etc/systemd/system/lightos-remote-desktop.service.d/60-short-runtime.conf"
+}
+fixture exact-short-pair
+short_pair
+touch "$root/owner-active"
+bootstrap
+check test ! -e "$root/etc/systemd/system/lightos-remote-desktop-session.service.d/60-short-runtime.conf"
+check test ! -e "$root/etc/systemd/system/lightos-remote-desktop.service.d/60-short-runtime.conf"
+check test "$(grep -c '^systemctl start lightos-remote-desktop-session.service$' "$root/events" || true)" = 0
+check test "$(grep -Ec '^systemctl (restart|stop) lightos-remote-desktop-session.service$' "$root/events" || true)" = 0
+for scenario in modified-short partial-short symlink-short; do
+    fixture "$scenario"
+    short_pair
+    owner="$root/etc/systemd/system/lightos-remote-desktop-session.service.d/60-short-runtime.conf"
+    transport="$root/etc/systemd/system/lightos-remote-desktop.service.d/60-short-runtime.conf"
+    case $scenario in
+        modified-short) printf '# administrator modification\n' >> "$owner" ;;
+        partial-short) unlink "$transport" ;;
+        symlink-short) mv "$owner" "$root/original-short"; ln -s "$root/original-short" "$owner" ;;
+    esac
+    cp "$owner" "$root/owner.before"
+    if [[ $scenario != partial-short ]]; then cp "$transport" "$root/transport.before"; fi
+    bootstrap
+    check cmp "$root/owner.before" "$owner"
+    if [[ $scenario == symlink-short ]]; then
+        check test -L "$owner"
+        check test "$(readlink "$owner")" = "$root/original-short"
+    fi
+    if [[ $scenario != partial-short ]]; then
+        check cmp "$root/transport.before" "$transport"
+    else
+        check test ! -e "$transport"
+    fi
+done
 printf 'AUR/shared bootstrap: %s checks passed (mock activation; no host service changes).\n' "$checks"

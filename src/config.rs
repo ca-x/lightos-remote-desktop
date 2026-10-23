@@ -26,6 +26,20 @@ mod tests {
     }
 
     #[test]
+    fn rejects_runtime_paths_that_exceed_hyprland_socket_budget() {
+        let mut settings = config(&["test", "--password", "some-long-secret"]);
+        settings.runtime_dir = Some(crate::session::DEFAULT_SESSION_RUNTIME.into());
+        assert!(settings.validate().is_ok());
+        settings.runtime_dir = Some(crate::session::PREVIOUS_SESSION_RUNTIME.into());
+        let error = settings.validate().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("too long for Hyprland IPC sockets")
+        );
+    }
+
+    #[test]
     fn rejects_unbounded_media_sizes_and_rates() {
         for argument in ["--width", "--height", "--fps", "--quality"] {
             assert!(
@@ -239,10 +253,7 @@ impl Config {
                 directory.is_absolute(),
                 "runtime directory must be absolute"
             );
-            ensure!(
-                directory.as_os_str().len() <= 28,
-                "runtime directory path must fit Hyprland IPC sockets (max 28 bytes)"
-            );
+            crate::session::validate_runtime_socket_paths(directory)?;
         }
         Ok(())
     }
