@@ -1,6 +1,6 @@
 # Maintainer: ca-x <https://github.com/ca-x>
 pkgname=lightos-remoted-bin
-pkgver=0.1.14
+pkgver=0.1.15
 pkgrel=1
 pkgdesc='LightOS browser remote desktop with a persistent isolated desktop session'
 arch=('x86_64')

@@ -148,6 +148,8 @@ sudo ./lightos-remoted rollback-service
 
 请使用当前稳定版 Rust。原生链接需要 Wayland、libxkbcommon、libpulse、libturbojpeg 3+，以及用于从源码构建 OpenH264 和 libopus 的 C / C++ 工具链与 NASM。`bundled-jpeg` feature 可静态内置 libjpeg-turbo，需要 CMake 和 NASM。正式二进制启用 `bundled-jpeg,rdp,portal`；`portal` 编译还需要 PipeWire / SPA 开发包、pkg-config 和 libclang，运行时动态链接 `libpipewire-0.3.so.0`。不启用此 feature 的自编译版本会明确报告 Portal 不可用。
 
+Ubuntu 22.04 的发布构建使用带 SHA-256 校验的 SPA 1.0.5 头文件，放在私有目录中，仍链接发行版自带的 PipeWire 库。系统自带的 SPA 0.3.48 头文件无法编译当前 Rust 绑定。参见[构建辅助脚本](.github/scripts/prepare-spa-build-sdk.sh)，通过导出的 `PKG_CONFIG_PATH` 选择构建头文件，无需更换运行库；发布包包含 SDK 来源、校验值和版权声明。
+
 owned 虚拟桌面需要 Cage、Hyprland 和 D-Bus；附着现有桌面不要求启动这些组件。原生 Wayland 文本剪贴板使用可选的 wl-clipboard；X11 需要 xauth 和可用的 XTest。私有音频需要 libpulse、pactl、pipewire、pipewire-pulse 和 WirePlumber 0.5+。`doctor` 按实际启动模式区分必需和可选依赖，安装了某个命令不代表采集和输入已可用。
 
 每个桌面创建私有音频图，不修改宿主 PulseAudio cookie 或默认 sink；WirePlumber 配置禁用物理音频、蓝牙和视频监视器。视频编码与音频捕获、编码不启动 FFmpeg 子进程。音频使用可取消的原生 Pulse 流，兼容浏览器协商为 128 kbit/s Opus，在 Worker 中解码，再通过 AudioWorklet 播放，PCM 作为兼容路径。原生四包队列将积压限制为 PCM 40 ms 或 Opus 80 ms，浏览器传输与播放队列也有界。悬停 FPS / RTT 可查看视频阶段 P95 和音频缓冲诊断，协议、回退与测量限制参见[音频通道说明](docs/audio-channel.md)。当前独立桌面后端需要访问 `/dev/dri/renderD128` 以进行 GLES 渲染。

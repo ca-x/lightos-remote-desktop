@@ -315,6 +315,13 @@ and needs CMake/NASM. Official binaries enable `bundled-jpeg,rdp,portal`; buildi
 libclang, and the binary links `libpipewire-0.3.so.0` at runtime. Custom builds
 without that feature report Portal as unavailable.
 
+For Ubuntu 22.04, the release build uses a checksum-pinned SPA 1.0.5 header SDK
+in a private directory, while linking the distribution's PipeWire library.
+The stock SPA 0.3.48 headers cannot compile the current Rust bindings. See
+[the build helper](.github/scripts/prepare-spa-build-sdk.sh); its exported
+`PKG_CONFIG_PATH` selects headers without installing a different runtime.
+Release archives include the SDK source/checksum and copyright notice.
+
 Owned virtual sessions need Cage, Hyprland and D-Bus; attaching to an existing
 desktop does not start these components. Native Wayland text clipboard uses
 optional wl-clipboard helpers; X11 requires xauth and usable XTest input.

@@ -77,6 +77,8 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
+      - name: Prepare pinned SPA headers while retaining the Ubuntu 22.04 PipeWire ABI
+        run: bash .github/scripts/prepare-spa-build-sdk.sh "$RUNNER_TEMP/lrd-spa-sdk"
       - run: cargo build --release --locked --features bundled-jpeg,rdp,portal
       - name: Package Linux x86_64 binary
         shell: bash
@@ -93,6 +95,8 @@ jobs:
           cp "$jpeg_license" "dist/$package/licenses/libjpeg-turbo.md"
           cp "$wrapper_license" "dist/$package/licenses/turbojpeg.txt"
           cp web/dist/NOTICE.frontend.txt "dist/$package/licenses/frontend.txt"
+          cp "$RUNNER_TEMP/lrd-spa-sdk/header-notices.txt" "dist/$package/licenses/pipewire-spa-sdk.txt"
+          cp "$RUNNER_TEMP/lrd-spa-sdk/build-sdk.txt" "dist/$package/build-sdk.txt"
           python3 scripts/mcp-notices.py "dist/$package/licenses/protocol-dependencies.txt"
           openh264_license=$(find "$registry" -path '*/openh264-sys2-*/upstream/LICENSE' -print -quit)
           openh264_wrapper_notice=$(find "$registry" -path '*/openh264-0.9.9/README.md' -print -quit)

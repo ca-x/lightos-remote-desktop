@@ -76,6 +76,13 @@ zero-copy capture. X11 currently uses core image reads with a local browser
 pointer and without SHM/Damage optimizations; no performance improvement over
 the Wayland path is claimed.
 
+Official Linux binaries keep the Ubuntu 22.04 glibc and PipeWire library
+baseline. Their Rust SPA bindings compile against a checksum-pinned, private
+SPA 1.0.5 header SDK; stock 0.3.48 headers lack required inline APIs and field
+declarations. This replaces build headers only, not the system PipeWire library.
+The archive records the SDK source/checksum, linked SDK version and copyright.
+GNOME/KDE hardware acceptance remains separate from build compatibility.
+
 Attached physical sessions use logind lock state where an exact local session
 can be identified. Locking clears the video, releases input and blocks further
 input/clipboard operations while retaining the browser connection; unlocking
