@@ -15,6 +15,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Native and RDP test dependencies
         run: |
+          if [[ -f /etc/apt/apt-mirrors.txt ]]; then
+            printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          fi
           sudo apt-get update
           sudo apt-get install -y libwayland-dev libxkbcommon-dev libpulse-dev cmake nasm pkg-config ffmpeg xvfb libxtst6 python3 openssl
           if apt-cache show freerdp3-x11 >/dev/null 2>&1; then
