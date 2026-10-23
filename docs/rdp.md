@@ -38,7 +38,7 @@ For an existing persistent desktop owner, use its current runtime path:
 export LIGHTOS_REMOTE_DESKTOP_AUTH_USER=lightos
 read -rsp 'Desktop password: ' LIGHTOS_REMOTE_DESKTOP_AUTH_PASSWORD
 export LIGHTOS_REMOTE_DESKTOP_AUTH_PASSWORD
-./target/release/lightos-remote-desktop serve \
+./target/release/lightos-remoted serve \
   --session-runtime /path/to/current/persistent/runtime \
   --rdp \
   --rdp-tls-cert /path/to/server-chain.pem \

@@ -65,7 +65,7 @@ async fn native_mcp_uses_real_capture_input_and_authenticated_prefixed_managemen
     drop(listener);
     let log = fs::File::create(directory.path().join("candidate.log")).unwrap();
     let mut candidate = Candidate(
-        Command::new(env!("CARGO_BIN_EXE_lightos-remote-desktop"))
+        Command::new(env!("CARGO_BIN_EXE_lightos-remoted"))
             .args([
                 "serve",
                 "--listen",

@@ -3,6 +3,7 @@ import { initReactI18next } from "react-i18next";
 import { languageKey, languages, readPreference, resolveLanguage } from "./preferences";
 
 const en = {
+  toolbar: "Session toolbar", displayMenu: "Display", connectionInfo: "Connection information", dismissMenu: "Close menu", closeSettings: "Close settings", settingsSaved: "Preferences save automatically; apply resolution separately", done: "Done",
   encoderBackend: "H.264 encoder", softwareEncoding: "Software (OpenH264)",
   mcpTitle: "MCP agent access", mcpHelp: "Agents can observe this desktop with a token. Control tokens can also send input to the virtual desktop; Disconnect the browser to hand over control. Physical desktops are read-only.",
   mcpEnabled: "Enable MCP", mcpEndpoint: "Streamable HTTP endpoint", mcpCreateForm: "Create an MCP token", mcpTokenName: "Token name", mcpScope: "Access", mcpObserve: "Observe only", mcpControl: "Observe & control", mcpCreate: "Create token", mcpNewToken: "New MCP token", mcpOnce: "Save this token now. It is shown only once and is cleared when these settings close.", mcpCopy: "Copy token", mcpCopied: "Copied", mcpDone: "Done", mcpTokens: "MCP tokens", mcpNoTokens: "No agent tokens. Create one to connect a client.", mcpRevoke: "Revoke", mcpRevokeNamed: "Revoke {{name}}", mcpError: "Could not update MCP settings. Check your login, connection and the server’s private settings file, then Refresh.", mcpCopyError: "Copy was unavailable. Select and copy the token from the text field.",
@@ -10,7 +11,7 @@ const en = {
   streamHelp: "Automatic negotiates video support and adjusts buffering from render acknowledgements. Auto tries validated hardware, then software H.264 and JPEG. Your choices are saved.",
   title: "Remote desktop", viewport: "Remote desktop viewport", canvas: "Remote desktop. Focus here to send keyboard and pointer input.",
   open: "Open desktop tools", close: "Close desktop tools", fit: "Fit window", actual: "Actual size", fullscreen: "Fullscreen", audioOn: "Enable audio", audioOff: "Mute audio",
-  clipboard: "Text & clipboard", settings: "Display settings", source: "Desktop source", monitor: "Physical monitor", refresh: "Refresh", refreshTip: "Refresh sessions and monitors without switching desktops",
+  clipboard: "Text & clipboard", settings: "Settings", source: "Desktop source", monitor: "Physical monitor", refresh: "Refresh", refreshTip: "Refresh sessions and monitors without switching desktops",
   keyboard: "Keyboard & shortcuts", capture: "Capture keyboard in fullscreen", chord: "Send a shortcut to the remote desktop", mainKey: "Main key", sendChord: "Send shortcut",
   keyboardHelp: "Enter fullscreen with the page's fullscreen button to capture keys automatically, then allow the browser's keyboard permission. Browser F11 fullscreen does not enable capture. On Linux, use native Wayland Chrome/Chromium if Super or Alt+Tab still acts on the host. Open the desktop directly over HTTPS or localhost.",
   resolution: "Display & resolution", autoResolution: "Match browser resolution", width: "Width", height: "Height", resize: "Apply resolution",
@@ -26,6 +27,7 @@ const en = {
   touchHelp: "Tap to click, drag with one finger, hold to right-click, and scroll with two fingers. Use the leftmost keyboard button to show or hide the keyboard. Highlighted modifiers apply to the next key.",
 };
 const zh: Record<keyof typeof en, string> = {
+  toolbar: "会话工具栏", displayMenu: "显示", connectionInfo: "连接信息", dismissMenu: "关闭菜单", closeSettings: "关闭设置", settingsSaved: "偏好自动保存，分辨率需点击应用", done: "完成",
   encoderBackend: "H.264 编码后端", softwareEncoding: "软件编码（OpenH264）",
   mcpTitle: "MCP 智能体接入", mcpHelp: "智能体可凭令牌查看此桌面。控制令牌还可向虚拟桌面发送输入；请先断开浏览器连接以交出控制权。物理桌面仅允许查看。",
   mcpEnabled: "启用 MCP", mcpEndpoint: "Streamable HTTP 地址", mcpCreateForm: "创建 MCP 令牌", mcpTokenName: "令牌名称", mcpScope: "权限", mcpObserve: "仅查看", mcpControl: "查看与控制", mcpCreate: "创建令牌", mcpNewToken: "新 MCP 令牌", mcpOnce: "请立即保存令牌。令牌仅显示一次，关闭此设置后即清除。", mcpCopy: "复制令牌", mcpCopied: "已复制", mcpDone: "完成", mcpTokens: "MCP 令牌", mcpNoTokens: "暂无智能体令牌。创建后即可连接客户端。", mcpRevoke: "撤销", mcpRevokeNamed: "撤销 {{name}}", mcpError: "MCP 设置未能更新。请检查登录、连接和服务的私有设置文件后刷新。", mcpCopyError: "无法自动复制，请在文本框中选中并复制令牌。",
@@ -33,7 +35,7 @@ const zh: Record<keyof typeof en, string> = {
   streamHelp: "自动模式根据画面确认调整缓冲，依次尝试实测可用的硬件编码、软件 H.264 和 JPEG，并保存你的选择。",
   title: "远程桌面", viewport: "远程桌面视口", canvas: "远程桌面，聚焦此处发送键盘和鼠标输入。",
   open: "打开桌面工具栏", close: "收起桌面工具栏", fit: "适应窗口", actual: "原始大小", fullscreen: "全屏", audioOn: "开启声音", audioOff: "关闭声音",
-  clipboard: "文字与剪贴板", settings: "画面设置", source: "桌面来源", monitor: "物理显示器", refresh: "刷新", refreshTip: "刷新会话和显示器列表，不切换桌面",
+  clipboard: "文字与剪贴板", settings: "设置", source: "桌面来源", monitor: "物理显示器", refresh: "刷新", refreshTip: "刷新会话和显示器列表，不切换桌面",
   keyboard: "键盘与组合键", capture: "全屏捕获键盘", chord: "发送任意组合键到远程", mainKey: "主键", sendChord: "发送组合键",
   keyboardHelp: "点击页面的全屏按钮后自动捕获，并允许浏览器的键盘权限。浏览器 F11 全屏不能开启捕获。Linux 上若 Super 或 Alt+Tab 仍作用于本机，请使用原生 Wayland Chrome/Chromium，并通过 HTTPS 或 localhost 直接打开桌面页面。",
   resolution: "画面与分辨率", autoResolution: "跟随浏览器窗口分辨率", width: "宽", height: "高", resize: "调整分辨率",

@@ -7,12 +7,12 @@ another compositor, replace a desktop, install Cua, or restart any service.
 
 ## Enable and connect
 
-1. Log in to the browser desktop and open the floating tools panel.
-2. Expand **MCP agent access**, enable MCP, and create a named token. **Observe
+1. Log in to the browser desktop and open **Settings** from the floating toolbar.
+2. Select the **MCP** tab, enable MCP, and create a named token. **Observe
    only** permits screenshots and display inspection. **Observe & control** also
    permits mouse and keyboard input on the owned virtual desktop.
 3. Save the displayed token immediately. It appears only in the creation response
-   and is cleared when the MCP section or tools panel closes. The server cannot
+   and is cleared when you leave the MCP tab or close Settings. The server cannot
    show it again; revoke and replace a lost token.
 4. Give an MCP client the displayed endpoint and an `Authorization: Bearer …`
    header. Use your client's secret/environment storage for the token. The

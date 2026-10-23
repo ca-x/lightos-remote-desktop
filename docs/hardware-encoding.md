@@ -28,7 +28,7 @@ not install drivers or modify device permissions or user groups.
 ```sh
 cargo build --release --locked --features bundled-jpeg,rdp
 cargo build --release --locked -p media-codec-ffmpeg --features native,media-codec/bundled-jpeg
-sudo ./target/release/lightos-remote-desktop install-service
+sudo ./target/release/lightos-remoted install-service
 ```
 
 The installer detects the optional helper beside the supplied core binary and

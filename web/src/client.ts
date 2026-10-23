@@ -292,6 +292,7 @@ export function createClient(options: ClientOptions = {}) {
     const originY = bounds?.top ?? 0;
     const maxX = Math.max(12, width - 52);
     const maxY = Math.max(12, height - 60);
+    options.onToolbarDock?.(toolPosition.edge as "left" | "right" | "top" | "bottom");
     const horizontal = toolPosition.edge === "top" || toolPosition.edge === "bottom";
     const left = point ? Math.max(12, Math.min(maxX, point.x - originX)) :
       horizontal ? 12 + toolPosition.ratio * (maxX - 12) : toolPosition.edge === "left" ? 12 : maxX;
@@ -302,10 +303,13 @@ export function createClient(options: ClientOptions = {}) {
     tools.style.setProperty("--panel-origin", toolPosition.edge === "left" ? "left center" : toolPosition.edge === "right" ? "right center" : toolPosition.edge === "top" ? "center top" : "center bottom");
     if (options.isToolsOpen ? !options.isToolsOpen() : element("tool-panel").hidden) return;
     const panel = element("tool-panel").getBoundingClientRect();
-    const panelX = toolPosition.edge === "left" ? left + 48 : toolPosition.edge === "right" ? left - panel.width - 8 : left + 20 - panel.width / 2;
-    const panelY = toolPosition.edge === "top" ? top + 56 : toolPosition.edge === "bottom" ? top - panel.height - 8 : top + 24 - panel.height / 2;
-    tools.style.setProperty("--panel-x", `${originX + Math.max(12, Math.min(width - panel.width - 12, panelX))}px`);
-    tools.style.setProperty("--panel-y", `${originY + Math.max(12, Math.min(height - panel.height - 12, panelY))}px`);
+    // Animation transforms must not change the docked layout measurements.
+    const panelWidth = element("tool-panel").offsetWidth || panel.width;
+    const panelHeight = element("tool-panel").offsetHeight || panel.height;
+    const panelX = toolPosition.edge === "left" ? left + 48 : toolPosition.edge === "right" ? left - panelWidth - 8 : left + 20 - panelWidth / 2;
+    const panelY = toolPosition.edge === "top" ? top + 56 : toolPosition.edge === "bottom" ? top - panelHeight - 8 : top + 24 - panelHeight / 2;
+    tools.style.setProperty("--panel-x", `${originX + Math.max(12, Math.min(width - panelWidth - 12, panelX))}px`);
+    tools.style.setProperty("--panel-y", `${originY + Math.max(12, Math.min(height - panelHeight - 12, panelY))}px`);
   }
 
   function saveToolPosition() {
@@ -1212,8 +1216,6 @@ export function createClient(options: ClientOptions = {}) {
   const toolObserver = window.ResizeObserver ? new window.ResizeObserver(() => layoutTools()) : null;
   toolObserver?.observe(element("tool-panel"));
   listen(element("tools-close"), "click", () => setToolsOpen(false, true));
-  listen(element("clipboard-toggle"), "click", () => { element("clipboard-section").open = !element("clipboard-section").open; });
-  listen(element("settings-toggle"), "click", () => { element("settings-section").open = !element("settings-section").open; });
   listen(document, "keydown", (event) => {
     if (event.key === "Escape" && !options.onToolsOpen && !element("tool-panel").hidden && !event.ctrlKey && !event.altKey && !event.shiftKey) {
       event.preventDefault();
@@ -1345,7 +1347,8 @@ export function createClient(options: ClientOptions = {}) {
   async function displayMode(mode: string) {
     try {
       if (mode === "fullscreen") {
-        await viewport.requestFullscreen();
+        // Include portalled menus and dialogs in the browser fullscreen tree.
+        await (document.documentElement ?? viewport).requestFullscreen();
         viewport.classList.toggle("fit", true);
       } else {
         windowMode = mode === "actual" ? "actual" : "fit";

@@ -16,7 +16,7 @@ use lightos_remote_desktop::{
 };
 
 #[derive(Parser)]
-#[command(version, about)]
+#[command(name = "lightos-remoted", version, about)]
 struct Cli {
     #[command(subcommand)]
     command: Action,

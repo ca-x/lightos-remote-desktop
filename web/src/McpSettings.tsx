@@ -6,9 +6,9 @@ type Scope = "observe" | "control";
 type Token = { id: string; name: string; scope: Scope; created_at: number };
 type Status = { enabled: boolean; tokens: Token[] };
 
-export function McpSettings({ visible }: { visible: boolean }) {
+export function McpSettings({ visible, embedded = false }: { visible: boolean; embedded?: boolean }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(embedded);
   const [status, setStatus] = useState<Status | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -30,6 +30,7 @@ export function McpSettings({ visible }: { visible: boolean }) {
     }
   }, [visible, expanded]);
   useEffect(() => () => request.current?.abort(), []);
+  useEffect(() => { if (visible && embedded) void refresh(); }, [visible, embedded]);
 
   async function api(path: string, method: string, body?: object) {
     request.current?.abort();
@@ -89,12 +90,13 @@ export function McpSettings({ visible }: { visible: boolean }) {
     catch { setError(t("mcpCopyError")); }
   }
 
-  return <details id="mcp-section" onToggle={(event) => {
+  return <details id="mcp-section" className={embedded ? "embedded-mcp" : undefined} open={embedded ? true : undefined} onToggle={(event) => {
     const opened = event.currentTarget.open;
     setExpanded(opened);
     if (opened && visible) void refresh();
   }}>
-    <summary>{t("mcpTitle")}</summary>
+    <summary hidden={embedded}>{t("mcpTitle")}</summary>
+    {embedded && <h3>{t("mcpTitle")}</h3>}
     <p>{t("mcpHelp")}</p>
     <div className="mcp-heading">
       <label className="fit-control"><input type="checkbox" checked={status?.enabled ?? false} disabled={!status || busy} onChange={(event) => { void toggle(event.target.checked); }} />{t("mcpEnabled")}</label>

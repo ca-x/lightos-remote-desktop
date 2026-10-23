@@ -11,7 +11,7 @@ usage() {
 
 repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 source "$repository/scripts/activation.sh"
-binary=$repository/target/release/lightos-remote-desktop
+binary=$repository/target/release/lightos-remoted
 root=
 activate=0
 check=0

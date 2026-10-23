@@ -183,7 +183,7 @@ fn transport_restart_preserves_native_desktop_and_gui_process() {
                 .find(|p| p.join("libaquamarine.so.14").is_file())
         })
         .expect("provide LIGHTOS_TEST_AQUAMARINE_DIR");
-    let binary = env!("CARGO_BIN_EXE_lightos-remote-desktop");
+    let binary = env!("CARGO_BIN_EXE_lightos-remoted");
     let owner_log = runtime.path().join("owner.log");
     let log = fs::File::create(&owner_log).unwrap();
     let mut owner = Process(

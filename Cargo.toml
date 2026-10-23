@@ -4,10 +4,15 @@ resolver = "3"
 
 [package]
 name = "lightos-remote-desktop"
-version = "0.1.10"
+license = "MIT"
+version = "0.1.11"
 edition = "2024"
 rust-version = "1.88"
 description = "A native Rust browser remote desktop for LightOS"
+
+[[bin]]
+name = "lightos-remoted"
+path = "src/main.rs"
 
 [features]
 rdp = ["dep:async-trait", "dep:ironrdp-server", "dep:ironrdp-pdu", "dep:rustls-pemfile"]

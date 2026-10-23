@@ -1680,3 +1680,33 @@ for (const [control, preference] of [["encoder-backend", "software"], ["video-co
     assert.equal(socket.sent.some(p => p.rejected_backend || p.codec === "jpeg"), false);
   });
 }
+
+
+test("toolbar docking reports every edge to the shell for inward-facing menus", () => {
+  const edges = [];
+  const app = harness("/", new Map(), { onToolbarDock: edge => edges.push(edge) });
+  for (const [code, edge] of [["ArrowLeft", "left"], ["ArrowRight", "right"], ["ArrowUp", "top"], ["ArrowDown", "bottom"]]) {
+    app.nodes["tools-toggle"].fire("keydown", { altKey: true, code });
+    assert.equal(edges.at(-1), edge);
+  }
+});
+
+test("fullscreen includes the document portal tree without changing keyboard-capture scope", async () => {
+  const app = harness();
+  const root = { contains: node => node === app.nodes.desktop, requestFullscreen: async () => { app.document.fullscreenElement = root; app.document.fire("fullscreenchange"); } };
+  app.document.documentElement = root;
+  app.nodes.fullscreen.fire("click");
+  await flush();
+  assert.equal(app.document.fullscreenElement, root);
+  assert.equal(app.nodes.fullscreen.attributes["aria-pressed"], "true");
+});
+
+
+test("toolbar docking uses untransformed panel dimensions during entry animation", () => {
+  const app = harness();
+  app.nodes["tool-panel"].offsetWidth = 300;
+  app.nodes["tool-panel"].offsetHeight = 150;
+  app.nodes["tools-toggle"].fire("click", { detail: 0 });
+  assert.equal(app.nodes.tools.style.values["--panel-x"], "920px");
+  assert.equal(app.nodes.tools.style.values["--panel-y"], "285px");
+});

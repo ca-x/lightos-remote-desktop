@@ -12,7 +12,7 @@ fn embedded_installer_stages_itself_preserves_python_and_rolls_back_without_sour
     fs::create_dir_all(environment.parent().unwrap()).unwrap();
     let original_env = "LIGHTOS_REMOTE_DESKTOP_AUTH_PASSWORD=preserve-this-test-value\n";
     fs::write(&environment, original_env).unwrap();
-    let binary = env!("CARGO_BIN_EXE_lightos-remote-desktop");
+    let binary = env!("CARGO_BIN_EXE_lightos-remoted");
     let run = |action: &str, extra: &[&str]| {
         Command::new(binary)
             .current_dir(root)
@@ -77,7 +77,7 @@ fn attached_installation_does_not_require_or_start_a_virtual_desktop() {
         "LIGHTOS_REMOTE_DESKTOP_WAYLAND_SOCKET=/run/user/1000/wayland-0\n",
     )
     .unwrap();
-    let result = Command::new(env!("CARGO_BIN_EXE_lightos-remote-desktop"))
+    let result = Command::new(env!("CARGO_BIN_EXE_lightos-remoted"))
         .args(["install-service", "--stage-only", "--test-root"])
         .arg(root)
         .output()
@@ -111,7 +111,7 @@ fn staged_session_owner_respects_user_dropin_and_numeric_uid() {
         "[Service]\nUser=2000\n",
     )
     .unwrap();
-    let result = Command::new(env!("CARGO_BIN_EXE_lightos-remote-desktop"))
+    let result = Command::new(env!("CARGO_BIN_EXE_lightos-remoted"))
         .args(["install-service", "--stage-only", "--test-root"])
         .arg(root)
         .output()
@@ -125,4 +125,27 @@ fn staged_session_owner_respects_user_dropin_and_numeric_uid() {
         fs::read_to_string(root.join("etc/systemd/system/lightos-remote-desktop-session.service"))
             .unwrap();
     assert!(owner.lines().any(|line| line == "User=2000"));
+}
+
+#[test]
+fn public_binary_uses_the_unified_remoted_name() {
+    let version = Command::new(env!("CARGO_BIN_EXE_lightos-remoted"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(version.status.success());
+    assert_eq!(
+        String::from_utf8(version.stdout).unwrap().trim(),
+        format!("lightos-remoted {}", env!("CARGO_PKG_VERSION"))
+    );
+    let help = Command::new(env!("CARGO_BIN_EXE_lightos-remoted"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    assert!(
+        String::from_utf8(help.stdout)
+            .unwrap()
+            .contains("Usage: lightos-remoted")
+    );
 }

@@ -70,9 +70,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          package=lightos-remote-desktop-linux-x86_64
+          package=lightos-remoted-linux-x86_64
           mkdir -p "dist/$package/licenses"
-          cp target/release/lightos-remote-desktop README.md "dist/$package/"
+          cp target/release/lightos-remoted README.md LICENSE "dist/$package/"
           cp -r docs "dist/$package/"
           registry="${CARGO_HOME:-$HOME/.cargo}/registry/src"
           jpeg_license=$(find "$registry" -path '*/turbojpeg-sys-1.2.0/libjpeg-turbo/LICENSE.md' -print -quit)
@@ -95,16 +95,16 @@ jobs:
           cp "$opus_license" "dist/$package/licenses/opus.txt"
           cp "$opus_binding_license" "dist/$package/licenses/opusic-sys.txt"
           cp "$opus_wrapper_license" "dist/$package/licenses/opus-rust.txt"
-          ldd "dist/$package/lightos-remote-desktop" | tee "dist/$package/dependencies.txt"
+          ldd "dist/$package/lightos-remoted" | tee "dist/$package/dependencies.txt"
           if grep -q 'libturbojpeg\|not found' "dist/$package/dependencies.txt"; then exit 1; fi
-          if readelf -d "dist/$package/lightos-remote-desktop" | grep -q 'NEEDED.*libopus'; then exit 1; fi
-          if readelf -d "dist/$package/lightos-remote-desktop" | grep -Eq 'NEEDED.*lib(avcodec|avformat|avutil|swscale)'; then exit 1; fi
-          "dist/$package/lightos-remote-desktop" --help
+          if readelf -d "dist/$package/lightos-remoted" | grep -q 'NEEDED.*libopus'; then exit 1; fi
+          if readelf -d "dist/$package/lightos-remoted" | grep -Eq 'NEEDED.*lib(avcodec|avformat|avutil|swscale)'; then exit 1; fi
+          "dist/$package/lightos-remoted" --help
           tar -C dist -czf "dist/$package.tar.gz" "$package"
           (cd dist && sha256sum "$package.tar.gz" > "$package.tar.gz.sha256")
       - uses: actions/upload-artifact@v4
         with:
-          name: lightos-remote-desktop-linux-x86_64
+          name: lightos-remoted-linux-x86_64
           path: |
             dist/*.tar.gz
             dist/*.sha256
@@ -136,7 +136,7 @@ jobs:
           set -euo pipefail
           package=lightos-codec-ffmpeg-linux-x86_64-ubuntu-24.04
           mkdir -p "dist/$package/licenses"
-          cp target/release/lightos-codec-ffmpeg "dist/$package/"
+          cp target/release/lightos-codec-ffmpeg LICENSE "dist/$package/"
           cp docs/hardware-encoding.md "dist/$package/README.md"
           registry="${CARGO_HOME:-$HOME/.cargo}/registry/src"
           wrapper_license=$(find "$registry" -path '*/ffmpeg-next-9.0.0/LICENSE' -print -quit)

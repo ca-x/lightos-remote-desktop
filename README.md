@@ -6,19 +6,22 @@ does not embed CPython or invoke the original Selkies Python launcher.
 ## Current implementation
 
 - Embedded React/TypeScript frontend with Headless UI and Lucide React icons.
-  The appearance section offers Chinese/English/browser language and
+  A compact action toolbar opens contextual display, keyboard, clipboard and
+  connection popovers; a separate tabbed Settings dialog holds resolution,
+  encoding, appearance and MCP preferences. The appearance tab offers Chinese/English/browser language and
   light/dark/system theme preferences, stored locally without reconnecting.
   These themes affect only the controls, not the captured desktop.
 - Authenticated same-origin WebSocket client with canvas display and reconnect.
 - Optional authenticated TLS RDP access to the same owned virtual desktop, off
   by default with a separate loopback listener. See [RDP setup and limits](docs/rdp.md).
 - Optional MCP Streamable HTTP endpoint with separate observe/control tokens,
-  one-time token creation/revocation in the tools panel, and screenshot/mouse/
+  one-time token creation/revocation in Settings → MCP, and screenshot/mouse/
   keyboard tools over the existing owned desktop. Disabled by default; see
   [MCP access and Cua compatibility](docs/mcp.md).
 - Drag the floating toolbar handle to dock on any screen edge; its position is
   saved in this browser. Click to open, or focus it and use Alt+arrow keys to
-  dock left/right/top/bottom. The panel stays within the viewport.
+  dock left/right/top/bottom. Menus open inward, adjust at screen edges and
+  remain scrollable in small windows. Settings and menus also work in fullscreen.
 - Manually entering fullscreen requests all available keys via the browser Keyboard Lock API,
   without application-specific shortcut mappings. It requires browser support
   and permission, generally a secure context; OS/compositor-reserved shortcuts
@@ -39,7 +42,7 @@ does not embed CPython or invoke the original Selkies Python launcher.
   top-level HTTPS/localhost page and allow the browser's keyboard permission.
   See [Chrome's Keyboard Lock requirements](https://developer.chrome.com/docs/capabilities/web-apis/keyboard-lock)
   and [Chromium's Wayland implementation](https://chromium.googlesource.com/chromium/src/+/main/ui/ozone/platform/wayland/host/wayland_keyboard.cc).
-- Floating toolbar shows actual drawn FPS, codec/resolution and application
+- The toolbar’s Connection information menu shows actual drawn FPS, codec/resolution and application
   WebSocket RTT (latest and P95 of the last 30 replies). RTT includes queueing,
   not input-to-display latency. Static desktops skip duplicate frames, so low
   idle FPS is normal. Measurements use the browser's monotonic clock.
@@ -89,6 +92,89 @@ changes create a fresh encoder/keyframe. Automatic, low-latency, smooth and
 quality-first policies adjust pacing and supported encoder bitrate from bounded
 ACK feedback. GPU capture and remote cursor-shape streaming are not implemented.
 
+## AUR installation and updates
+
+The package is `lightos-remoted-bin`; the command is `lightos-remoted` and the
+installed executable is `/usr/lib/lightos-remoted/lightos-remoted`. GitHub
+binary archives use `lightos-remoted-linux-x86_64.tar.gz`. The auxiliary
+`lightos-codec-ffmpeg` keeps its own name and must match the host FFmpeg ABI.
+
+```sh
+yay -S lightos-remoted-bin
+yay -Syu
+```
+
+A fresh installation initializes authentication and starts the services without
+manual unit installation or `enable` commands. Configuration and credentials
+remain in `/etc/lightos/remote-desktop.env`; existing values are preserved.
+The service names remain `lightos-remote-desktop.service` and
+`lightos-remote-desktop-session.service` because LightOS setup scripts depend
+on them. Package upgrades restart only the HTTP transport and preserve the
+persistent desktop owner. See [AUR service and package details](docs/aur.md).
+
+### 老用户迁移与清理（旧版手动安装）
+
+AUR 检测到旧版手动安装时，会保留当前服务和桌面，不自动切换。
+以下是你决定迁移时手动执行的步骤；普通 AUR 新安装不需要这些操作。
+
+**先保存桌面应用中的工作。停止 `lightos-remote-desktop-session.service`
+会结束它管理的桌面应用，包括终端和 v2rayN。**
+
+1. 备份旧配置、unit 和回滚记录。备份目录仅 root 可读；不要把其中的认证信息贴到日志或 issue。
+
+   ```sh
+   backup="/root/lightos-remote-desktop-backup-$(date +%Y%m%d-%H%M%S)"
+   sudo install -d -m 0700 "$backup"
+   for path in /etc/lightos \
+     /etc/systemd/system/lightos-remote-desktop.service \
+     /etc/systemd/system/lightos-remote-desktop.service.d \
+     /etc/systemd/system/lightos-remote-desktop-session.service \
+     /var/lib/lightos-remote-desktop; do
+     if sudo test -e "$path"; then
+       sudo cp -a --parents "$path" "$backup/"
+     fi
+   done
+   ```
+
+   如使用自定义的 MCP 设置文件、证书或其他状态目录，也先单独备份。
+
+2. 保存工作后停止旧桌面，再移除旧的本机 unit 覆盖，让 AUR 提供的同名 unit 生效。
+
+   ```sh
+   sudo systemctl disable --now lightos-remote-desktop.service
+   sudo systemctl stop lightos-remote-desktop-session.service
+   sudo rm -f -- /etc/systemd/system/lightos-remote-desktop.service \
+     /etc/systemd/system/lightos-remote-desktop-session.service
+   sudo rm -rf -- /etc/systemd/system/lightos-remote-desktop.service.d
+   sudo systemctl daemon-reload
+   sudo /usr/lib/lightos-remoted/bootstrap
+   ```
+
+   `/etc/lightos/remote-desktop.env` 要保留：LightOS 仍通过它管理认证和开关。
+   新服务沿用这个文件中有效的非 root 用户和认证配置。
+
+3. 登录浏览器确认画面、输入和应用启动正常，并检查服务。
+
+   ```sh
+   lightos-remoted --version
+   systemctl status lightos-remote-desktop.service --no-pager
+   systemctl status lightos-remote-desktop-session.service --no-pager
+   ```
+
+4. 确认新版本正常、无需回退后，才清理旧 Rust 安装目录。先确认服务已使用
+   `/usr/lib/lightos-remoted/lightos-remoted`，并检查保留的
+   `/etc/lightos/remote-desktop-native.env`：若它仍引用旧安装目录中的兼容库，
+   先按 [AUR 文档](docs/aur.md) 切换到包提供的兼容库并验证重启正常，再执行删除。
+
+   ```sh
+   sudo rm -rf -- /usr/local/lib/lightos-remote-desktop
+   sudo rm -rf -- /var/lib/lightos-remote-desktop
+   ```
+
+   **不要删除** `/etc/lightos`、`/opt/lightos/remote-desktop` 或
+   `/usr/local/bin/lightos-remote-desktop-*.sh`：它们仍属于 LightOS 平台集成。
+   备份目录可在确认不再需要回退后自行清理。
+
 ## Build and test
 
 Node.js 24.15+ (24 LTS) or 26+ is required only when building from source. Build the locked frontend
@@ -124,8 +210,8 @@ bundle the SIMD JPEG library; Wayland, xkbcommon and glibc remain system librari
 
 ```sh
 ./lightos-remote-desktop install-service --dry-run
-sudo ./lightos-remote-desktop install-service
-sudo ./lightos-remote-desktop rollback-service
+sudo ./lightos-remoted install-service
+sudo ./lightos-remoted rollback-service
 ```
 
 `install-service` installs this executable and activates the existing LightOS
@@ -195,8 +281,8 @@ of at least 12 bytes. Never commit an environment file or pass production
 credentials in command arguments.
 
 ```sh
-target/release/lightos-remote-desktop doctor
-target/release/lightos-remote-desktop serve --listen 127.0.0.1 --port 18766
+target/release/lightos-remoted doctor
+target/release/lightos-remoted serve --listen 127.0.0.1 --port 18766
 ```
 
 For an already-running compositor, use `--wayland-socket /absolute/socket`.
@@ -241,7 +327,7 @@ The pinned, reviewable private build fixes these issues without replacing
 
 ```sh
 bash scripts/build-aquamarine.sh
-target/release/lightos-remote-desktop serve --port 18766 \
+target/release/lightos-remoted serve --port 18766 \
   --aquamarine-dir "$PWD/.local/aquamarine/build"
 ```
 
@@ -294,3 +380,8 @@ Optional hardware H.264 encoders (VA-API/NVENC/AMF/VideoToolbox) use a separate
 ABI-specific native worker. The portable core retains software fallback and does
 not link FFmpeg; see [hardware encoding](docs/hardware-encoding.md) for build,
 runtime dependencies and device-validation limits.
+
+## License
+
+LightOS Remote Desktop is licensed under [MIT](LICENSE). Third-party components
+retain their own licenses; see [third-party notices](docs/third-party.md).

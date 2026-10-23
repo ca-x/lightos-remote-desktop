@@ -1,10 +1,10 @@
 # Installing the native candidate
 
 The executable embeds this transactional installer. On a provisioned LightOS
-machine, `sudo ./lightos-remote-desktop install-service` replaces the existing
+machine, `sudo ./lightos-remoted install-service` replaces the existing
 Python service command and activates Rust after dependency and health checks.
 Use `install-service --dry-run` for read-only checks, `--stage-only` to avoid
-restarting, and `sudo ./lightos-remote-desktop rollback-service` for the previous
+restarting, and `sudo ./lightos-remoted rollback-service` for the previous
 transaction. Root is needed only for installation, never for desktop runtime.
 This does not bootstrap Cage/Hyprland or the version-specific Aquamarine patch.
 
@@ -133,7 +133,7 @@ bash -n tests/installer.sh
 bash tests/installer.sh
 ```
 
-Default input is `target/release/lightos-remote-desktop`; `--binary` overrides it.
+Default input is `target/release/lightos-remoted`; `--binary` overrides it.
 `--check` and `--dry-run` are equivalent read-only filesystem/prebuilt checks,
 not runtime validation: they do not run doctor or contact systemd. A missing
 existing system unit is an error. This is a migration installer, not a fresh

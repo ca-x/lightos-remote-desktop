@@ -28,7 +28,10 @@ export interface ControlState {
   outputs: DesktopOutput[];
 }
 
+export type ToolbarEdge = "left" | "right" | "top" | "bottom";
+
 export interface ClientOptions {
+  onToolbarDock?: (edge: ToolbarEdge) => void;
   translate?: (text: string) => string;
   onControls?: (state: ControlState) => void;
   onToolsOpen?: (open: boolean, focus: boolean) => void;
@@ -54,9 +57,9 @@ export interface Elements {
   "shortcut-key": HTMLSelectElement;
   "desktop-source": HTMLSelectElement;
   "monitor-source": HTMLSelectElement;
-  "keyboard-section": HTMLDetailsElement;
-  "settings-section": HTMLDetailsElement;
-  "clipboard-section": HTMLDetailsElement;
+  "keyboard-section": HTMLElement;
+  "settings-section": HTMLElement;
+  "clipboard-section": HTMLElement;
   "apply-size": HTMLButtonElement;
   "send-text": HTMLButtonElement;
   "clipboard-get": HTMLButtonElement;

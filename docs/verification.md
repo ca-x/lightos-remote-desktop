@@ -594,8 +594,8 @@ budget in native rate reports; perceptual image quality was not measured.
 Reproduce only on an isolated desktop with installed native prerequisites:
 
 ```sh
-python3 scripts/benchmark-adaptive.py --binary baseline=/path/to/0.1.8 --binary candidate=target/release/lightos-remote-desktop --output-dir /tmp/lrd-adaptive-results --strategy auto
-python3 scripts/benchmark-adaptive.py --binary candidate=target/release/lightos-remote-desktop --output-dir /tmp/lrd-quality-results --strategy quality_first
+python3 scripts/benchmark-adaptive.py --binary baseline=/path/to/0.1.8 --binary candidate=target/release/lightos-remoted --output-dir /tmp/lrd-adaptive-results --strategy auto
+python3 scripts/benchmark-adaptive.py --binary candidate=target/release/lightos-remoted --output-dir /tmp/lrd-quality-results --strategy quality_first
 ```
 
 The release still uses software OpenH264/TurboJPEG. Hardware codecs, actual WAN
