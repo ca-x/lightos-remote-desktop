@@ -50,6 +50,7 @@ jobs:
         run: |
           bash tests/aur-bootstrap.sh
           bash tests/aur-release.sh
+          bash tests/aur-codec-package.sh
           LRD_AUR_EXPORT_BINARY="$PWD/target/debug/lightos-remoted" bash tests/aur-package.sh
       - run: bash tests/installer.sh
       - run: bash scripts/test-install-compat.sh
