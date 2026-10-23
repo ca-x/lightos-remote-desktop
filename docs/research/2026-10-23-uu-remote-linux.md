@@ -87,3 +87,17 @@ X11 authority 不能套用 Wayland runtime 父目录必须 0700 的规则；/tmp
 验收需要覆盖：Wayland + XWayland 共存；两个同 UID 会话不串桌面；无效 display / 错误 authority / 不回应 socket 有界失败；缺失扩展和缺失工具；输出旋转/缩放/负坐标/边缘；X11 24-depth 32-bpp 与其他布局；静态画面仍能区分健康与停止采集；断开时所有按键和按钮释放；剪贴板 UTF-8、上限、超时、owner 生命周期；owned resize 成功后读回确认。
 
 X11 集成测试应使用临时 Xvfb 与私有 authority，禁止依赖开发机正在登录的桌面。当前 PATH 未发现 Xvfb / xclip / xrandr，因此不能声称已经完成真实 X11 验证。性能结论必须通过同分辨率、同编码设置、同变化场景的测量给出，采用 XDamage / SHM 设计本身不能证明性能已提升。
+
+
+## 实施与验证更新（2026-10-23）
+
+上面的候选 crate、未实现能力和“PATH 未发现 Xvfb”描述是调研时的状态。
+后续按用户批准的计划实现了 `DesktopBackend`、精确会话选择、原生 X11 和
+可选 Portal 后端；最终支持边界以 [runtime platforms](../runtime-platforms.md)
+和 [实施计划](../superpowers/plans/2026-10-23-linux-compatibility.md) 为准。
+
+X11 已使用单独解包的 Xvfb，在两个临时认证 display 上验证采集、XTest、
+Unicode、剪贴板、多会话隔离、排队写入取消和停止清理，没有访问当前登录桌面。
+当前路径使用 core GetImage，尚未加入 SHM/Damage 优化；本机 Xvfb 不提供测试所需的
+RandR resize，不能将相应跳过项记作真机调整通过。Portal 已有编译和单元测试，
+GNOME/KDE 真机、分数缩放与性能比较仍未验收。没有从 GPL 参考项目复制源码。

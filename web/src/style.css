@@ -10,14 +10,19 @@ body { color: var(--text); }
 #viewport.fit { display: flex; align-items: center; justify-content: center; overflow: hidden; }
 #viewport.fit #desktop { width: min(100vw, calc(100dvh * var(--desktop-aspect, 1.777778))); height: auto; max-height: 100dvh; object-fit: contain; }
 #viewport:fullscreen { width: 100vw; height: 100dvh; }
-#tools { position: fixed; z-index: 10; left: var(--tool-x, calc(100vw - 52px)); top: var(--tool-y, 50%); width: 40px; height: 48px; pointer-events: none; }
+#tools { position: fixed; z-index: 10; left: var(--tool-x, calc(100vw - 52px)); top: var(--tool-y, 50%); width: 44px; height: 48px; pointer-events: none; }
 button, input, textarea, select { font: inherit; }
 button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--control); color: inherit; cursor: pointer; font-size: 12px; }
 button, summary { touch-action: manipulation; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 button:active:not(:disabled) { background: var(--selected); }
 button:disabled { opacity: .45; cursor: default; }
-.tool-handle { position: relative; z-index: 1; pointer-events: auto; touch-action: none; user-select: none; cursor: grab; width: 40px; height: 48px; padding: 0; background: var(--surface); box-shadow: var(--shadow); }
-.tool-handle:active { cursor: grabbing; }
+.tool-handle { position: relative; z-index: 1; pointer-events: auto; touch-action: none; user-select: none; cursor: grab; width: 44px; height: 48px; padding: 0; border: 0; border-radius: 10px; background: transparent; color: #fff; box-shadow: none; transition: background-color 125ms var(--ease-out); }
+/* A dark outline keeps the transparent control visible over light and dark desktops. */
+.tool-handle > svg { pointer-events: none; filter: drop-shadow(0 1px 1px #000e) drop-shadow(0 0 1px #000e); }
+.tool-handle:active:not(:disabled) { cursor: grabbing; background: #10111538; transform: none; }
+.tool-handle:focus-visible { outline: 2px solid #fff; outline-offset: 1px; box-shadow: 0 0 0 4px #101115b3; }
+:root[data-input="keyboard"] .tool-handle { transition: none; }
+@media (hover: hover) and (pointer: fine) { .tool-handle:hover { background: #10111526; } }
 .panel { position: fixed; left: var(--panel-x, 12px); top: var(--panel-y, 12px); pointer-events: none; width: 340px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow-y: auto; overscroll-behavior: contain; padding: 16px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); opacity: 0; visibility: hidden; transform: scale(.97); transform-origin: var(--panel-origin, right center); transition: opacity 125ms var(--ease-out), transform 125ms var(--ease-out), visibility 0s 125ms; }
 .panel.is-open { pointer-events: auto; opacity: 1; visibility: visible; transform: scale(1); transition: opacity 160ms var(--ease-out), transform 160ms var(--ease-out), visibility 0s; }
 .panel-heading, .connection-state, .desktop-heading, footer { display: flex; align-items: center; gap: 8px; justify-content: space-between; }

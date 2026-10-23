@@ -1,7 +1,9 @@
 use std::{
+    ffi::OsStr,
     io::{Read, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
-    path::Path,
+    path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -9,10 +11,10 @@ use anyhow::{Context, Result, ensure};
 use axum::serve::{Listener, ListenerExt};
 use clap::{Parser, Subcommand};
 use lightos_remote_desktop::{
+    backend::{self, BackendKind, DesktopBackend},
     config::Config,
     server::{AppState, router},
     session::Session,
-    wayland::Backend,
 };
 
 #[derive(Parser)]
@@ -42,12 +44,27 @@ enum Action {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if std::env::args_os().len() == 2
+        && std::env::args_os().nth(1).as_deref() == Some(OsStr::new("--internal-x11-worker"))
+    {
+        return lightos_remote_desktop::backend::x11::worker_main();
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
-    match Cli::parse().command {
+    let mut cli = Cli::parse();
+    match &mut cli.command {
+        Action::Serve(config) | Action::Doctor(config) | Action::Probe { config, .. } => {
+            config.apply_service_defaults(
+                std::env::var_os("LIGHTOS_REMOTE_DESKTOP_DEFAULT_SESSION_RUNTIME")
+                    .map(PathBuf::from),
+            );
+        }
+        Action::InstallService(_) | Action::RollbackService(_) | Action::DesktopSession(_) => {}
+    }
+    match cli.command {
         Action::InstallService(options) => lightos_remote_desktop::install::service(options, false),
         Action::RollbackService(options) => lightos_remote_desktop::install::service(options, true),
         Action::Doctor(config) => doctor(&config),
@@ -62,58 +79,30 @@ async fn main() -> Result<()> {
 
 fn doctor(config: &Config) -> Result<()> {
     config.validate()?;
-    if config.omarchy_path()?.is_some() {
-        ensure!(
-            executable_exists(Path::new("quickshell")),
-            "missing executable: quickshell"
-        );
-        ensure!(
-            executable_exists(Path::new("gtk-launch")),
-            "missing executable: gtk-launch"
-        );
+    use lightos_remote_desktop::diagnostics::{SessionMode, dependencies};
+    let mode = SessionMode::from_config(config);
+    let omarchy = mode == SessionMode::OwnedVirtual && config.omarchy_path()?.is_some();
+    let dependencies = dependencies(config, omarchy, platform_detect::find_executable);
+    let missing: Vec<_> = dependencies
+        .required
+        .iter()
+        .filter(|dependency| !dependency.available)
+        .map(|dependency| dependency.program.display().to_string())
+        .collect();
+    ensure!(
+        missing.is_empty(),
+        "missing required executables: {}",
+        missing.join(", ")
+    );
+    if let Some(socket) = &config.wayland_socket {
+        lightos_remote_desktop::session::validate_wayland_socket(socket)?;
     }
-    if config.wayland_socket.is_none() {
-        for command in [
-            config.cage.as_path(),
-            Path::new("Hyprland"),
-            Path::new("dbus-daemon"),
-        ] {
-            ensure!(
-                executable_exists(command),
-                "missing executable: {}",
-                command.display()
-            );
-        }
-        ensure!(
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open("/dev/dri/renderD128")
-                .is_ok(),
-            "renderD128 must be accessible for headless GLES rendering"
-        );
+    if mode == SessionMode::ExternalX11 {
+        Session::physical_target(config)?;
     }
-    for command in ["hyprctl", "wl-copy", "wl-paste", "timeout"] {
-        ensure!(
-            executable_exists(Path::new(command)),
-            "missing executable: {command}"
-        );
-    }
-    if config.audio {
-        ensure!(
-            executable_exists(Path::new("pactl")),
-            "missing executable: pactl"
-        );
-        if config.wayland_socket.is_none() {
-            for command in ["pipewire", "pipewire-pulse", "wireplumber"] {
-                ensure!(
-                    executable_exists(Path::new(command)),
-                    "missing executable: {command}"
-                );
-            }
-        }
-    }
-    if let Some(directory) = &config.aquamarine_dir {
+    if mode == SessionMode::OwnedVirtual
+        && let Some(directory) = &config.aquamarine_dir
+    {
         ensure!(
             directory.join("libaquamarine.so.14").is_file(),
             "private Aquamarine library missing"
@@ -121,19 +110,15 @@ fn doctor(config: &Config) -> Result<()> {
     }
     println!(
         "{}",
-        serde_json::json!({"distribution": platform_detect::Distribution::detect(), "omarchy": platform_detect::OmarchyInstallation::detect(), "persistent_session":config.session_runtime, "ok":true,"native":true,"transport":"websocket","video_codecs_compiled":["h264","jpeg"],"codec_probe_complete":false,"desktop_smoke_test":false})
+        serde_json::json!({"distribution": platform_detect::Distribution::detect(), "omarchy": platform_detect::OmarchyInstallation::detect(), "persistent_session":config.session_runtime, "dependencies":dependencies, "ok":true,"native":true,"transport":"websocket","video_codecs_compiled":["h264","jpeg"],"codec_probe_complete":false,"desktop_smoke_test":false})
     );
     Ok(())
-}
-
-fn executable_exists(path: &Path) -> bool {
-    platform_detect::find_executable(path).is_some()
 }
 
 async fn desktop_session(mut config: Config) -> Result<()> {
     config.session_runtime = None;
     ensure!(
-        config.wayland_socket.is_none(),
+        config.wayland_socket.is_none() && config.x11_display.is_none(),
         "desktop-session cannot own an attached compositor"
     );
     ensure!(
@@ -197,7 +182,28 @@ async fn serve(config: Config) -> Result<()> {
             !startup_cancelled.load(std::sync::atomic::Ordering::Acquire),
             "startup cancelled"
         );
-        let backend = Backend::start(session.socket.clone(), settings.fps, settings.quality)?;
+        let target = session.target();
+        let selection = backend::probe(&target, false, Some(startup_cancelled.as_ref()))?;
+        let selected = selection.require_available()?;
+        let backend: Arc<dyn DesktopBackend> =
+            if defer_initial_consent(session.is_owned(), selected) {
+                tracing::info!("Portal consent deferred until an explicit desktop connection");
+                Arc::new(backend::DeferredPortalBackend::new())
+            } else {
+                let active = backend::start_selected(
+                    selected,
+                    target.clone(),
+                    settings.fps,
+                    settings.quality,
+                    None,
+                    startup_cancelled.clone(),
+                )?;
+                if session.is_owned() {
+                    active
+                } else {
+                    backend::guarded::attach(active, target)?
+                }
+            };
         Ok((session, backend))
     });
     let (session, backend) = tokio::select! {
@@ -208,7 +214,7 @@ async fn serve(config: Config) -> Result<()> {
             return Ok(());
         }
     };
-    let state = AppState::new(config, backend, session);
+    let state = AppState::with_backend(config, backend, session);
     state.rdp.initialize(state.clone()).await;
     let failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let monitor = state.clone();
@@ -221,7 +227,10 @@ async fn serve(config: Config) -> Result<()> {
                 _ = interrupt.recv() => break,
                 _ = term.recv() => break,
                 _ = ticks.tick() => {
-                    if !monitor.backend.frame_is_fresh(Duration::from_secs(5)) || !monitor.session.lock().is_ok_and(|mut session| session.healthy()) {
+                    if !monitor.session.lock().is_ok_and(|mut session| {
+                        session.healthy() && !monitor.backend.is_stopped()
+                            && (monitor.backend.paused() || monitor.backend.frame_is_fresh(Duration::from_secs(5)))
+                    }) {
                         tracing::error!("desktop or capture stopped; exiting for supervised recovery");
                         monitor_failed.store(true, std::sync::atomic::Ordering::Release);
                         break;
@@ -242,6 +251,10 @@ async fn serve(config: Config) -> Result<()> {
         "desktop session failed"
     );
     Ok(())
+}
+
+fn defer_initial_consent(owned: bool, selected: BackendKind) -> bool {
+    !owned && selected == BackendKind::Portal
 }
 
 fn probe(config: &Config, expected: Option<u32>) -> Result<()> {
@@ -287,5 +300,19 @@ fn probe(config: &Config, expected: Option<u32>) -> Result<()> {
             "native desktop failed its readiness probe"
         );
         std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_attached_portal_waits_for_browser_consent() {
+        assert!(defer_initial_consent(false, BackendKind::Portal));
+        for kind in [BackendKind::Wayland, BackendKind::X11] {
+            assert!(!defer_initial_consent(false, kind));
+        }
+        assert!(!defer_initial_consent(true, BackendKind::Portal));
     }
 }

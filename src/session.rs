@@ -17,6 +17,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use display_control::SessionTarget;
 
 use crate::config::Config;
 
@@ -42,6 +43,8 @@ pub struct Session {
     pub pulse_server: Option<String>,
     pub pulse_client_config: Option<PathBuf>,
     pub audio_source: Option<String>,
+    target: Option<SessionTarget>,
+    owned: bool,
     children: Vec<Child>,
     temporary: Option<tempfile::TempDir>,
     lock: Option<File>,
@@ -64,6 +67,8 @@ impl Session {
             pulse_server,
             pulse_client_config,
             audio_source,
+            target: None,
+            owned: true,
             children: vec![],
             temporary: None,
             lock: None,
@@ -72,38 +77,47 @@ impl Session {
     }
 
     pub fn physical_socket(config: &Config) -> Result<PathBuf> {
-        let owner = unsafe { libc::geteuid() };
-        if let Some(socket) = &config.physical_wayland_socket {
-            ensure!(
-                is_owned_socket(socket, owner),
-                "configured physical Wayland socket is unavailable or belongs to another user"
-            );
-            return Ok(socket.clone());
-        }
-        let directory = PathBuf::from(format!("/run/user/{owner}"));
-        let mut sockets: Vec<_> = fs::read_dir(&directory)
-            .into_iter()
-            .flatten()
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.file_name()
-                    .is_some_and(|name| name.to_string_lossy().starts_with("wayland-"))
-                    && is_owned_socket(path, owner)
-            })
-            .collect();
-        sockets.sort();
-        if let Some(display) = std::env::var_os("WAYLAND_DISPLAY") {
-            let preferred = directory.join(display);
-            if sockets.contains(&preferred) {
-                return Ok(preferred);
-            }
-        }
-        match sockets.as_slice() {
-            [socket] => Ok(socket.clone()),
-            [] => bail!("未发现当前用户的物理 Wayland 会话；请先登录本机桌面"),
-            _ => bail!("发现多个 Wayland 会话；请用 --physical-wayland-socket 指定物理桌面"),
-        }
+        physical_socket_from_environment(
+            config,
+            unsafe { libc::geteuid() },
+            std::env::var_os("XDG_RUNTIME_DIR")
+                .as_deref()
+                .map(Path::new),
+            std::env::var_os("WAYLAND_DISPLAY")
+                .as_deref()
+                .map(Path::new),
+        )
+    }
+
+    pub fn physical_target(config: &Config) -> Result<SessionTarget> {
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+        let wayland = std::env::var_os("WAYLAND_DISPLAY").map(PathBuf::from);
+        let xauthority = std::env::var_os("XAUTHORITY")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let home = std::env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        physical_target_from_environment(
+            config,
+            unsafe { libc::geteuid() },
+            runtime.as_deref(),
+            wayland.as_deref(),
+            std::env::var("DISPLAY").ok().as_deref(),
+            xauthority.as_deref(),
+            home.as_deref(),
+            std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
+        )
+    }
+
+    pub fn target(&self) -> SessionTarget {
+        self.target
+            .clone()
+            .unwrap_or_else(|| SessionTarget::wayland(self.socket.clone(), self.runtime.clone()))
+    }
+
+    pub fn is_owned(&self) -> bool {
+        self.owned
     }
 
     pub fn start(config: &Config) -> Result<Self> {
@@ -115,6 +129,23 @@ impl Session {
             unsafe { libc::geteuid() } != 0,
             "desktop service must run as a non-root user"
         );
+        if config.x11_display.is_some() {
+            let target = Self::physical_target(config)?;
+            return Ok(Self {
+                socket: PathBuf::new(),
+                runtime: target.runtime.clone(),
+                signature: None,
+                pulse_server: std::env::var("PULSE_SERVER").ok(),
+                pulse_client_config: std::env::var_os("PULSE_CLIENTCONFIG").map(PathBuf::from),
+                audio_source: None,
+                target: Some(target),
+                owned: false,
+                children: Vec::new(),
+                temporary: None,
+                lock: None,
+                cancelled,
+            });
+        }
         if config.wayland_socket.is_none()
             && let Some(runtime) = &config.session_runtime
         {
@@ -139,7 +170,8 @@ impl Session {
                 .parent()
                 .context("Wayland socket has no parent")?
                 .to_path_buf();
-            ensure!(socket.exists(), "Wayland socket does not exist");
+            validate_wayland_socket(socket)?;
+            let target = SessionTarget::wayland(socket.clone(), runtime.clone());
             return Ok(Self {
                 socket: socket.clone(),
                 runtime,
@@ -147,6 +179,8 @@ impl Session {
                 pulse_server: std::env::var("PULSE_SERVER").ok(),
                 pulse_client_config: std::env::var_os("PULSE_CLIENTCONFIG").map(PathBuf::from),
                 audio_source: None,
+                target: Some(target),
+                owned: false,
                 children: Vec::new(),
                 temporary: None,
                 lock: None,
@@ -193,6 +227,8 @@ impl Session {
             signature: None,
             pulse_client_config: None,
             audio_source: None,
+            target: None,
+            owned: true,
             children: Vec::new(),
             temporary,
             lock: Some(lock),
@@ -515,7 +551,11 @@ impl Session {
         self.children
             .iter()
             .all(|child| matches!(child_exited(child), Ok(false)))
-            && self.socket.exists()
+            && (self
+                .target
+                .as_ref()
+                .is_some_and(|target| target.x11_display.is_some())
+                || self.socket.exists())
     }
 
     pub fn audio_environment(&self, command: &mut Command) {
@@ -534,6 +574,224 @@ impl Session {
             command.env_remove("PULSE_CLIENTCONFIG");
         }
     }
+}
+
+fn physical_socket_from_environment(
+    config: &Config,
+    owner: u32,
+    runtime: Option<&Path>,
+    display: Option<&Path>,
+) -> Result<PathBuf> {
+    if let Some(socket) = config
+        .wayland_socket
+        .as_ref()
+        .or(config.physical_wayland_socket.as_ref())
+    {
+        validate_wayland_socket_for_owner(socket, owner)?;
+        return Ok(socket.clone());
+    }
+    let display = display.filter(|path| !path.as_os_str().is_empty());
+    if let Some(socket) = display.filter(|path| path.is_absolute()) {
+        validate_wayland_socket_for_owner(socket, owner)?;
+        return Ok(socket.to_path_buf());
+    }
+    let directory = runtime
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{owner}")));
+    validate_session_runtime(&directory, owner)?;
+    // A supplied display identifies one exact target, never an arbitrary sibling socket.
+    if let Some(display) = display {
+        ensure!(
+            display.components().count() == 1,
+            "relative Wayland display must be a socket name"
+        );
+        let socket = directory.join(display);
+        validate_wayland_socket_for_owner(&socket, owner)?;
+        return Ok(socket);
+    }
+    let sockets = wayland_sockets(&directory, owner)?;
+    match sockets.as_slice() {
+        [socket] => Ok(socket.clone()),
+        [] => bail!(
+            "未发现当前用户的物理 Wayland 会话；请先登录本机桌面（服务仅能访问同一 UID 的会话）"
+        ),
+        _ => bail!("发现多个 Wayland 会话；请用 --physical-wayland-socket 指定物理桌面"),
+    }
+}
+
+fn wayland_sockets(directory: &Path, owner: u32) -> Result<Vec<PathBuf>> {
+    let mut sockets: Vec<_> = fs::read_dir(directory)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("wayland-"))
+                && is_owned_socket(path, owner)
+        })
+        .collect();
+    sockets.sort();
+    Ok(sockets)
+}
+
+#[allow(clippy::too_many_arguments)] // One explicit snapshot keeps session discovery and its tests independent of process-global environment changes.
+fn physical_target_from_environment(
+    config: &Config,
+    owner: u32,
+    runtime: Option<&Path>,
+    wayland_display: Option<&Path>,
+    x11_display: Option<&str>,
+    xauthority: Option<&Path>,
+    home: Option<&Path>,
+    session_type: Option<&str>,
+) -> Result<SessionTarget> {
+    if let Some(display) = config.x11_display.as_deref() {
+        return x11_target(
+            display,
+            config.xauthority.as_deref().or(xauthority),
+            home,
+            owner,
+        );
+    }
+    let x11_display = x11_display.filter(|display| !display.is_empty());
+    if config.wayland_socket.is_some()
+        || config.physical_wayland_socket.is_some()
+        || wayland_display.is_some_and(|display| !display.as_os_str().is_empty())
+    {
+        let socket = physical_socket_from_environment(config, owner, runtime, wayland_display)?;
+        return Ok(SessionTarget::wayland(
+            socket.clone(),
+            socket.parent().unwrap().to_path_buf(),
+        ));
+    }
+    let wayland_session = session_type.is_some_and(|kind| kind.eq_ignore_ascii_case("wayland"));
+    let x11_session = session_type.is_some_and(|kind| kind.eq_ignore_ascii_case("x11"));
+    if x11_session && let Some(display) = x11_display {
+        return x11_target(
+            display,
+            config.xauthority.as_deref().or(xauthority),
+            home,
+            owner,
+        );
+    }
+    let directory = runtime
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{owner}")));
+    if let Some(display) = x11_display.filter(|_| !wayland_session) {
+        if directory.exists() {
+            validate_session_runtime(&directory, owner)?;
+            ensure!(
+                wayland_sockets(&directory, owner)?.is_empty(),
+                "both X11 and Wayland sessions are possible; select --x11-display or --physical-wayland-socket"
+            );
+        }
+        return x11_target(
+            display,
+            config.xauthority.as_deref().or(xauthority),
+            home,
+            owner,
+        );
+    }
+    validate_session_runtime(&directory, owner)?;
+    match wayland_sockets(&directory, owner)?.as_slice() {
+        [socket] => Ok(SessionTarget::wayland(socket.clone(), directory)),
+        [] => bail!("no same-user Wayland or local X11 session found"),
+        _ => bail!("发现多个 Wayland 会话；请用 --physical-wayland-socket 指定物理桌面"),
+    }
+}
+
+pub(crate) fn validate_local_x11_display(display: &str) -> Result<()> {
+    let suffix = display
+        .strip_prefix(':')
+        .context("X11 DISPLAY must be local (:N or :N.screen)")?;
+    let (number, screen) = suffix
+        .split_once('.')
+        .map_or((suffix, None), |(number, screen)| (number, Some(screen)));
+    ensure!(
+        !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()),
+        "X11 DISPLAY must be local (:N or :N.screen)"
+    );
+    if let Some(screen) = screen {
+        ensure!(
+            !screen.is_empty() && screen.bytes().all(|byte| byte.is_ascii_digit()),
+            "invalid X11 screen number"
+        );
+    }
+    Ok(())
+}
+
+fn x11_target(
+    display: &str,
+    authority: Option<&Path>,
+    home: Option<&Path>,
+    owner: u32,
+) -> Result<SessionTarget> {
+    validate_local_x11_display(display)?;
+    let authority = authority
+        .map(Path::to_path_buf)
+        .or_else(|| home.map(|path| path.join(".Xauthority")))
+        .context("X11 requires --xauthority, XAUTHORITY or HOME/.Xauthority")?;
+    ensure!(
+        authority.is_absolute(),
+        "Xauthority must be an absolute path"
+    );
+    let metadata = fs::symlink_metadata(&authority).context("Xauthority file unavailable")?;
+    ensure!(
+        metadata.is_file() && !metadata.file_type().is_symlink(),
+        "Xauthority must be a regular file, not a symlink"
+    );
+    ensure!(
+        metadata.uid() == owner,
+        "Xauthority belongs to another user"
+    );
+    ensure!(
+        metadata.mode() & 0o077 == 0,
+        "Xauthority must be private (0600)"
+    );
+    Ok(SessionTarget {
+        x11_display: Some(display.to_owned()),
+        xauthority: Some(authority),
+        ..SessionTarget::default()
+    })
+}
+
+fn validate_session_runtime(path: &Path, owner: u32) -> Result<()> {
+    ensure!(path.is_absolute(), "session runtime must be absolute");
+    let metadata = fs::symlink_metadata(path)
+        .context("session runtime is unavailable for this service identity (same UID required)")?;
+    ensure!(
+        metadata.is_dir() && !metadata.file_type().is_symlink(),
+        "session runtime must be a directory, not a symlink"
+    );
+    ensure!(
+        metadata.uid() == owner,
+        "session runtime belongs to another user"
+    );
+    ensure!(
+        metadata.mode() & 0o077 == 0,
+        "session runtime must be private (0700)"
+    );
+    Ok(())
+}
+
+fn validate_wayland_socket_for_owner(path: &Path, owner: u32) -> Result<()> {
+    ensure!(path.is_absolute(), "Wayland socket must be absolute");
+    validate_session_runtime(
+        path.parent().context("Wayland socket has no parent")?,
+        owner,
+    )?;
+    ensure!(
+        is_owned_socket(path, owner),
+        "Wayland socket is unavailable or belongs to another user"
+    );
+    Ok(())
+}
+
+/// Validate an explicitly selected same-user socket without opening the display.
+/// Protocol readiness is checked separately before capture starts.
+pub fn validate_wayland_socket(path: &Path) -> Result<()> {
+    validate_wayland_socket_for_owner(path, unsafe { libc::geteuid() })
 }
 
 pub(crate) fn is_owned_socket(path: &Path, owner: u32) -> bool {
@@ -620,11 +878,18 @@ mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
 
+    fn private_runtime() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap()
+    }
+
     #[test]
     fn physical_socket_requires_an_owned_socket_not_a_file_or_symlink() {
         use clap::Parser;
         use std::os::unix::net::UnixListener;
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_runtime();
         let socket = directory.path().join("wayland-test");
         let mut config =
             Config::try_parse_from(["test", "--password", "socket-test-secret"]).unwrap();
@@ -640,6 +905,402 @@ mod tests {
         config.physical_wayland_socket = Some(link);
         assert!(Session::physical_socket(&config).is_err());
         assert!(!is_owned_socket(&socket, unsafe { libc::geteuid() } + 1));
+    }
+
+    #[test]
+    fn physical_discovery_uses_exact_private_runtime_and_keeps_ambiguity() {
+        use clap::Parser;
+        use std::os::unix::net::UnixListener;
+        let directory = private_runtime();
+        let first = directory.path().join("wayland-1");
+        let second = directory.path().join("wayland-2");
+        let _first = UnixListener::bind(&first).unwrap();
+        let _second = UnixListener::bind(&second).unwrap();
+        let config = Config::try_parse_from(["test"]).unwrap();
+        let owner = unsafe { libc::geteuid() };
+        assert_eq!(
+            physical_socket_from_environment(
+                &config,
+                owner,
+                Some(directory.path()),
+                Some(Path::new("wayland-2"))
+            )
+            .unwrap(),
+            second
+        );
+        assert_eq!(
+            physical_socket_from_environment(&config, owner, Some(directory.path()), Some(&first))
+                .unwrap(),
+            first
+        );
+        assert!(
+            physical_socket_from_environment(&config, owner, Some(directory.path()), None)
+                .unwrap_err()
+                .to_string()
+                .contains("多个")
+        );
+        assert!(
+            physical_socket_from_environment(
+                &config,
+                owner + 1,
+                Some(directory.path()),
+                Some(&first)
+            )
+            .is_err()
+        );
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            physical_socket_from_environment(&config, owner, Some(directory.path()), Some(&first))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn absolute_display_uses_its_own_private_runtime_and_relative_names_cannot_escape() {
+        use clap::Parser;
+        use std::os::unix::net::UnixListener;
+        let directory = private_runtime();
+        let socket = directory.path().join("wayland-custom");
+        let _listener = UnixListener::bind(&socket).unwrap();
+        let config = Config::try_parse_from(["test"]).unwrap();
+        let owner = unsafe { libc::geteuid() };
+
+        assert_eq!(
+            physical_socket_from_environment(
+                &config,
+                owner,
+                Some(Path::new("/missing-runtime")),
+                Some(&socket)
+            )
+            .unwrap(),
+            socket
+        );
+        for display in [
+            "../wayland-custom",
+            "nested/wayland-custom",
+            "./wayland-custom",
+        ] {
+            assert!(
+                physical_socket_from_environment(
+                    &config,
+                    owner,
+                    Some(directory.path()),
+                    Some(Path::new(display))
+                )
+                .is_err(),
+                "{display}"
+            );
+        }
+        assert!(
+            physical_socket_from_environment(
+                &config,
+                owner,
+                Some(Path::new("relative-runtime")),
+                Some(Path::new("wayland-custom"))
+            )
+            .is_err()
+        );
+        assert!(
+            physical_socket_from_environment(
+                &config,
+                owner,
+                Some(directory.path()),
+                Some(Path::new("wayland-missing"))
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn physical_target_prefers_same_user_wayland_over_xwayland_and_rejects_ambiguous_sockets() {
+        use clap::Parser;
+        use std::os::unix::net::UnixListener;
+        let directory = private_runtime();
+        let first = directory.path().join("wayland-1");
+        let second = directory.path().join("wayland-2");
+        let _first = UnixListener::bind(&first).unwrap();
+        let _second = UnixListener::bind(&second).unwrap();
+        let authority = directory.path().join("Xauthority");
+        fs::write(&authority, "test").unwrap();
+        fs::set_permissions(&authority, fs::Permissions::from_mode(0o600)).unwrap();
+        let config = Config::try_parse_from(["test"]).unwrap();
+        let owner = unsafe { libc::geteuid() };
+        let target = physical_target_from_environment(
+            &config,
+            owner,
+            Some(directory.path()),
+            Some(Path::new("wayland-2")),
+            Some(":42"),
+            Some(&authority),
+            None,
+            Some("wayland"),
+        )
+        .unwrap();
+        assert_eq!(target.wayland_socket, Some(second.clone()));
+        assert_eq!(target.x11_display, None);
+        let x11 = physical_target_from_environment(
+            &config,
+            owner,
+            Some(directory.path()),
+            None,
+            Some(":42"),
+            Some(&authority),
+            None,
+            Some("x11"),
+        )
+        .unwrap();
+        assert_eq!(x11.x11_display.as_deref(), Some(":42"));
+        assert!(x11.wayland_socket.is_none());
+        assert!(
+            physical_target_from_environment(
+                &config,
+                owner,
+                Some(directory.path()),
+                None,
+                Some(":42"),
+                Some(&authority),
+                None,
+                Some("wayland")
+            )
+            .is_err()
+        );
+        fs::remove_file(&first).unwrap();
+        let target = physical_target_from_environment(
+            &config,
+            owner,
+            Some(directory.path()),
+            None,
+            Some(":42"),
+            Some(&authority),
+            None,
+            Some("wayland"),
+        )
+        .unwrap();
+        assert_eq!(target.wayland_socket, Some(second));
+    }
+
+    #[test]
+    fn attached_wayland_target_overrides_ambient_and_never_falls_back() {
+        use clap::Parser;
+        use std::os::unix::net::UnixListener;
+        let directory = private_runtime();
+        let ambient = directory.path().join("wayland-0");
+        let attached = directory.path().join("wayland-2");
+        let _ambient = UnixListener::bind(&ambient).unwrap();
+        let _attached = UnixListener::bind(&attached).unwrap();
+        let mut config =
+            Config::try_parse_from(["test", "--wayland-socket", attached.to_str().unwrap()])
+                .unwrap();
+        let owner = unsafe { libc::geteuid() };
+        // The service attachment is the exact target, including when the
+        // service process inherited another compositor or no desktop runtime.
+        for runtime in [
+            Some(directory.path()),
+            Some(Path::new("/missing-runtime")),
+            None,
+        ] {
+            for display in [Some(Path::new("wayland-0")), None] {
+                let target = physical_target_from_environment(
+                    &config,
+                    owner,
+                    runtime,
+                    display,
+                    Some(":0"),
+                    None,
+                    None,
+                    Some("x11"),
+                )
+                .unwrap();
+                assert_eq!(target.wayland_socket.as_deref(), Some(attached.as_path()));
+                assert!(target.x11_display.is_none());
+            }
+        }
+        // Preserve the attachment even if a separate discovery hint is set.
+        config.physical_wayland_socket = Some(ambient.clone());
+        assert_eq!(
+            physical_socket_from_environment(&config, owner, Some(directory.path()), None).unwrap(),
+            attached,
+        );
+        // An invalid explicit target must fail, never switch to the ambient
+        // desktop or to the physical discovery hint.
+        fs::remove_file(&attached).unwrap();
+        assert!(
+            physical_target_from_environment(
+                &config,
+                owner,
+                Some(directory.path()),
+                Some(Path::new("wayland-0")),
+                None,
+                None,
+                None,
+                Some("wayland"),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_x11_target_uses_exact_authority_without_wayland_fallback() {
+        use clap::Parser;
+        let directory = private_runtime();
+        let authority = directory.path().join("Xauthority");
+        fs::write(&authority, "test").unwrap();
+        fs::set_permissions(&authority, fs::Permissions::from_mode(0o600)).unwrap();
+        let mut config = Config::try_parse_from(["test", "--x11-display", ":23"]).unwrap();
+        config.xauthority = Some(authority.clone());
+        let owner = unsafe { libc::geteuid() };
+        let target = physical_target_from_environment(
+            &config,
+            owner,
+            Some(directory.path()),
+            Some(Path::new("wayland-missing")),
+            Some(":0"),
+            None,
+            None,
+            Some("wayland"),
+        )
+        .unwrap();
+        assert_eq!(target.x11_display.as_deref(), Some(":23"));
+        assert_eq!(target.xauthority.as_deref(), Some(authority.as_path()));
+        assert!(target.wayland_socket.is_none());
+        fs::set_permissions(&authority, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            physical_target_from_environment(
+                &config,
+                owner,
+                Some(directory.path()),
+                None,
+                None,
+                None,
+                None,
+                None
+            )
+            .is_err()
+        );
+        fs::set_permissions(&authority, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(
+            physical_target_from_environment(
+                &config,
+                owner + 1,
+                Some(directory.path()),
+                None,
+                None,
+                None,
+                None,
+                None
+            )
+            .is_err()
+        );
+        let link = directory.path().join("linked-authority");
+        symlink(&authority, &link).unwrap();
+        config.xauthority = Some(link);
+        assert!(
+            physical_target_from_environment(
+                &config,
+                owner,
+                Some(directory.path()),
+                None,
+                None,
+                None,
+                None,
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn ambient_local_x11_is_selected_only_when_wayland_is_absent() {
+        use clap::Parser;
+        use std::os::unix::net::UnixListener;
+        let directory = private_runtime();
+        let authority = directory.path().join("Xauthority");
+        fs::write(&authority, "test").unwrap();
+        fs::set_permissions(&authority, fs::Permissions::from_mode(0o600)).unwrap();
+        let config = Config::try_parse_from(["test"]).unwrap();
+        let owner = unsafe { libc::geteuid() };
+        let target = physical_target_from_environment(
+            &config,
+            owner,
+            Some(directory.path()),
+            None,
+            Some(":7.1"),
+            Some(&authority),
+            None,
+            Some("x11"),
+        )
+        .unwrap();
+        assert_eq!(target.x11_display.as_deref(), Some(":7.1"));
+        let ambient = physical_target_from_environment(
+            &config,
+            owner,
+            Some(directory.path()),
+            None,
+            Some(":7.1"),
+            Some(&authority),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(ambient.x11_display.as_deref(), Some(":7.1"));
+        let socket = directory.path().join("wayland-0");
+        let _listener = UnixListener::bind(&socket).unwrap();
+        assert!(
+            physical_target_from_environment(
+                &config,
+                owner,
+                Some(directory.path()),
+                None,
+                Some(":7.1"),
+                Some(&authority),
+                None,
+                None,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("both X11 and Wayland sessions are possible")
+        );
+        assert!(
+            physical_target_from_environment(
+                &config,
+                owner,
+                Some(directory.path()),
+                Some(Path::new("wayland-missing")),
+                Some(":7.1"),
+                Some(&authority),
+                None,
+                Some("wayland")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn external_attachment_rejects_non_socket_and_unowned_runtime() {
+        use clap::Parser;
+        use std::os::unix::net::UnixListener;
+        let directory = private_runtime();
+        let path = directory.path().join("wayland-file");
+        fs::write(&path, "not a socket").unwrap();
+        let config =
+            Config::try_parse_from(["test", "--wayland-socket", path.to_str().unwrap()]).unwrap();
+        assert!(Session::start(&config).is_err());
+        fs::remove_file(&path).unwrap();
+        let _listener = UnixListener::bind(&path).unwrap();
+        let external = Session::start(&config).unwrap();
+        assert_eq!(external.socket, path);
+        assert!(!external.is_owned());
+        let persistent = Session::attached(
+            directory.path().to_path_buf(),
+            path.clone(),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(persistent.is_owned());
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(Session::start(&config).is_err());
     }
 
     #[test]
@@ -773,6 +1434,8 @@ mod tests {
             pulse_server: None,
             pulse_client_config: None,
             audio_source: None,
+            target: None,
+            owned: true,
             children: vec![child],
             temporary: None,
             lock: None,

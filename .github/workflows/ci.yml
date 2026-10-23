@@ -19,7 +19,7 @@ jobs:
             printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
           fi
           sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libpulse-dev cmake nasm pkg-config ffmpeg xvfb libxtst6 python3 openssl
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libpulse-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev cmake nasm pkg-config ffmpeg xvfb xauth libxtst6 python3 openssl
           if apt-cache show freerdp3-x11 >/dev/null 2>&1; then
             sudo apt-get install -y freerdp3-x11
           else
@@ -39,13 +39,16 @@ jobs:
       - name: Test workspace including MCP HTTP, authorization and input cleanup
         run: cargo test --workspace --locked --features bundled-jpeg
       - run: cargo clippy --workspace --locked --features bundled-jpeg --all-targets -- -D warnings
-      - run: cargo test --workspace --locked --features bundled-jpeg,rdp
-      - run: cargo clippy --workspace --locked --features bundled-jpeg,rdp --all-targets -- -D warnings
+      - run: cargo test --workspace --locked --features bundled-jpeg,rdp,portal
+      - run: cargo clippy --workspace --locked --features bundled-jpeg,rdp,portal --all-targets -- -D warnings
       - name: FreeRDP interoperability on a private Xvfb display
         run: |
           rdp_client=$(command -v xfreerdp3 || command -v xfreerdp)
           rdp_xvfb=$(command -v Xvfb)
-          LRD_TEST_FREERDP="$rdp_client" LRD_TEST_XVFB="$rdp_xvfb" cargo test --locked --features bundled-jpeg,rdp freerdp_tcp_tls_bitmap_input_resize_reconnect_and_denials -- --ignored --nocapture
+          LRD_TEST_FREERDP="$rdp_client" LRD_TEST_XVFB="$rdp_xvfb" cargo test --locked --features bundled-jpeg,rdp,portal freerdp_tcp_tls_bitmap_input_resize_reconnect_and_denials -- --ignored --nocapture
+      - name: X11 capture, input and clipboard on private authenticated displays
+        run: |
+          LRD_TEST_CARGO_FEATURES=bundled-jpeg,rdp,portal LRD_TEST_XVFB="$(command -v Xvfb)" LRD_TEST_X11_WORKER="$PWD/target/debug/lightos-remoted" bash tests/x11-backend.sh
       - name: AUR bootstrap, recovery and published-release guards
         run: |
           bash tests/aur-bootstrap.sh
@@ -63,7 +66,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libpulse-dev cmake nasm pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libpulse-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev cmake nasm pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -74,7 +77,7 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-      - run: cargo build --release --locked --features bundled-jpeg,rdp
+      - run: cargo build --release --locked --features bundled-jpeg,rdp,portal
       - name: Package Linux x86_64 binary
         shell: bash
         run: |

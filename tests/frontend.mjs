@@ -76,10 +76,11 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}) {
   };
   document.createElement = () => new Target();
   const draws = [];
+  const clears = [];
   nodes.viewport.classList.toggle("fit", true);
   nodes.viewport.requestFullscreen = async () => { document.fullscreenElement = nodes.viewport; document.fire("fullscreenchange"); };
   document.exitFullscreen = async () => { document.fullscreenElement = null; document.fire("fullscreenchange"); };
-  nodes.desktop.getContext = () => ({ drawImage: (...args) => draws.push(args) });
+  nodes.desktop.getContext = () => ({ drawImage: (...args) => draws.push(args), clearRect: (...args) => clears.push(args) });
   nodes.width.value = "1280";
   nodes.height.value = "720";
   const window = new Target();
@@ -165,7 +166,7 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}) {
     animationFrames.clear();
     for (const callback of callbacks) callback();
   };
-  return { nodes, document, window, sockets, ready, fireKey, run, timers, tick, decodes, draws, contexts, navigator, AudioContext, paint, animationFrames, advance: (elapsed) => { now += elapsed; } };
+  return { nodes, document, window, sockets, ready, fireKey, run, timers, tick, decodes, draws, clears, contexts, navigator, AudioContext, paint, animationFrames, advance: (elapsed) => { now += elapsed; } };
 }
 
 const desktopChoices = [
@@ -276,7 +277,7 @@ test("desktop selector is capability-gated, rejects unavailable modes and reload
   assert.equal(socket.readyState, 1);
   assert.equal(app.nodes["desktop-source"].value, "virtual");
   assert.match(app.nodes["desktop-status"].textContent, /未找到物理会话/);
-  assert.equal(new URL(harness().sockets[0].url).searchParams.get("desktop"), "virtual");
+  assert.equal(new URL(harness().sockets[0].url).searchParams.get("desktop"), null);
 });
 
 test("desktop switch releases input, ignores old readiness and connects only after old close", async () => {
@@ -1082,9 +1083,52 @@ function pcm(frames = 1) {
   return data;
 }
 
+
+test("initial connection uses the service default and confirmed physical reconnect stays physical", () => {
+  const app = harness();
+  const first = app.sockets[0];
+  assert.equal(new URL(first.url).searchParams.has("desktop"), false);
+  first.open();
+  first.json({ type: "ready", width: 1280, height: 720, desktop: "physical" });
+  first.finishClose();
+  app.tick();
+  assert.equal(new URL(app.sockets.at(-1).url).searchParams.get("desktop"), "physical");
+});
+
+test("accepted initialization does not repeat consent after denial or interrupted transport", () => {
+  for (const denied of [false, true]) {
+    const states = [];
+    const app = harness("/", new Map(), { onControls: (state) => states.push(state) });
+    const first = app.sockets[0];
+    first.open();
+    first.json({ type: "desktop_initializing" });
+    assert.equal([...app.timers.values()][0].delay, 60000);
+    if (denied) first.json({ type: "error", message: "Portal permission denied", retryable: false });
+    first.finishClose();
+    assert.equal(states.at(-1).wanted, false);
+    assert.equal(app.timers.size, 0);
+    app.window.fire("online");
+    assert.equal(app.sockets.length, 1);
+    app.nodes.connection.fire("click");
+    assert.equal(app.sockets.length, 2);
+  }
+});
+
+test("authorization waiting exceeds the old timeout and an accepted initialization timeout needs explicit retry", () => {
+  const app = harness();
+  const first = app.sockets[0];
+  first.open();
+  first.json({ type: "desktop_initializing" });
+  assert.equal(app.tick(), 60000);
+  first.finishClose();
+  assert.equal(app.timers.size, 0);
+  assert.equal(app.sockets.length, 1);
+  assert.match(app.nodes.message.textContent, /initialization timed out/);
+});
+
 test("same-origin socket, readiness gates input, evdev mappings have no XKB offset", () => {
   const app = harness();
-  assert.equal(app.sockets[0].url, "wss://desktop.test/ws?desktop=virtual");
+  assert.equal(app.sockets[0].url, "wss://desktop.test/ws");
   app.fireKey("KeyA");
   assert.deepEqual(app.sockets[0].sent, []);
   const socket = app.ready();
@@ -1105,7 +1149,7 @@ test("same-origin socket, readiness gates input, evdev mappings have no XKB offs
 test("nested gateway prefix is preserved for WebSocket and asset URLs", () => {
   const pathname = "/remote-desktop/test-opaque-path/";
   const app = harness(pathname);
-  assert.equal(app.sockets[0].url, "wss://desktop.test/remote-desktop/test-opaque-path/ws?desktop=virtual");
+  assert.equal(app.sockets[0].url, "wss://desktop.test/remote-desktop/test-opaque-path/ws");
   assert.match(builtHtml, /href="\.\/style\.css"/);
   assert.match(builtHtml, /src="\.\/app\.js"/);
   for (const asset of ["style.css", "app.js"]) {
@@ -1113,7 +1157,7 @@ test("nested gateway prefix is preserved for WebSocket and asset URLs", () => {
   }
   app.sockets[0].finishClose();
   app.tick();
-  assert.equal(app.sockets[1].url, "wss://desktop.test/remote-desktop/test-opaque-path/ws?desktop=virtual");
+  assert.equal(app.sockets[1].url, "wss://desktop.test/remote-desktop/test-opaque-path/ws");
 });
 
 test("modifiers pressed before focus are synchronized and right modifiers stay distinct", () => {
@@ -1745,4 +1789,39 @@ test("toolbar docking uses untransformed panel dimensions during entry animation
   app.nodes["tools-toggle"].fire("click", { detail: 0 });
   assert.equal(app.nodes.tools.style.values["--panel-x"], "920px");
   assert.equal(app.nodes.tools.style.values["--panel-y"], "285px");
+});
+
+
+test("desktop pause clears old video and input while preserving the connection for unlock", async () => {
+  const snapshots = [];
+  const app = harness("/", new Map(), { onControls: (value) => snapshots.push(value) });
+  const socket = app.ready();
+  socket.binary(jpeg(21));
+  assert.equal(app.decodes.length, 1);
+  socket.json({ type: "desktop_state", available: false });
+  assert.equal(socket.readyState, 1);
+  assert.equal(app.sockets.length, 1);
+  assert.equal(snapshots.at(-1).ready, false);
+  assert.equal(app.clears.length, 1);
+  socket.binary(jpeg(23));
+  assert.equal(app.decodes.length, 1, "packets received while paused must not be decoded");
+  assert.match(app.nodes["desktop-status"].textContent, /locked/);
+  const before = socket.sent.length;
+  app.fireKey("KeyA");
+  app.nodes.text.value = "private";
+  app.nodes["send-text"].fire("click");
+  assert.ok(socket.sent.slice(before).every((command) => command.type === "release"), "only input cleanup may pass while paused");
+  const stale = bitmap();
+  app.decodes[0].resolve(stale);
+  await flush();
+  assert.equal(stale.closed, true);
+  assert.equal(app.draws.length, 0, "pending decoded frame must not repaint over the cleared canvas");
+  socket.json({ type: "desktop_state", available: true });
+  assert.equal(snapshots.at(-1).ready, true);
+  socket.binary(jpeg(22));
+  app.decodes[1].resolve(bitmap());
+  await flush();
+  assert.equal(app.draws.length, 1);
+  assert.equal(socket.readyState, 1);
+  assert.equal(app.sockets.length, 1);
 });

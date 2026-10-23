@@ -116,6 +116,7 @@ impl Harness {
                 completed.recv_timeout(Duration::from_secs(1)).unwrap();
                 true
             }),
+            privacy_state: Arc::new(|| Some(0)),
         };
         async fn basic(request: Request<Body>, next: Next) -> Response {
             if !credentials_match(request.headers(), "lightos", "test-mcp-long-password") {
@@ -1178,6 +1179,7 @@ async fn live_mcp_sse_does_not_block_transport_shutdown() {
         owned: true,
         text_probe: None,
         release_input: Arc::new(|| true),
+        privacy_state: Arc::new(|| Some(0)),
     };
     let app = transport_with_desktop(store.clone(), desktop);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

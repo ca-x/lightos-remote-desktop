@@ -19,7 +19,8 @@
   键盘菜单可组合任意受支持的物理按键与 Ctrl / Alt / Shift / Super，直接发送到远程机器，绕过本地快捷键拦截，无需修改宿主机绑定。窗口模式不会自动进入全屏；浏览器 F11 全屏不会启用 Keyboard Lock API。每次通过页面进入全屏都会重新尝试捕获，包含上级元素覆盖桌面的情况；授权失败后，点击全屏桌面可重试。捕获状态下 Ctrl + V 使用远程剪贴板，窗口模式下粘贴会传入本地文本。
   如果 Super 或 Alt + Tab 仍作用于本机 Omarchy / Hyprland，可用 `--ozone-platform=wayland` 让 Chrome / Chromium 原生运行在 Wayland 上，以便请求合成器的快捷键抑制协议。以顶层 HTTPS 或 localhost 页面打开桌面，并允许键盘权限。参见 [Chrome Keyboard Lock 要求](https://developer.chrome.com/docs/capabilities/web-apis/keyboard-lock)和 [Chromium Wayland 实现](https://chromium.googlesource.com/chromium/src/+/main/ui/ozone/platform/wayland/host/wayland_keyboard.cc)。
 - 工具栏的连接信息菜单显示实际绘制 FPS、编码和分辨率，以及应用层 WebSocket RTT，包括最新值和最近 30 次响应的 P95。RTT 包含排队时间，不等于输入到画面的延迟。静态桌面会跳过重复帧，空闲时 FPS 较低属于正常现象；测量使用浏览器单调时钟。
-- 使用 libwayshot 和标准 Wayland 协议进行原生截图与虚拟键鼠输入，支持 Unicode 文本注入和按住输入的清理。画面包含合成器实际绘制的光标，包括文本、缩放、拖拽和应用自定义形状。浏览器会隐藏本地指针以免出现双光标，远程光标移动受视频帧率和延迟影响。
+- 通过 `DesktopBackend` trait 统一采集、键鼠输入和文本剪贴板，并在可信目标会话上自动选择原生 Wayland、Portal 或 X11。原生 Wayland 使用 libwayshot 与虚拟输入协议；GNOME / KDE 在能核实唯一 Portal 实现及目标 compositor 身份时，可使用共享 RemoteDesktop / ScreenCast 授权与 PipeWire；X11 使用 x11rb、enigo 和 arboard，并隔离目标 display / authority。发现阶段不弹授权窗口，实际连接才请求 Portal 授权；拒绝后不会切换路径绕过授权。X11 已有独立 Xvfb 验收；Portal 尚未在 GNOME / KDE 真机和分数缩放环境验收，限制见[运行平台说明](docs/runtime-platforms.md)。
+- 原生 Wayland 支持 Unicode 文本注入和按住输入的清理。画面包含合成器实际绘制的光标，包括文本、缩放、拖拽和应用自定义形状。浏览器会隐藏本地指针以免出现双光标，远程光标移动受视频帧率和延迟影响。
 - 在隔离的 Cage / wlroots 环境中运行嵌套 Hyprland，使用私有 D-Bus，并清理所拥有的进程组，不修改 UWSM 源码。
 - 保存编码选择（自动 / H.264 / JPEG）和传输调度策略（自动 / 低延迟 / 流畅）。显示控制、媒体编码和传输调度已拆成独立 crate，桌面后端、实际能力探测和平台限制参见[运行平台说明](docs/runtime-platforms.md)。
 - 支持动态分辨率、文本剪贴板，以及可选的私有 PipeWire / Pulse 音频 sink 和浏览器音频播放。
@@ -115,8 +116,8 @@ AUR 检测到旧版手动安装时，会保留当前服务和桌面，不自动�
 npm ci
 npm run build
 npm test
-cargo test --locked --features bundled-jpeg
-cargo build --release --locked --features bundled-jpeg
+cargo test --locked --features bundled-jpeg,rdp,portal
+cargo build --release --locked --features bundled-jpeg,rdp,portal
 ```
 
 安装后的程序不需要 Node.js，也不需要单独的前端目录或服务器。`npm run dev` 只预览界面，认证桌面和 WebSocket 集成应使用 Rust 服务验证。资源使用相对 URL，兼容已有路径前缀。
@@ -145,7 +146,9 @@ sudo ./lightos-remoted rollback-service
 
 桌面占满页面，右侧图标打开悬浮工具栏，通过图标提示和焦点标签识别操作。显示模式包括适应窗口、按配置分辨率以 1:1 显示并滚动，以及浏览器全屏。全屏时保留工具栏，Escape 恢复此前的窗口模式。默认跟随浏览器分辨率，在 250 ms 防抖后按有界、偶数的 CSS 像素尺寸调整桌面。手动指定分辨率或切换到 1:1 模式会关闭跟随；关闭后，只改变显示缩放不会调整远程分辨率。剪贴板与分辨率输入位于相应菜单或设置中。
 
-请使用当前稳定版 Rust。原生链接需要 Wayland、libxkbcommon、libpulse、libturbojpeg 3+，以及用于从源码构建 OpenH264 和 libopus 的 C / C++ 工具链与 NASM。也可像 CI 一样使用 `--features bundled-jpeg` 静态内置 libjpeg-turbo，此方式需要 CMake 和 NASM。运行时还需要 Cage、Hyprland、D-Bus、hyprctl 与 wl-clipboard。音频需要 libpulse、pactl、pipewire、pipewire-pulse 和 WirePlumber 0.5+。
+请使用当前稳定版 Rust。原生链接需要 Wayland、libxkbcommon、libpulse、libturbojpeg 3+，以及用于从源码构建 OpenH264 和 libopus 的 C / C++ 工具链与 NASM。`bundled-jpeg` feature 可静态内置 libjpeg-turbo，需要 CMake 和 NASM。正式二进制启用 `bundled-jpeg,rdp,portal`；`portal` 编译还需要 PipeWire / SPA 开发包、pkg-config 和 libclang，运行时动态链接 `libpipewire-0.3.so.0`。不启用此 feature 的自编译版本会明确报告 Portal 不可用。
+
+owned 虚拟桌面需要 Cage、Hyprland 和 D-Bus；附着现有桌面不要求启动这些组件。原生 Wayland 文本剪贴板使用可选的 wl-clipboard；X11 需要 xauth 和可用的 XTest。私有音频需要 libpulse、pactl、pipewire、pipewire-pulse 和 WirePlumber 0.5+。`doctor` 按实际启动模式区分必需和可选依赖，安装了某个命令不代表采集和输入已可用。
 
 每个桌面创建私有音频图，不修改宿主 PulseAudio cookie 或默认 sink；WirePlumber 配置禁用物理音频、蓝牙和视频监视器。视频编码与音频捕获、编码不启动 FFmpeg 子进程。音频使用可取消的原生 Pulse 流，兼容浏览器协商为 128 kbit/s Opus，在 Worker 中解码，再通过 AudioWorklet 播放，PCM 作为兼容路径。原生四包队列将积压限制为 PCM 40 ms 或 Opus 80 ms，浏览器传输与播放队列也有界。悬停 FPS / RTT 可查看视频阶段 P95 和音频缓冲诊断，协议、回退与测量限制参见[音频通道说明](docs/audio-channel.md)。当前独立桌面后端需要访问 `/dev/dri/renderD128` 以进行 GLES 渲染。
 

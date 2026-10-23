@@ -1,7 +1,9 @@
 pub mod audio;
 pub mod audio_channel;
+pub mod backend;
 pub mod config;
 pub mod desktop;
+pub mod diagnostics;
 pub mod handoff;
 pub mod install;
 pub mod mcp;

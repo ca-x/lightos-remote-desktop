@@ -21,7 +21,8 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use display_control::{
-    DisplayController, DisplayMode, DisplayOutput, SessionTarget, WaylandDisplay,
+    DesktopEnvironment, DisplayController, DisplayMode, DisplayOutput, SessionTarget,
+    WaylandDisplay, X11Display,
 };
 use futures_util::{SinkExt, Stream, StreamExt, stream::SplitSink};
 use media_codec::{
@@ -33,8 +34,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use subtle::ConstantTimeEq;
 use tokio::{
-    io::AsyncReadExt,
-    process::Command,
     sync::{mpsc, watch},
     time::timeout,
 };
@@ -42,9 +41,9 @@ use tokio::{
 use crate::{
     audio::{AudioFormat, AudioStream},
     audio_channel::{self, AudioHub},
+    backend::{self, BackendKind, BackendReport, DesktopBackend, InputCommand},
     config::Config,
     session::Session,
-    wayland::{Backend, InputCommand},
 };
 
 static NEXT_CONNECTION: AtomicU64 = AtomicU64::new(1);
@@ -74,7 +73,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub rdp: Arc<crate::rdp::settings::Manager>,
     pub(crate) mcp: Arc<crate::mcp::TokenStore>,
-    pub backend: Arc<Backend>,
+    pub backend: Arc<dyn DesktopBackend>,
     pub session: Arc<Mutex<Session>>,
     controller: Arc<AtomicBool>,
     audio_hub: Arc<AudioHub>,
@@ -84,27 +83,91 @@ pub struct AppState {
     transient_backend: bool,
     displays: Arc<dyn DisplayController>,
     codec_capabilities: Arc<tokio::sync::OnceCell<Vec<CodecCapability>>>,
+    physical_capabilities: Arc<Mutex<Option<PhysicalCapabilities>>>,
+    #[cfg(test)]
+    encode_pause: Option<Arc<EncodePause>>,
+}
+
+#[cfg(test)]
+struct EncodePause {
+    entered: tokio::sync::Notify,
+    release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+}
+
+struct PhysicalCapabilities {
+    target_key: String,
+    checked_at: Instant,
+    result: Result<BackendReport, String>,
 }
 
 fn session_displays(config: &Config, session: &Session, owned: bool) -> Arc<dyn DisplayController> {
-    let target = SessionTarget::wayland(session.socket.clone(), session.runtime.clone());
+    let target = session.target();
     match config.display_backend.controller(
         target.clone(),
-        target.matching_environment_hint(),
+        if target.wayland_socket.is_none() && target.x11_display.is_some() {
+            DesktopEnvironment::X11
+        } else {
+            target.matching_environment_hint()
+        },
         session.signature.as_deref(),
         owned,
     ) {
         Ok(controller) => controller,
         Err(error) => {
             tracing::warn!(%error, "display backend unavailable");
-            Arc::new(WaylandDisplay::new(session.socket.clone()))
+            match target.wayland_socket {
+                Some(socket) => Arc::new(WaylandDisplay::new(socket)),
+                None => Arc::new(X11Display::new(target)),
+            }
         }
     }
 }
 
+// Capture can still use the X11 root window without RandR output metadata.
+fn physical_output_selection(
+    backend: BackendKind,
+    requested: Option<&str>,
+    displays: &dyn DisplayController,
+) -> anyhow::Result<(Vec<DisplayOutput>, Option<String>)> {
+    use anyhow::{Context, ensure};
+    if backend == BackendKind::Portal {
+        ensure!(
+            requested.is_none(),
+            "Portal 显示器由本机授权窗口选择，请重新连接"
+        );
+        return Ok((Vec::new(), None));
+    }
+    let outputs = match displays.outputs() {
+        Ok(outputs) => outputs,
+        Err(error) if backend == BackendKind::X11 && requested.is_none() => {
+            tracing::debug!(%error, "X11 output metadata unavailable; capturing the root window");
+            return Ok((Vec::new(), None));
+        }
+        Err(error) => return Err(error).context("物理显示器枚举失败"),
+    };
+    if backend == BackendKind::X11 && requested.is_none() && outputs.is_empty() {
+        return Ok((outputs, None));
+    }
+    let selected = match requested {
+        Some(name) => outputs.iter().find(|output| output.name == name),
+        None => outputs.first(),
+    }
+    .ok_or_else(|| anyhow::anyhow!("所选显示器不可用，请刷新显示器列表"))?
+    .name
+    .clone();
+    Ok((outputs, Some(selected)))
+}
+
 impl AppState {
-    pub fn new(config: Config, backend: Backend, session: Session) -> Self {
-        let desktop = if config.wayland_socket.is_some() {
+    pub fn new<B: DesktopBackend + 'static>(config: Config, backend: B, session: Session) -> Self {
+        Self::with_backend(config, Arc::new(backend), session)
+    }
+    pub fn with_backend(
+        config: Config,
+        backend: Arc<dyn DesktopBackend>,
+        session: Session,
+    ) -> Self {
+        let desktop = if !session.is_owned() {
             DesktopMode::Physical
         } else {
             DesktopMode::Virtual
@@ -118,9 +181,10 @@ impl AppState {
             rdp,
             mcp,
             codec_capabilities: Arc::new(tokio::sync::OnceCell::new()),
+            physical_capabilities: Arc::new(Mutex::new(None)),
             displays,
             config: Arc::new(config),
-            backend: Arc::new(backend),
+            backend,
             session: Arc::new(Mutex::new(session)),
             controller: Arc::new(AtomicBool::new(false)),
             audio_hub: Arc::new(AudioHub::default()),
@@ -128,6 +192,8 @@ impl AppState {
             output: None,
             outputs: Vec::new(),
             transient_backend: false,
+            #[cfg(test)]
+            encode_pause: None,
         }
     }
 
@@ -153,18 +219,54 @@ impl AppState {
         })
     }
 
-    fn physical_socket(&self) -> anyhow::Result<std::path::PathBuf> {
-        if let Some(socket) = &self.config.wayland_socket {
-            return Ok(socket.clone());
-        }
-        Session::physical_socket(&self.config)
+    fn physical_target(&self) -> anyhow::Result<SessionTarget> {
+        Session::physical_target(&self.config)
     }
 
-    fn desktop_options(&self) -> serde_json::Value {
-        let physical = self.physical_socket();
+    // Blocking probes use an explicit target and never open a consent dialog.
+    fn probe_physical(
+        &self,
+        refresh: bool,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<BackendReport, String> {
+        let target = self.physical_target().map_err(|error| error.to_string())?;
+        let target_key = format!("{target:?}");
+        if !refresh {
+            let cache = self
+                .physical_capabilities
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(cached) = cache.as_ref()
+                && cached.target_key == target_key
+                && cached.checked_at.elapsed() < Duration::from_secs(5)
+            {
+                return cached.result.clone();
+            }
+        }
+        let result = backend::probe(&target, true, cancelled).map_err(|error| format!("{error:#}"));
+        *self
+            .physical_capabilities
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(PhysicalCapabilities {
+            target_key,
+            checked_at: Instant::now(),
+            result: result.clone(),
+        });
+        result
+    }
+
+    fn desktop_options(&self, physical: Result<BackendReport, String>) -> serde_json::Value {
+        let reason = match &physical {
+            Ok(report) => report
+                .require_available()
+                .err()
+                .map(|error| error.to_string()),
+            Err(error) => Some(error.clone()),
+        };
+        let virtual_available = self.desktop == DesktopMode::Virtual;
         json!([
-            {"mode":"virtual","label":"虚拟桌面","available":self.config.wayland_socket.is_none(),"reason":if self.config.wayland_socket.is_none() { "" } else { "服务以外部桌面模式启动" }},
-            {"mode":"physical","label":"物理桌面","available":physical.is_ok(),"reason":physical.err().map(|error| error.to_string())}
+            {"mode":"virtual","label":"虚拟桌面","available":virtual_available,"reason":if virtual_available { "" } else { "服务以外部桌面模式启动" }},
+            {"mode":"physical","label":"物理桌面","available":reason.is_none(),"reason":reason,"capabilities":physical.ok()}
         ])
     }
 
@@ -173,72 +275,78 @@ impl AppState {
         request: DesktopRequest,
         cancelled: Arc<AtomicBool>,
         connection_id: u64,
+        authorization: tokio::sync::oneshot::Sender<()>,
     ) -> anyhow::Result<Self> {
-        use anyhow::Context;
-
+        use anyhow::{Context, ensure};
         let started = Instant::now();
         let mode = request.desktop.unwrap_or(self.desktop);
-        if mode == self.desktop && request.output.is_none() {
+        if mode == self.desktop
+            && request.output.is_none()
+            && !self.backend.is_deferred()
+            && (mode == DesktopMode::Virtual || self.backend.frame_is_fresh(Duration::from_secs(5)))
+        {
             return Ok(self);
         }
-        anyhow::ensure!(mode == DesktopMode::Physical, "虚拟桌面不可用");
-        let socket = self.physical_socket()?;
-        let target = SessionTarget::wayland(
-            socket.clone(),
-            socket.parent().context("missing session runtime")?.into(),
-        );
-        let displays = self.config.display_backend.controller(
-            target.clone(),
-            target.matching_environment_hint(),
-            None,
-            false,
+        ensure!(mode == DesktopMode::Physical, "虚拟桌面不可用");
+        let target = self.physical_target()?;
+        let selection = self
+            .probe_physical(true, Some(&cancelled))
+            .map_err(anyhow::Error::msg)?;
+        let selected_backend = selection.require_available()?;
+        let hint = if target.wayland_socket.is_none() {
+            DesktopEnvironment::X11
+        } else {
+            target.matching_environment_hint()
+        };
+        let displays = self
+            .config
+            .display_backend
+            .controller(target.clone(), hint, None, false)?;
+        // Portal chooses its granted stream; X11 can capture the root without RandR.
+        let (outputs, selected) = physical_output_selection(
+            selected_backend,
+            request.output.as_deref(),
+            displays.as_ref(),
         )?;
-        let outputs = displays.outputs().context("物理显示器枚举失败")?;
-        tracing::info!(
-            connection_id,
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "physical outputs enumerated"
-        );
-        anyhow::ensure!(!cancelled.load(Ordering::Acquire), "桌面连接已取消");
-        let selected = match request.output {
-            Some(name) => outputs.iter().find(|output| output.name == name),
-            None => outputs.first(),
-        }
-        .ok_or_else(|| anyhow::anyhow!("所选显示器不可用，请刷新显示器列表"))?
-        .name
-        .clone();
+        ensure!(!cancelled.load(Ordering::Acquire), "桌面连接已取消");
         let mut config = (*self.config).clone();
         config.session_runtime = None;
-        config.wayland_socket = Some(socket.clone());
-        let session = Session::start(&config)?;
-        let backend = Backend::start_with_output_cancellable(
-            socket,
+        config.wayland_socket = target.wayland_socket.clone();
+        config.x11_display = target.x11_display.clone();
+        config.xauthority = target.xauthority.clone();
+        let session = Session::start_cancellable(&config, cancelled.clone())?;
+        if selected_backend == BackendKind::Portal {
+            let _ = authorization.send(());
+        }
+        let backend = backend::start_selected(
+            selected_backend,
+            target,
             config.fps,
             config.quality,
-            Some(selected.clone()),
+            selected.clone(),
             cancelled.clone(),
         )
         .context("物理桌面采集或输入初始化失败")?;
-        anyhow::ensure!(!cancelled.load(Ordering::Acquire), "桌面连接已取消");
-        tracing::info!(
-            connection_id,
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "physical capture and input ready"
-        );
+        let backend = backend::guarded::attach(backend, session.target())?;
+        ensure!(!cancelled.load(Ordering::Acquire), "桌面连接已取消");
+        tracing::info!(connection_id, elapsed_ms = started.elapsed().as_millis() as u64, kind = ?backend.kind(), "physical capture and input ready");
         Ok(Self {
             rdp: self.rdp,
             codec_capabilities: self.codec_capabilities,
+            physical_capabilities: self.physical_capabilities,
             mcp: self.mcp,
             displays,
             config: self.config,
             controller: self.controller,
             audio_hub: self.audio_hub,
-            backend: Arc::new(backend),
+            backend,
             session: Arc::new(Mutex::new(session)),
             desktop: mode,
-            output: Some(selected),
+            output: selected,
             outputs,
             transient_backend: true,
+            #[cfg(test)]
+            encode_pause: self.encode_pause,
         })
     }
 }
@@ -447,7 +555,7 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
         ("referrer-policy", "no-referrer"),
         (
             "content-security-policy",
-            "default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
+            "default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob: data:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
         ),
     ] {
         response.headers_mut().insert(
@@ -459,7 +567,9 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
 }
 
 async fn health(State(state): State<AppState>) -> impl IntoResponse {
-    let ready = state.backend.frame_is_fresh(Duration::from_secs(5))
+    let ready = !state.backend.is_stopped()
+        && (state.backend.is_deferred()
+            || (!state.backend.paused() && state.backend.frame_is_fresh(Duration::from_secs(5))))
         && state
             .session
             .lock()
@@ -471,39 +581,46 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
             StatusCode::SERVICE_UNAVAILABLE
         },
         axum::Json(
-            json!({"native":true,"ready":ready,"pid":std::process::id(),"transport":"websocket","video_codecs":state.codec_capabilities.get().map(|caps| caps.iter().filter(|c| c.available).map(|c| c.codec).collect::<Vec<_>>()).unwrap_or_default(),"codec_probe_complete":state.codec_capabilities.initialized()}),
+            json!({"native":true,"ready":ready,"requires_consent":state.backend.is_deferred(),"desktop_backend":state.backend.kind(),"pid":std::process::id(),"transport":"websocket","video_codecs":state.codec_capabilities.get().map(|caps| caps.iter().filter(|c| c.available).map(|c| c.codec).collect::<Vec<_>>()).unwrap_or_default(),"codec_probe_complete":state.codec_capabilities.initialized()}),
         ),
     )
 }
 
 async fn desktops(State(state): State<AppState>) -> impl IntoResponse {
-    let options = state.desktop_options();
     let current = state.desktop;
+    let fallback = state.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let socket = state.physical_socket()?;
-        let target = SessionTarget::wayland(
-            socket.clone(),
-            socket
-                .parent()
-                .ok_or_else(|| anyhow::anyhow!("missing session runtime"))?
-                .into(),
-        );
-        state
-            .config
-            .display_backend
-            .controller(
-                target.clone(),
-                target.matching_environment_hint(),
-                None,
-                false,
-            )?
-            .outputs()
+        // Refresh is explicit user discovery; ready messages may reuse this short-lived result.
+        let physical = state.probe_physical(true, None);
+        let options = state.desktop_options(physical.clone());
+        let outputs = (|| -> anyhow::Result<Vec<DisplayOutput>> {
+            let selection = physical.map_err(anyhow::Error::msg)?;
+            if selection.require_available()? == BackendKind::Portal {
+                return Ok(Vec::new());
+            }
+            let target = state.physical_target()?;
+            let hint = if target.wayland_socket.is_none() {
+                DesktopEnvironment::X11
+            } else {
+                target.matching_environment_hint()
+            };
+            state
+                .config
+                .display_backend
+                .controller(target, hint, None, false)?
+                .outputs()
+        })();
+        (options, outputs)
     })
     .await;
-    let (outputs, reason) = match result {
-        Ok(Ok(outputs)) => (outputs, None),
-        Ok(Err(error)) => (Vec::new(), Some(error.to_string())),
-        Err(_) => (Vec::new(), Some("显示器检测失败".to_owned())),
+    let (options, outputs, reason) = match result {
+        Ok((options, Ok(outputs))) => (options, outputs, None),
+        Ok((options, Err(error))) => (options, Vec::new(), Some(error.to_string())),
+        Err(_) => (
+            fallback.desktop_options(Err("显示器检测失败".to_owned())),
+            Vec::new(),
+            Some("显示器检测失败".to_owned()),
+        ),
     };
     axum::Json(json!({"current":current,"desktops":options,"outputs":outputs,"reason":reason}))
 }
@@ -578,13 +695,26 @@ async fn upgrade(
         .on_upgrade(move |mut socket| async move {
             let cancelled = Arc::new(AtomicBool::new(false));
             let initialize_cancelled = cancelled.clone();
+            let (authorization, mut authorization_notice) = tokio::sync::oneshot::channel();
             let mut initialize = tokio::task::spawn_blocking(move || {
-                state.select_desktop(request, initialize_cancelled, connection_id)
+                state.select_desktop(request, initialize_cancelled, connection_id, authorization)
             });
-            let result = tokio::select! {
-                biased;
-                result = &mut initialize => Some(result),
-                _ = startup_disconnect(&mut socket) => None,
+            let mut awaiting_authorization = true;
+            let result = loop {
+                tokio::select! {
+                    biased;
+                    result = &mut initialize => break Some(result),
+                    notice = &mut authorization_notice, if awaiting_authorization => {
+                        awaiting_authorization = false;
+                        if notice.is_ok() {
+                            let message = Message::Text(json!({"type":"desktop_initializing", "requires_consent":true}).to_string().into());
+                            if !matches!(timeout(Duration::from_secs(1), socket.send(message)).await, Ok(Ok(()))) {
+                                break None;
+                            }
+                        }
+                    },
+                    _ = startup_disconnect(&mut socket) => break None,
+                }
             };
             let Some(result) = result else {
                 cancelled.store(true, Ordering::Release);
@@ -617,8 +747,8 @@ async fn upgrade(
                         _ => "桌面连接失败".to_owned(),
                     };
                     tracing::warn!(connection_id, %error, elapsed_ms = started.elapsed().as_millis() as u64, "desktop initialization failed");
-                    let _ =
-                        timeout(Duration::from_secs(3), socket.send(error_message(&error))).await;
+                    let failure = Message::Text(json!({"type":"error", "message":error, "retryable":false}).to_string().into());
+                    let _ = timeout(Duration::from_secs(3), socket.send(failure)).await;
                     let _ = timeout(Duration::from_secs(1), socket.close()).await;
                 }
             }
@@ -690,13 +820,8 @@ async fn connection(
     let (control_tx, mut controls) = mpsc::channel(16);
     let (pacing_tx, mut pacing) =
         watch::channel(FrameScheduler::new(state.config.fps).expect("validated frame rate"));
-    let receive = receive_commands(
-        reader,
-        state.backend.input.clone(),
-        control_tx,
-        pacing_tx.clone(),
-    );
-    let mut frames = state.backend.frames.clone();
+    let receive = receive_commands(reader, state.backend.input(), control_tx, pacing_tx.clone());
+    let mut frames = state.backend.frames();
     let dimensions = frames
         .borrow()
         .as_ref()
@@ -724,8 +849,14 @@ async fn connection(
         .filter(|c| c.available)
         .map(|c| c.codec)
         .collect();
+    let discovery = state.clone();
+    let desktop_options = tokio::task::spawn_blocking(move || {
+        discovery.desktop_options(discovery.probe_physical(false, None))
+    })
+    .await
+    .ok()?;
     let ready = Message::Text(
-        json!({"type":"ready","backend_selection":true,"video_request_ids":true,"control_release":true,"resize_scale":display_capabilities.resize_scale,"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":"embedded","audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktops":state.desktop_options(),"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
+        json!({"type":"ready","backend_selection":true,"video_request_ids":true,"control_release":true,"resize_scale":display_capabilities.resize_scale,"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":if state.backend.cursor_embedded() { "embedded" } else { "default" },"audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktop_backend":state.backend.kind(),"desktops":desktop_options,"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
 
             .to_string()
             .into(),
@@ -766,14 +897,58 @@ async fn connection(
     let mut encode_samples = LatencySamples::default();
     let mut send_samples = LatencySamples::default();
     let transmit = async {
+        let mut capture_paused = false;
+        let mut observed_epoch = state.backend.privacy_epoch();
+        // An old H264 encoder can retain raw pixels even when a lock and
+        // unlock complete before the next frame is published.
+        macro_rules! discard_stale_frame {
+            ($epoch:expr) => {
+                if !frame_privacy_current(state.backend.as_ref(), $epoch) {
+                    encoder.take();
+                    codec = None;
+                    applied_rate = None;
+                    applied_jpeg_quality = None;
+                    pacing_tx.send_modify(FrameScheduler::reset);
+                    continue;
+                }
+            };
+        }
         loop {
+            let current_epoch = state.backend.privacy_epoch();
+            if current_epoch != observed_epoch {
+                encoder.take();
+                codec = None;
+                applied_rate = None;
+                applied_jpeg_quality = None;
+                pacing_tx.send_modify(FrameScheduler::reset);
+                observed_epoch = current_epoch;
+            }
             let frame_deadline = pacing.borrow().next_frame_at();
-            let refresh_requested = pacing.borrow().refresh_requested();
+            let refresh_requested = !capture_paused && pacing.borrow().refresh_requested();
+            let mut outgoing_epoch = None;
             let outgoing = tokio::select! {
-                changed = wait_for_video_frame(&mut frames, refresh_requested, frame_deadline), if !pacing.borrow().waiting() => {
+                changed = wait_for_video_frame(&mut frames, refresh_requested, frame_deadline), if !pacing.borrow().waiting() || state.backend.paused() => {
                     if changed.is_err() { break; }
+                    let frame_epoch = state.backend.privacy_epoch();
                     let frame = frames.borrow_and_update().clone();
-                    let Some(frame) = frame else { break; };
+                    let Some(frame) = frame else {
+                        if state.backend.is_stopped() { break; }
+                        if !capture_paused {
+                            capture_paused = true;
+                            encoder.take(); codec = None;
+                            pacing_tx.send_modify(FrameScheduler::reset);
+                            let paused = Message::Text(json!({"type":"desktop_state","available":false}).to_string().into());
+                            if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(paused)).await, Ok(Ok(()))) { break; }
+                        }
+                        continue;
+                    };
+                    discard_stale_frame!(frame_epoch);
+                    if capture_paused {
+                        capture_paused = false;
+                        let resumed = Message::Text(json!({"type":"desktop_state","available":true}).to_string().into());
+                        if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(resumed)).await, Ok(Ok(()))) { break; }
+                        discard_stale_frame!(frame_epoch);
+                    }
                     pacing_tx.send_modify(|flow| flow.begin_frame((frame.width, frame.height)));
                     let target = pacing.borrow().target();
                     let encode_started = Instant::now();
@@ -795,6 +970,7 @@ async fn connection(
                             applied_jpeg_quality = None;
                             Ok::<_, anyhow::Error>(encoded)
                         }.await;
+                        discard_stale_frame!(frame_epoch);
                         match result {
                             Ok(encoded) => {
                                 if encoded.data.is_empty() {
@@ -807,8 +983,10 @@ async fn connection(
                                 }
                                 if let Some(configuration) = encoded.codec
                                     && codec.as_ref() != Some(&configuration) {
+                                        discard_stale_frame!(frame_epoch);
                                         let message = Message::Text(json!({"type":"video_config","request_id":video_request_id,"codec":configuration,"width":frame.width,"height":frame.height,"backend":selected_backend.map(EncoderBackend::id),"fallback_reason":fallback_reason}).to_string().into());
                                         if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(message)).await, Ok(Ok(()))) { break; }
+                                        discard_stale_frame!(frame_epoch);
                                         codec = Some(configuration);
                                 }
                                 let mut bytes = Vec::with_capacity(encoded.data.len() + 10);
@@ -828,8 +1006,10 @@ async fn connection(
                                 encoder.take(); codec = None;
                                 applied_rate = None;
                                 if h264 { continue; }
+                                discard_stale_frame!(frame_epoch);
                                 let message = Message::Text(json!({"type":"video_config","request_id":video_request_id,"codec":"jpeg","backend":"turbojpeg","fallback_reason":fallback_reason}).to_string().into());
                                 if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(message)).await, Ok(Ok(()))) { break; }
+                                discard_stale_frame!(frame_epoch);
                             }
                         }
                     }
@@ -839,24 +1019,41 @@ async fn connection(
                             let quality = jpeg_quality(state.config.quality, pacing.borrow().target().quality_percent);
                             applied_jpeg_quality = Some(quality);
                             applied_rate = None;
-                            let jpeg = match tokio::task::spawn_blocking(move || frame.jpeg(quality)).await {
+                            #[cfg(test)]
+                            let encode_pause = state.encode_pause.clone();
+                            let jpeg = match tokio::task::spawn_blocking(move || {
+                                #[cfg(test)]
+                                if let Some(pause) = encode_pause {
+                                    let release = pause.release.lock().unwrap().take();
+                                    if let Some(release) = release {
+                                        pause.entered.notify_one();
+                                        release.recv_timeout(Duration::from_secs(3)).expect("resume JPEG encode");
+                                    }
+                                }
+                                frame.jpeg(quality)
+                            }).await {
                                 Ok(Ok(jpeg)) => jpeg,
                                 result => {
                                     tracing::warn!(?result, "JPEG encoding failed");
                                     break;
                                 }
                             };
+                            discard_stale_frame!(frame_epoch);
                             let mut packet = Vec::with_capacity(jpeg.len() + 1);
                             packet.push(1); packet.extend_from_slice(&jpeg); packet
                         }
                     };
+                    discard_stale_frame!(frame_epoch);
                     frame_id += 1;
                     pacing_tx.send_modify(|flow| flow.sent(frame_id, Instant::now()));
                     if pacing.borrow().sequenced() {
+                        discard_stale_frame!(frame_epoch);
                         let metadata = Message::Text(json!({"type":"frame_id","id":frame_id}).to_string().into());
                         if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(metadata)).await, Ok(Ok(()))) { break; }
+                        discard_stale_frame!(frame_epoch);
                     }
                     encode_samples.record(encode_started.elapsed());
+                    outgoing_epoch = Some(frame_epoch);
                     Some(Message::Binary(packet.into()))
                 }
                 _ = qos_ticks.tick() => {
@@ -943,6 +1140,12 @@ async fn connection(
             };
             if let Some(message) = outgoing {
                 let video_packet = matches!(&message, Message::Binary(bytes) if matches!(bytes.first(), Some(1 | 3)));
+                if let Some(epoch) = outgoing_epoch {
+                    discard_stale_frame!(epoch);
+                }
+                if video_packet && state.backend.paused() {
+                    continue;
+                }
                 let started = Instant::now();
                 if !matches!(
                     timeout(STREAM_WRITE_TIMEOUT, writer.send(message)).await,
@@ -969,7 +1172,7 @@ async fn connection(
     audio.take();
     let _ = timeout(
         Duration::from_secs(1),
-        state.backend.input.send(InputCommand::Release),
+        state.backend.input().send(InputCommand::Release),
     )
     .await;
     Some(ConnectionEnd {
@@ -982,6 +1185,10 @@ async fn connection(
 // receive remains independently polled while a video write waits. A timed-out
 // write still closes the transport: a partial WS frame cannot be retried.
 const STREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn frame_privacy_current(backend: &dyn DesktopBackend, epoch: u64) -> bool {
+    !backend.paused() && !backend.is_stopped() && backend.privacy_epoch() == epoch
+}
 
 fn encoder_rate(width: u32, height: u32, cap: u32, target: RateTarget) -> EncoderRate {
     let bitrate = u64::from(media_codec::default_bitrate(width, height))
@@ -1115,29 +1322,9 @@ async fn handle_command(
             )));
         }
         "clipboard_get" => {
-            let mut command = helper(state, "wl-paste");
-            command.args(["--no-newline", "--type", "text"]);
-            command.stdout(std::process::Stdio::piped());
-            let mut child = command.spawn()?;
-            let stdout = child
-                .stdout
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("clipboard pipe unavailable"))?;
-            let mut output = Vec::new();
-            timeout(
-                Duration::from_secs(2),
-                stdout.take(64 * 1024 + 1).read_to_end(&mut output),
-            )
-            .await??;
-            anyhow::ensure!(output.len() <= 64 * 1024, "clipboard too large");
-            anyhow::ensure!(
-                timeout(Duration::from_secs(2), child.wait())
-                    .await??
-                    .success(),
-                "clipboard unavailable"
-            );
+            let content = state.backend.clipboard_read().await?;
             return Ok(Some(Message::Text(
-                json!({"type":"clipboard","text":String::from_utf8_lossy(&output)})
+                json!({"type":"clipboard","text":content})
                     .to_string()
                     .into(),
             )));
@@ -1147,11 +1334,11 @@ async fn handle_command(
                 .get("text")
                 .and_then(|text| text.as_str())
                 .unwrap_or_default();
-            anyhow::ensure!(content.len() <= 64 * 1024, "clipboard too large");
-            let mut command = helper(state, "wl-copy");
-            command.args(["--type", "text/plain;charset=utf-8", "--", content]);
-            let status = timeout(Duration::from_secs(2), command.status()).await??;
-            anyhow::ensure!(status.success(), "clipboard write failed");
+            anyhow::ensure!(
+                content.len() <= backend::MAX_CLIPBOARD_BYTES,
+                "clipboard too large"
+            );
+            state.backend.clipboard_write(content).await?;
         }
         "resize" => {
             let width = value.get("width").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -1184,27 +1371,14 @@ async fn handle_command(
         _ => {
             let input: InputCommand = serde_json::from_value(value)?;
             input.validate()?;
-            timeout(Duration::from_millis(500), state.backend.input.send(input)).await??;
+            timeout(
+                Duration::from_millis(500),
+                state.backend.input().send(input),
+            )
+            .await??;
         }
     }
     Ok(None)
-}
-
-fn helper(state: &AppState, name: &str) -> Command {
-    let session = state.session.lock().unwrap();
-    let mut command = Command::new(name);
-    command
-        .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
-        .env("XDG_RUNTIME_DIR", &session.runtime)
-        .env("WAYLAND_DISPLAY", &session.socket)
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    if let Some(signature) = &session.signature {
-        command.env("HYPRLAND_INSTANCE_SIGNATURE", signature);
-    }
-    session.audio_environment(command.as_std_mut());
-    command
 }
 
 fn error_message(message: &str) -> Message {
@@ -1215,6 +1389,410 @@ fn error_message(message: &str) -> Message {
 mod tests {
     use super::*;
     use tower::ServiceExt;
+
+    struct MissingOutputMetadata(std::sync::atomic::AtomicUsize);
+    impl DisplayController for MissingOutputMetadata {
+        fn outputs(&self) -> anyhow::Result<Vec<DisplayOutput>> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            anyhow::bail!("RandR extension unavailable")
+        }
+        fn capabilities(
+            &self,
+        ) -> futures_util::future::BoxFuture<'_, display_control::DisplayCapabilities> {
+            Box::pin(async {
+                display_control::DisplayCapabilities {
+                    resize: false,
+                    resize_scale: false,
+                    reason: Some("test display".into()),
+                }
+            })
+        }
+        fn resize<'a>(
+            &'a self,
+            _: Option<&'a str>,
+            _: DisplayMode,
+            _: u32,
+        ) -> futures_util::future::BoxFuture<'a, anyhow::Result<DisplayMode>> {
+            Box::pin(async { anyhow::bail!("read-only test display") })
+        }
+    }
+
+    #[test]
+    fn x11_root_capture_survives_missing_randr_but_named_outputs_fail() {
+        let displays = MissingOutputMetadata(std::sync::atomic::AtomicUsize::new(0));
+        let (outputs, selected) =
+            physical_output_selection(BackendKind::X11, None, &displays).unwrap();
+        assert!(outputs.is_empty());
+        assert!(selected.is_none());
+        assert!(physical_output_selection(BackendKind::X11, Some("HDMI-1"), &displays).is_err());
+        assert!(physical_output_selection(BackendKind::Wayland, None, &displays).is_err());
+    }
+
+    #[test]
+    fn portal_chooser_does_not_depend_on_separate_output_metadata() {
+        let displays = MissingOutputMetadata(std::sync::atomic::AtomicUsize::new(0));
+        let (outputs, selected) =
+            physical_output_selection(BackendKind::Portal, None, &displays).unwrap();
+        assert!(outputs.is_empty());
+        assert!(selected.is_none());
+        assert!(physical_output_selection(BackendKind::Portal, Some("eDP-1"), &displays).is_err());
+        assert_eq!(displays.0.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn deferred_portal_transport_stays_ready_after_controller_release() {
+        use clap::Parser;
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let socket_path = directory.path().join("wayland-test");
+        let _socket = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+        let mut config =
+            Config::try_parse_from(["test", "--password", "test-pending-portal-secret"]).unwrap();
+        config.wayland_socket = Some(socket_path);
+        config.mcp_settings = Some(directory.path().join("mcp.json"));
+        config.rdp.rdp_settings = Some(directory.path().join("rdp.json"));
+        let session = Session::start(&config).unwrap();
+        let backend = Arc::new(crate::backend::DeferredPortalBackend::new());
+        let state = AppState::with_backend(config, backend.clone(), session);
+        assert_eq!(state.desktop, DesktopMode::Physical);
+        assert!(state.backend.frames().borrow().is_none());
+        let response = health(State(state.clone())).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["requires_consent"], true);
+        assert_eq!(body["ready"], true);
+
+        drop(ControllerLease {
+            state: state.clone(),
+        });
+        assert!(
+            !backend.is_stopped(),
+            "failed consent must leave the base transport available"
+        );
+        assert_eq!(
+            health(State(state)).await.into_response().status(),
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn lock_and_unlock_during_encode_never_publish_old_pixels() {
+        use clap::Parser;
+        use futures_util::StreamExt;
+        use tokio_tungstenite::{
+            connect_async,
+            tungstenite::{Message as ClientMessage, client::IntoClientRequest},
+        };
+
+        struct Lockable {
+            frames: watch::Receiver<Option<Arc<crate::backend::Frame>>>,
+            input: mpsc::Sender<InputCommand>,
+            locked: Arc<AtomicBool>,
+            epoch: Arc<AtomicU64>,
+        }
+        impl DesktopBackend for Lockable {
+            fn kind(&self) -> BackendKind {
+                BackendKind::X11
+            }
+            fn frames(&self) -> watch::Receiver<Option<Arc<crate::backend::Frame>>> {
+                self.frames.clone()
+            }
+            fn input(&self) -> mpsc::Sender<InputCommand> {
+                self.input.clone()
+            }
+            fn stop(&self) {}
+            fn paused(&self) -> bool {
+                self.locked.load(Ordering::Acquire)
+            }
+            fn privacy_epoch(&self) -> u64 {
+                self.epoch.load(Ordering::Acquire)
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let socket_path = directory.path().join("wayland-test");
+        let _socket = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+        let session = Session::attached(
+            directory.path().to_owned(),
+            socket_path,
+            None,
+            None,
+            None,
+            None,
+        );
+        let mut config =
+            Config::try_parse_from(["test", "--password", "test-privacy-secret"]).unwrap();
+        config.mcp_settings = Some(directory.path().join("mcp.json"));
+        config.rdp.rdp_settings = Some(directory.path().join("rdp.json"));
+        config.physical_wayland_socket = Some(directory.path().join("no-physical-desktop"));
+        let pixels = [230, 10, 10, 255].repeat(16 * 16);
+        let (capture, frames) = watch::channel(Some(Arc::new(crate::backend::Frame::new(
+            16,
+            16,
+            pixels.into(),
+        ))));
+        let (input, mut commands) = mpsc::channel(128);
+        let input_worker = tokio::spawn(async move { while commands.recv().await.is_some() {} });
+        let locked = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(0));
+        let mut state = AppState::new(
+            config,
+            Lockable {
+                frames,
+                input,
+                locked: locked.clone(),
+                epoch: epoch.clone(),
+            },
+            session,
+        );
+        state.displays = Arc::new(MissingOutputMetadata(std::sync::atomic::AtomicUsize::new(
+            0,
+        )));
+        state.codec_capabilities.set(Vec::new()).unwrap();
+        let (resume_encode, release) = std::sync::mpsc::sync_channel(1);
+        let pause = Arc::new(EncodePause {
+            entered: tokio::sync::Notify::new(),
+            release: Mutex::new(Some(release)),
+        });
+        state.encode_pause = Some(pause.clone());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async { axum::serve(listener, router(state)).await.unwrap() });
+        let mut request = format!("ws://{address}/ws").into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert("Origin", format!("http://{address}").parse().unwrap());
+        request.headers_mut().insert(
+            "Authorization",
+            format!("Basic {}", STANDARD.encode("lightos:test-privacy-secret"))
+                .parse()
+                .unwrap(),
+        );
+        let (mut client, _) = connect_async(request).await.unwrap();
+        timeout(Duration::from_secs(3), pause.entered.notified())
+            .await
+            .unwrap();
+
+        locked.store(true, Ordering::Release);
+        epoch.fetch_add(1, Ordering::AcqRel);
+        capture.send_replace(None);
+        locked.store(false, Ordering::Release);
+        epoch.fetch_add(1, Ordering::AcqRel);
+        let pixels = [10, 10, 230, 255].repeat(16 * 16);
+        capture.send_replace(Some(Arc::new(crate::backend::Frame::new(
+            16,
+            16,
+            pixels.into(),
+        ))));
+        resume_encode.send(()).unwrap();
+
+        loop {
+            let event = timeout(Duration::from_secs(3), client.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if let ClientMessage::Binary(bytes) = event
+                && bytes.first() == Some(&1)
+            {
+                let image = image::load_from_memory(&bytes[1..]).unwrap().to_rgb8();
+                let pixel = image.get_pixel(8, 8);
+                assert!(
+                    pixel[2] > pixel[0],
+                    "pre-lock pixels were published after unlock: {pixel:?}"
+                );
+                break;
+            }
+        }
+        server.abort();
+        input_worker.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn paused_backend_retains_websocket_and_resumes_after_unlock() {
+        use clap::Parser;
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::{
+            connect_async,
+            tungstenite::{Message as ClientMessage, client::IntoClientRequest},
+        };
+        struct Pausable {
+            frames: watch::Receiver<Option<Arc<crate::backend::Frame>>>,
+            input: mpsc::Sender<InputCommand>,
+            paused: Arc<AtomicBool>,
+        }
+        impl DesktopBackend for Pausable {
+            fn kind(&self) -> BackendKind {
+                BackendKind::X11
+            }
+            fn frames(&self) -> watch::Receiver<Option<Arc<crate::backend::Frame>>> {
+                self.frames.clone()
+            }
+            fn input(&self) -> mpsc::Sender<InputCommand> {
+                self.input.clone()
+            }
+            fn paused(&self) -> bool {
+                self.paused.load(Ordering::Acquire)
+            }
+            fn stop(&self) {}
+        }
+        struct TestDisplays;
+        impl DisplayController for TestDisplays {
+            fn outputs(&self) -> anyhow::Result<Vec<DisplayOutput>> {
+                Ok(Vec::new())
+            }
+            fn capabilities(
+                &self,
+            ) -> futures_util::future::BoxFuture<'_, display_control::DisplayCapabilities>
+            {
+                Box::pin(async {
+                    display_control::DisplayCapabilities {
+                        resize: false,
+                        resize_scale: false,
+                        reason: Some("test read-only display".into()),
+                    }
+                })
+            }
+            fn resize<'a>(
+                &'a self,
+                _: Option<&'a str>,
+                _: DisplayMode,
+                _: u32,
+            ) -> futures_util::future::BoxFuture<'a, anyhow::Result<DisplayMode>> {
+                Box::pin(async { anyhow::bail!("test read-only display") })
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let socket_path = directory.path().join("wayland-test");
+        let _socket = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+        let session = Session::attached(
+            directory.path().to_owned(),
+            socket_path,
+            None,
+            None,
+            None,
+            None,
+        );
+        let mut config =
+            Config::try_parse_from(["test", "--password", "test-pause-secret"]).unwrap();
+        config.mcp_settings = Some(directory.path().join("mcp.json"));
+        config.rdp.rdp_settings = Some(directory.path().join("rdp.json"));
+        config.physical_wayland_socket = Some(directory.path().join("no-physical-desktop"));
+        let (capture, frames) =
+            watch::channel(Some(Arc::new(crate::backend::Frame::test_frame(8, 8))));
+        let (input, mut commands) = mpsc::channel(128);
+        let input_worker = tokio::spawn(async move {
+            while let Some(command) = commands.recv().await {
+                if let InputCommand::ReleaseSync { done } = command {
+                    let _ = done.send(());
+                }
+            }
+        });
+        let paused = Arc::new(AtomicBool::new(false));
+        let mut state = AppState::new(
+            config,
+            Pausable {
+                frames,
+                input,
+                paused: paused.clone(),
+            },
+            session,
+        );
+        state.displays = Arc::new(TestDisplays);
+        state.codec_capabilities.set(Vec::new()).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async { axum::serve(listener, router(state)).await.unwrap() });
+        let mut request = format!("ws://{address}/ws").into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert("Origin", format!("http://{address}").parse().unwrap());
+        request.headers_mut().insert(
+            "Authorization",
+            format!("Basic {}", STANDARD.encode("lightos:test-pause-secret"))
+                .parse()
+                .unwrap(),
+        );
+        let (mut client, _) = connect_async(request).await.unwrap();
+        async fn next_event<S>(client: &mut S) -> ClientMessage
+        where
+            S: futures_util::Stream<
+                    Item = Result<ClientMessage, tokio_tungstenite::tungstenite::Error>,
+                > + Unpin,
+        {
+            timeout(Duration::from_secs(3), client.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+        }
+        let mut saw_ready = false;
+        loop {
+            match next_event(&mut client).await {
+                ClientMessage::Text(text) => {
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    if value["type"] == "ready" {
+                        assert_eq!(
+                            value["cursor"], "default",
+                            "X11 capture excludes the pointer"
+                        );
+                        saw_ready = true;
+                    }
+                }
+                ClientMessage::Binary(_) => {
+                    assert!(saw_ready);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        paused.store(true, Ordering::Release);
+        capture.send_replace(None);
+        loop {
+            if let ClientMessage::Text(text) = next_event(&mut client).await {
+                let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                if value["type"] == "desktop_state" {
+                    assert_eq!(value["available"], false);
+                    break;
+                }
+            }
+        }
+        // Policy changes while locked must not refresh a cached raw frame.
+        client.send(ClientMessage::Text(r#"{"type":"video_flow","enabled":true,"sequenced":true,"strategy":"quality_first"}"#.into())).await.unwrap();
+        assert!(
+            timeout(Duration::from_millis(350), client.next())
+                .await
+                .is_err()
+        );
+        paused.store(false, Ordering::Release);
+        capture.send_replace(Some(Arc::new(crate::backend::Frame::test_frame(8, 8))));
+        let mut resumed = false;
+        loop {
+            match next_event(&mut client).await {
+                ClientMessage::Text(text) => {
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    if value["type"] == "desktop_state" {
+                        assert_eq!(value["available"], true);
+                        resumed = true;
+                    }
+                }
+                ClientMessage::Binary(_) => {
+                    assert!(resumed);
+                    break;
+                }
+                ClientMessage::Close(_) => panic!("lock closed the desktop connection"),
+                _ => {}
+            }
+        }
+        client.close(None).await.unwrap();
+        server.abort();
+        input_worker.abort();
+    }
 
     #[tokio::test]
     async fn static_frames_refresh_after_policy_change_or_native_skip_with_pacing() {
@@ -1371,6 +1949,38 @@ mod tests {
         let html = std::str::from_utf8(&body).unwrap();
         assert!(html.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))));
         assert!(!html.contains("__LIGHTOS_VERSION__"));
+    }
+
+    #[tokio::test]
+    async fn embedded_logo_is_allowed_by_production_content_security_policy() {
+        let desktop =
+            mount_desktop(Router::<()>::new(), "/").layer(middleware::from_fn(security_headers));
+        let response = desktop
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let policy = response.headers()["content-security-policy"]
+            .to_str()
+            .unwrap();
+        let sources = |directive: &str| {
+            policy
+                .split(';')
+                .find_map(|entry| {
+                    let mut words = entry.split_whitespace();
+                    (words.next() == Some(directive)).then(|| words.collect::<Vec<_>>())
+                })
+                .unwrap()
+        };
+        // Vite's ?inline import embeds the About logo in app.js as a data URI.
+        assert!(include_str!("../web/dist/app.js").contains("data:image/webp;base64,"));
+        assert!(sources("img-src").contains(&"data:"));
+        assert_eq!(sources("script-src"), vec!["'self'"]);
+        assert_eq!(sources("default-src"), vec!["'none'"]);
+        let html = axum::body::to_bytes(response.into_body(), 128 * 1024)
+            .await
+            .unwrap();
+        assert!(std::str::from_utf8(&html).unwrap().contains("./app.js"));
     }
 
     #[test]

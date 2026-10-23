@@ -24,8 +24,8 @@ use subtle::ConstantTimeEq;
 use tokio::sync::{Notify, watch};
 
 use crate::{
+    backend::{Frame, InputCommand},
     server::{AppState, ControllerLease},
-    wayland::{Frame, InputCommand},
 };
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -316,7 +316,7 @@ impl RdpServerDisplay for Display {
             self.connection
                 .state
                 .backend
-                .frames
+                .frames()
                 .borrow()
                 .as_ref()
                 .map(|frame| (frame.width, frame.height))
@@ -340,7 +340,7 @@ impl RdpServerDisplay for Display {
         control.active = true;
         self.connection.ready.notify_one();
         Ok(Box::new(Updates {
-            frames: self.connection.state.backend.frames.clone(),
+            frames: self.connection.state.backend.frames(),
             first: true,
             hide_pointer: true,
             announced: self.announced.clone(),
@@ -442,7 +442,7 @@ impl Input {
             .connection
             .state
             .backend
-            .input
+            .input()
             .try_send(command)
             .is_err()
         {
@@ -487,7 +487,8 @@ impl RdpServerInputHandler for Input {
     fn mouse(&mut self, event: MouseEvent) {
         let command = match event {
             MouseEvent::Move { x, y } => {
-                let frame = self.connection.state.backend.frames.borrow();
+                let frames = self.connection.state.backend.frames();
+                let frame = frames.borrow();
                 let Some(frame) = frame.as_ref() else { return };
                 InputCommand::Move {
                     x: (f64::from(x) / f64::from(frame.width.saturating_sub(1).max(1)))

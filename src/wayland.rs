@@ -1,3 +1,5 @@
+pub mod capabilities;
+
 use std::{
     collections::BTreeSet,
     io::{Seek, SeekFrom, Write},
@@ -18,9 +20,7 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use libwayshot::WayshotConnection;
-use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
-use tokio_util::sync::CancellationToken;
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
     globals::{GlobalListContents, registry_queue_init},
@@ -37,158 +37,19 @@ use wayland_protocols_wlr::virtual_pointer::v1::client::{
 use xkbcommon::xkb;
 
 const START_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_TEXT_BYTES: usize = 16 * 1024;
-const MAX_EVDEV_CODE: u32 = 767;
 
 struct CaptureTarget {
     socket: PathBuf,
     output: Option<String>,
 }
 
-#[derive(Debug)]
-pub struct Frame {
-    pub width: u32,
-    pub height: u32,
-    jpeg: OnceLock<(u8, Arc<[u8]>)>,
-    pub pixels: Arc<[u8]>,
-    pub captured_at: Instant,
-}
-
-impl Frame {
-    #[cfg(test)]
-    pub(crate) fn test_frame(width: u32, height: u32) -> Self {
-        Self {
-            width,
-            height,
-            jpeg: OnceLock::new(),
-            pixels: [24, 64, 128, 255].repeat((width * height) as usize).into(),
-            captured_at: Instant::now(),
-        }
-    }
-
-    pub fn jpeg(&self, quality: u8) -> Result<Arc<[u8]>> {
-        ensure!(
-            self.pixels.len() == self.width as usize * self.height as usize * 4,
-            "invalid JPEG pixels"
-        );
-        if let Some((cached_quality, data)) = self.jpeg.get()
-            && *cached_quality == quality
-        {
-            return Ok(data.clone());
-        }
-        let data = media_codec::encode_jpeg(self.width, self.height, &self.pixels, quality)?;
-        let _ = self.jpeg.set((quality, data.clone()));
-        Ok(data)
-    }
-}
-
-/// Internal input authorization survives the async queue and Unicode worker.
-#[derive(Debug, Clone)]
-pub struct InputGuard {
-    pub(crate) cancellation: CancellationToken,
-    pub(crate) deadline: Instant,
-    pub(crate) text_done: Arc<tokio::sync::Notify>,
-    #[cfg(test)]
-    pub(crate) probe: Option<Arc<TextProbe>>,
-}
+// Kept as re-exports for integrations using the original public module.
+use crate::backend::MAX_EVDEV_CODE;
 #[cfg(test)]
-#[derive(Debug)]
-pub(crate) struct TextProbe {
-    pub(crate) characters: std::sync::atomic::AtomicUsize,
-    pub(crate) batches: std::sync::atomic::AtomicUsize,
-    pub(crate) restored: AtomicBool,
-    pub(crate) first_batch: sync_mpsc::SyncSender<()>,
-    pub(crate) resume: Mutex<sync_mpsc::Receiver<()>>,
-}
-impl InputGuard {
-    pub(crate) fn new(cancellation: CancellationToken, deadline: Instant) -> Self {
-        Self {
-            cancellation,
-            deadline,
-            text_done: Arc::new(tokio::sync::Notify::new()),
-            #[cfg(test)]
-            probe: None,
-        }
-    }
-    pub(crate) fn active(&self) -> bool {
-        !self.cancellation.is_cancelled() && Instant::now() < self.deadline
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum InputCommand {
-    Move {
-        x: f64,
-        y: f64,
-    },
-    Button {
-        button: u32,
-        pressed: bool,
-    },
-    Key {
-        code: u32,
-        pressed: bool,
-    },
-    Scroll {
-        x: f64,
-        y: f64,
-    },
-    Release,
-    #[serde(skip)]
-    Guarded {
-        command: Box<InputCommand>,
-        guard: InputGuard,
-    },
-    #[serde(skip)]
-    ReleaseSync {
-        done: sync_mpsc::SyncSender<()>,
-    },
-    Text {
-        text: String,
-    },
-}
-
-impl InputCommand {
-    pub(crate) fn into_active(self) -> Option<(Self, Option<InputGuard>)> {
-        match self {
-            Self::Guarded { command, guard } => guard.active().then_some((*command, Some(guard))),
-            command => Some((command, None)),
-        }
-    }
-    pub fn validate(&self) -> Result<()> {
-        match self {
-            Self::Move { x, y } => ensure!(
-                x.is_finite()
-                    && y.is_finite()
-                    && (0.0..=1.0).contains(x)
-                    && (0.0..=1.0).contains(y),
-                "pointer coordinates must be finite and normalized to 0..1"
-            ),
-            Self::Button { button, .. } => {
-                ensure!(*button <= 2, "unsupported mouse button");
-            }
-            Self::Key { code, .. } => {
-                ensure!((1..=MAX_EVDEV_CODE).contains(code), "invalid evdev keycode");
-            }
-            Self::Scroll { x, y } => ensure!(
-                x.is_finite() && y.is_finite() && x.abs() <= 1000.0 && y.abs() <= 1000.0,
-                "scroll coordinates must be finite and within -1000..1000"
-            ),
-            Self::Text { text } => {
-                ensure!(text.len() <= MAX_TEXT_BYTES, "text exceeds 16 KiB");
-                ensure!(
-                    text.chars().all(|character| !character.is_control()
-                        || matches!(character, '\n' | '\r' | '\t')),
-                    "unsupported text control character"
-                );
-            }
-            Self::Guarded { command, .. } => command.validate()?,
-            Self::Release | Self::ReleaseSync { .. } => {}
-        }
-        Ok(())
-    }
-}
+use crate::backend::MAX_TEXT_BYTES;
+#[cfg(test)]
+pub(crate) use crate::backend::TextProbe;
+pub use crate::backend::{Frame, InputCommand, InputGuard};
 
 fn validated_input(command: InputCommand) -> Option<InputCommand> {
     if let Err(error) = command.validate() {
@@ -214,6 +75,8 @@ impl Shared {
 pub struct Backend {
     pub frames: watch::Receiver<Option<Arc<Frame>>>,
     pub input: mpsc::Sender<InputCommand>,
+    socket_path: PathBuf,
+    clipboard_owner: tokio::sync::Mutex<Option<tokio::process::Child>>,
     shared: Arc<Shared>,
     workers: Mutex<Vec<JoinHandle<()>>>,
     input_socket: UnixStream,
@@ -283,6 +146,8 @@ impl Backend {
         let (ready_tx, ready_rx) = sync_mpsc::sync_channel(2);
         let (done_tx, input_done) = sync_mpsc::sync_channel(1);
         let mut backend = Self {
+            socket_path: socket.clone(),
+            clipboard_owner: tokio::sync::Mutex::new(None),
             frames,
             input,
             shared: shared.clone(),
@@ -365,6 +230,12 @@ impl Backend {
 
     pub fn stop(&self) {
         self.shared.finish();
+        if let Ok(mut owner) = self.clipboard_owner.try_lock()
+            && let Some(mut child) = owner.take()
+        {
+            let _ = child.start_kill();
+        }
+
         if let Some(socket) = self
             .shared
             .capture_socket
@@ -393,6 +264,112 @@ impl Backend {
         }
         self.shared.frames.send_replace(None);
     }
+}
+
+impl crate::backend::DesktopBackend for Backend {
+    fn kind(&self) -> crate::backend::BackendKind {
+        crate::backend::BackendKind::Wayland
+    }
+    fn cursor_embedded(&self) -> bool {
+        true
+    }
+    fn frames(&self) -> watch::Receiver<Option<Arc<Frame>>> {
+        self.frames.clone()
+    }
+    fn input(&self) -> mpsc::Sender<InputCommand> {
+        self.input.clone()
+    }
+    fn release_input(&self) -> bool {
+        Backend::release_input(self)
+    }
+    fn frame_is_fresh(&self, max_age: Duration) -> bool {
+        Backend::frame_is_fresh(self, max_age)
+    }
+    fn is_stopped(&self) -> bool {
+        self.shared.stopped.load(Ordering::Acquire)
+    }
+    fn stop(&self) {
+        Backend::stop(self)
+    }
+    fn clipboard_read(&self) -> futures_util::future::BoxFuture<'_, Result<String>> {
+        Box::pin(async move {
+            use tokio::io::AsyncReadExt;
+            let mut command = clipboard_command(&self.socket_path, "wl-paste")?;
+            let mut child = command
+                .args(["--no-newline", "--type", "text"])
+                .stdout(std::process::Stdio::piped())
+                .spawn()?;
+            let mut stdout = child.stdout.take().context("clipboard pipe unavailable")?;
+            let mut output = Vec::new();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                (&mut stdout)
+                    .take(crate::backend::MAX_CLIPBOARD_BYTES as u64 + 1)
+                    .read_to_end(&mut output)
+                    .await?;
+                ensure!(
+                    output.len() <= crate::backend::MAX_CLIPBOARD_BYTES,
+                    "clipboard too large"
+                );
+                ensure!(child.wait().await?.success(), "clipboard unavailable");
+                String::from_utf8(output).context("clipboard is not UTF-8 text")
+            })
+            .await
+            .context("clipboard read timed out")?
+        })
+    }
+    fn clipboard_write<'a>(
+        &'a self,
+        text: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            use tokio::io::AsyncWriteExt;
+            ensure!(
+                text.len() <= crate::backend::MAX_CLIPBOARD_BYTES,
+                "clipboard too large"
+            );
+            ensure!(
+                !self.shared.stopped.load(Ordering::Acquire),
+                "desktop stopped"
+            );
+            let mut command = clipboard_command(&self.socket_path, "wl-copy")?;
+            let mut child = command
+                .args(["--foreground", "--type", "text/plain;charset=utf-8"])
+                .stdin(std::process::Stdio::piped())
+                .spawn()?;
+            let mut stdin = child.stdin.take().context("clipboard pipe unavailable")?;
+            tokio::time::timeout(Duration::from_secs(2), async {
+                stdin.write_all(text.as_bytes()).await?;
+                stdin.shutdown().await
+            })
+            .await
+            .context("clipboard write timed out")??;
+            drop(stdin);
+            let mut owner = self.clipboard_owner.lock().await;
+            if let Some(mut previous) = owner.take() {
+                let _ = previous.kill().await;
+            }
+            *owner = Some(child);
+            Ok(())
+        })
+    }
+}
+
+fn clipboard_command(socket: &Path, program: &str) -> Result<tokio::process::Command> {
+    let executable = platform_detect::find_executable(Path::new(program))
+        .context("Wayland clipboard helper unavailable")?;
+    let mut command = tokio::process::Command::new(executable);
+    command
+        .env("WAYLAND_DISPLAY", socket)
+        .env(
+            "XDG_RUNTIME_DIR",
+            socket.parent().context("Wayland socket has no runtime")?,
+        )
+        .env_remove("DISPLAY")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    Ok(command)
 }
 
 impl Drop for Backend {
@@ -1093,6 +1070,8 @@ pub(crate) mod tests {
         let (input, _) = mpsc::channel(1);
         let (_, input_done) = sync_mpsc::channel();
         Backend {
+            socket_path: "/nonexistent".into(),
+            clipboard_owner: tokio::sync::Mutex::new(None),
             frames,
             input,
             shared: Arc::new(Shared {

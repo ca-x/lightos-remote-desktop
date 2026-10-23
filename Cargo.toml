@@ -5,7 +5,7 @@ resolver = "3"
 [package]
 name = "lightos-remote-desktop"
 license = "MIT"
-version = "0.1.13"
+version = "0.1.14"
 edition = "2024"
 rust-version = "1.88"
 description = "A native Rust browser remote desktop for LightOS"
@@ -15,6 +15,7 @@ name = "lightos-remoted"
 path = "src/main.rs"
 
 [features]
+portal = ["dep:ashpd", "dep:pipewire", "dep:configparser"]
 rdp = ["dep:async-trait", "dep:ironrdp-server", "dep:ironrdp-pdu", "dep:rustls-pemfile", "dep:rcgen"]
 bundled-jpeg = ["media-codec/bundled-jpeg", "turbojpeg/cmake", "turbojpeg/require-simd"]
 
@@ -58,7 +59,14 @@ wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
+ashpd = { version = "0.13.13", default-features = false, features = ["tokio", "remote_desktop", "screencast", "clipboard"], optional = true }
+pipewire = { version = "0.10.1", optional = true }
+configparser = { version = "3.3", optional = true }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 xkbcommon = "0.9"
+x11rb = { version = "0.14", features = ["randr", "xtest", "shm", "damage"] }
+enigo = { version = "0.6.1", default-features = false, features = ["x11rb"] }
+arboard = { version = "3.7", default-features = false }
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json"] }

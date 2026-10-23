@@ -187,7 +187,8 @@ done
 release=$managed
 activation_doctor || fail 'candidate doctor failed; running service left unchanged'
 attached=$(setting LIGHTOS_REMOTE_DESKTOP_WAYLAND_SOCKET)
-if [[ -n $attached ]]; then
+attached_x11=$(setting LIGHTOS_REMOTE_DESKTOP_X11_DISPLAY)
+if [[ -n $attached || -n $attached_x11 ]]; then
     # A previously started owner stays alive until an explicit user cutover.
     activation_systemctl disable lightos-remote-desktop-session.service
 else
@@ -210,6 +211,11 @@ restore() {
         chmod 0644 "$recovery"
     else
         rm -f -- "$recovery"
+    fi
+    # Previous transport binaries predate the lower-priority service default.
+    # Keep their persistent owner handoff when recovering an owned deployment.
+    if [[ -f $recovery && -z $attached && -z $attached_x11 ]]; then
+        printf '\n[Service]\nEnvironment=LIGHTOS_REMOTE_DESKTOP_SESSION_RUNTIME=/run/lrd-session\n' >> "$recovery"
     fi
 }
 rm -f -- "$recovery"

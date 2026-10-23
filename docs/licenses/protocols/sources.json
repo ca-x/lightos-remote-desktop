@@ -95,5 +95,30 @@
       }
     ],
     "root_files": []
+  },
+  {
+    "name": "cookie-factory",
+    "version": "0.3.3",
+    "repository": "rust-bakery/cookie-factory",
+    "commit": "d36b805dbd7dd65f2df947235c5bcc573afe2c76",
+    "files": [
+      {
+        "path": "cookie-factory-0.3.3/MIT.txt",
+        "sha256": "d09216dc1ea5f273997667935a8d6514d80f00b89fb6954ecc3a43e0a6e360de"
+      }
+    ],
+    "root_files": [
+      ".github",
+      ".gitignore",
+      ".reuse",
+      "Cargo.toml",
+      "LICENSES",
+      "README.md",
+      "benches",
+      "examples",
+      "src",
+      "tests"
+    ],
+    "note": "Published crate omits upstream LICENSES/MIT.txt; retained from its exact VCS revision."
   }
 ]

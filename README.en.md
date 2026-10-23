@@ -60,6 +60,15 @@ does not embed CPython or invoke the original Selkies Python launcher.
   WebSocket RTT (latest and P95 of the last 30 replies). RTT includes queueing,
   not input-to-display latency. Static desktops skip duplicate frames, so low
   idle FPS is normal. Measurements use the browser's monotonic clock.
+- A shared `DesktopBackend` trait for capture, input and text clipboard, with
+  automatic capability-based selection on a trusted session: native Wayland,
+  Portal or X11. GNOME/KDE can use a shared RemoteDesktop/ScreenCast grant and
+  PipeWire when one actual Portal implementation and its compositor can be
+  verified against the selected socket; X11 uses x11rb, enigo and arboard with isolated display/authority.
+  Discovery never opens consent; connecting may request Portal permission, and
+  denial does not trigger another authorization path. Native X11 has isolated
+  Xvfb acceptance coverage; GNOME/KDE hardware and fractional scaling remain
+  unverified. See [runtime boundaries](docs/runtime-platforms.md).
 - Native Wayland capture and virtual keyboard/pointer through libwayshot and
   standard Wayland protocols; Unicode text injection and held-input cleanup.
   Captures include the compositor's actual cursor, including text, resize,
@@ -231,8 +240,8 @@ before Rust so the executable embeds its HTML, JavaScript, CSS and gzip assets:
 npm ci
 npm run build
 npm test
-cargo test --locked --features bundled-jpeg
-cargo build --release --locked --features bundled-jpeg
+cargo test --locked --features bundled-jpeg,rdp,portal
+cargo build --release --locked --features bundled-jpeg,rdp,portal
 ```
 
 The installed executable needs neither Node.js nor a frontend directory/server.
@@ -300,10 +309,18 @@ change remote resolution. Clipboard and resolution fields are tucked away.
 
 Use a current stable Rust toolchain. Native linking requires Wayland,
 libxkbcommon, libpulse and libturbojpeg 3+, plus a C/C++ toolchain and NASM for
-source-built OpenH264 and libopus. Alternatively build with `--features bundled-jpeg`
-(requires CMake and NASM), as CI does, to statically bundle libjpeg-turbo.
-runtime also needs Cage, Hyprland, D-Bus, hyprctl and wl-clipboard. Audio requires
-libpulse, pactl, pipewire, pipewire-pulse and WirePlumber 0.5+. A private audio graph is
+source-built OpenH264 and libopus. `bundled-jpeg` statically bundles libjpeg-turbo
+and needs CMake/NASM. Official binaries enable `bundled-jpeg,rdp,portal`; building
+`portal` additionally requires PipeWire/SPA development headers, pkg-config and
+libclang, and the binary links `libpipewire-0.3.so.0` at runtime. Custom builds
+without that feature report Portal as unavailable.
+
+Owned virtual sessions need Cage, Hyprland and D-Bus; attaching to an existing
+desktop does not start these components. Native Wayland text clipboard uses
+optional wl-clipboard helpers; X11 requires xauth and usable XTest input.
+`doctor` distinguishes required and optional dependencies for the selected
+startup mode; installed programs do not prove capture/input availability.
+Audio requires libpulse, pactl, pipewire, pipewire-pulse and WirePlumber 0.5+. A private audio graph is
 created per desktop; no host PulseAudio cookies or default sink are changed.
 The WirePlumber profile disables physical audio/Bluetooth/video monitors.
 Video encoding and audio capture/encoding do not spawn FFmpeg. Audio uses a
