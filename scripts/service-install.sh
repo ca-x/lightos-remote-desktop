@@ -25,7 +25,7 @@ cli=$root/usr/bin/lightos-remoted
 for directory in "$managed" "$state" "${transport%/*}" "${cli%/*}"; do
     [[ $(realpath -m -- "$directory") == "$directory" ]] || fail "symlinked installation directory: $directory"
 done
-for path in "$managed/lightos-remoted" "$managed/lightos-codec-ffmpeg" "$transport" "$owner"; do
+for path in "$managed/lightos-remoted" "$managed/lightos-codec-ffmpeg" "$managed/lightos-cursor.so" "$transport" "$owner"; do
     [[ ! -L $path && ( ! -e $path || -f $path ) ]] || fail "expected regular file: $path"
 done
 if ((dry)); then
@@ -33,7 +33,7 @@ if ((dry)); then
     exit 0
 fi
 # A standalone install never replaces pacman-owned files, even identical files.
-for path in usr/lib/lightos-remoted/lightos-remoted usr/lib/lightos-remoted/lightos-codec-ffmpeg usr/lib/systemd/system/lightos-remote-desktop.service usr/lib/systemd/system/lightos-remote-desktop-session.service usr/bin/lightos-remoted; do
+for path in usr/lib/lightos-remoted/lightos-remoted usr/lib/lightos-remoted/lightos-codec-ffmpeg usr/lib/lightos-remoted/lightos-cursor.so usr/lib/systemd/system/lightos-remote-desktop.service usr/lib/systemd/system/lightos-remote-desktop-session.service usr/bin/lightos-remoted; do
     if [[ -z $root ]]; then
         if command -v pacman >/dev/null && pacman -Qo "/$path" >/dev/null 2>&1; then fail 'package-owned installation; upgrade using the package manager'; fi
     else
@@ -90,6 +90,7 @@ restore_files() {
     done <<PATHS
 binary|$managed/lightos-remoted
 helper|$managed/lightos-codec-ffmpeg
+cursor|$managed/lightos-cursor.so
 transport|$transport
 owner|$owner
 cli|$cli
@@ -111,6 +112,7 @@ while IFS='|' read -r name source; do
 done <<PATHS
 binary|$managed/lightos-remoted
 helper|$managed/lightos-codec-ffmpeg
+cursor|$managed/lightos-cursor.so
 transport|$transport
 owner|$owner
 cli|$cli
@@ -122,6 +124,11 @@ if [[ -f $managed/lightos-remoted && -f $recovery_state/rejected.sha256 && -f $r
     digest=$(sha256sum "$managed/lightos-remoted"); digest=${digest%% *}
     if [[ $(<"$recovery_state/rejected.sha256") == "$digest" ]]; then
         install -m 0755 "$recovery_state/previous/lightos-remoted" "$snapshot/binary"
+        if [[ -f $recovery_state/previous/lightos-cursor.so ]]; then
+            install -m 0644 "$recovery_state/previous/lightos-cursor.so" "$snapshot/cursor"
+        else
+            rm -f -- "$snapshot/cursor"
+        fi
         if [[ -f $recovery_state/previous/lightos-codec-ffmpeg ]]; then
             install -m 0755 "$recovery_state/previous/lightos-codec-ffmpeg" "$snapshot/helper"
         else
@@ -146,6 +153,13 @@ if [[ -e $helper ]]; then
     [[ -f $helper && -x $helper && ! -L $helper ]] || fail 'codec helper must be a regular executable'
     if [[ ! $helper -ef $managed/lightos-codec-ffmpeg ]]; then
         install -m 0755 "$helper" "$managed/lightos-codec-ffmpeg"
+    fi
+fi
+cursor_adapter=${binary%/*}/lightos-cursor.so
+if [[ -e $cursor_adapter ]]; then
+    [[ -f $cursor_adapter && -s $cursor_adapter && ! -L $cursor_adapter ]] || fail 'cursor adapter must be a regular file'
+    if [[ ! $cursor_adapter -ef $managed/lightos-cursor.so ]]; then
+        install -m 0644 "$cursor_adapter" "$managed/lightos-cursor.so"
     fi
 fi
 install -m 0644 "$repository/systemd/lightos-remoted-transport.service" "$transport"

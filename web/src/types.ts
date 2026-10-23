@@ -54,6 +54,7 @@ export interface ClientOptions {
 
 export interface Elements {
   desktop: HTMLCanvasElement;
+  "remote-cursor": HTMLImageElement;
   "mobile-input": HTMLTextAreaElement;
   "mobile-shortcuts": HTMLElement;
   "mobile-keyboard": HTMLButtonElement;

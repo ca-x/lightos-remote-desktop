@@ -1,7 +1,9 @@
 pub mod audio;
 pub mod audio_channel;
 pub mod backend;
+mod clipboard;
 pub mod config;
+mod cursor;
 pub mod desktop;
 pub mod diagnostics;
 pub mod handoff;

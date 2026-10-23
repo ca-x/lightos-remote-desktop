@@ -1,3 +1,5 @@
+import { captureResolution, LEGACY_SCALES } from "./resolution";
+
 export interface MobileShortcut {
   label: string;
   key?: string;
@@ -33,17 +35,7 @@ export const MOBILE_ROWS: readonly (readonly MobileShortcut[])[] = [
 // More capture pixels must be paired with compositor scale: increasing only
 // the resolution makes desktop text smaller instead of making it sharper.
 export function mobileResolution(cssWidth: number, cssHeight: number, pixelRatio: number) {
-  const ratio = Number.isFinite(pixelRatio) ? Math.max(1, pixelRatio) : 1;
-  for (const scale of [3, 2.5, 2, 1.5, 1]) {
-    if (scale > ratio) continue;
-    const step = Number.isInteger(scale) ? 2 : 4;
-    const logicalWidth = Math.max(320, Math.floor(cssWidth / step) * step);
-    const logicalHeight = Math.max(200, Math.floor(cssHeight / step) * step);
-    const width = logicalWidth * scale;
-    const height = logicalHeight * scale;
-    if (width <= 3840 && height <= 2160) return { width, height, scale };
-  }
-  return { width: Math.min(3840, Math.max(320, Math.floor(cssWidth / 2) * 2)), height: Math.min(2160, Math.max(200, Math.floor(cssHeight / 2) * 2)), scale: 1 };
+  return captureResolution(cssWidth, cssHeight, pixelRatio, LEGACY_SCALES);
 }
 
 interface MobileOptions {
@@ -60,6 +52,10 @@ interface MobileOptions {
   tools: (open: boolean) => void;
   layout: () => void;
   translate: (text: string) => string;
+  hardwareKey?: (event: KeyboardEvent) => boolean;
+  hardwareInput?: (event: InputEvent) => boolean;
+  composition?: () => void;
+  paste?: (event: ClipboardEvent) => void;
 }
 
 const SENTINEL = "\u200b";
@@ -86,7 +82,7 @@ export function createMobileControls(options: MobileOptions) {
   let disposed = false;
   let composing = false;
   let committed = "";
-  let commitTimer: ReturnType<typeof setTimeout> | null = null;
+  let physicalInput = false;
   let frame: number | null = null;
   let closingTimer: ReturnType<typeof setTimeout> | null = null;
   let keyboardReference = 0;
@@ -123,7 +119,7 @@ export function createMobileControls(options: MobileOptions) {
       floating.setAttribute("aria-hidden", String(touch));
     }
     for (const button of buttons) button.disabled = !options.ready();
-    input.disabled = !touch || !options.ready();
+    input.disabled = !options.ready();
     toggle.disabled = !options.ready();
     toggle.setAttribute("aria-pressed", String(focused()));
     for (const attribute of ["title", "aria-label"]) toggle.setAttribute(attribute, options.translate(focused() ? "Hide keyboard" : "Show keyboard"));
@@ -297,38 +293,50 @@ export function createMobileControls(options: MobileOptions) {
   listen(input, "compositionstart", () => {
     composing = true;
     committed = "";
-    if (commitTimer !== null) clearTimeout(commitTimer);
+    physicalInput = false;
+    options.composition?.();
   });
   listen(input, "compositionend", (event: CompositionEvent) => {
     composing = false;
     committed = event.data;
     text(event.data);
     resetField();
-    commitTimer = setTimeout(() => { committed = ""; commitTimer = null; }, 0);
   });
   listen(input, "beforeinput", (event: InputEvent) => {
     if (composing || event.isComposing || !event.cancelable) return;
+    if (options.hardwareInput?.(event)) { event.preventDefault(); resetField(); return; }
+    if (physicalInput) { event.preventDefault(); physicalInput = false; resetField(); return; }
     const code = ({ deleteContentBackward: "Backspace", deleteContentForward: "Delete", insertLineBreak: "Enter", insertParagraph: "Enter" } as Record<string, string>)[event.inputType];
     if (code) { event.preventDefault(); key(code); resetField(); }
   });
   listen(input, "input", (event: InputEvent) => {
     if (composing || event.isComposing) return;
+    if (options.hardwareInput?.(event)) { resetField(); return; }
     const value = input.value.startsWith(SENTINEL) ? input.value.slice(1) : input.value;
     const code = ({ deleteContentBackward: "Backspace", deleteContentForward: "Delete", insertLineBreak: "Enter", insertParagraph: "Enter" } as Record<string, string>)[event.inputType];
-    if (code) key(code);
+    if (physicalInput) physicalInput = false;
+    else if (code) key(code);
     else if (value && (!committed || value !== committed)) text(value);
+    committed = "";
     resetField();
   });
   listen(input, "keydown", (event: KeyboardEvent) => {
     if (event.isComposing || composing || event.keyCode === 229) return;
+    committed = "";
+    if (!touch && options.hardwareKey) { physicalInput = options.hardwareKey(event); return; }
     const code = event.code || ({ Enter: "Enter", Backspace: "Backspace", Delete: "Delete", Tab: "Tab", Escape: "Escape" } as Record<string, string>)[event.key];
     if (!code || MODIFIERS.has(code)) return;
+    if (code === "KeyV" && (event.ctrlKey || event.metaKey)) return;
     if (event.ctrlKey || event.altKey || event.metaKey || !event.key || event.key.length !== 1) {
       event.preventDefault();
       key(code, [event.ctrlKey ? "ControlLeft" : "", event.altKey ? "AltLeft" : "", event.shiftKey ? "ShiftLeft" : "", event.metaKey ? "MetaLeft" : ""].filter(Boolean));
     }
   });
-  listen(input, "paste", (event: ClipboardEvent) => { event.preventDefault(); text(event.clipboardData?.getData("text/plain") ?? ""); resetField(); });
+  listen(input, "paste", (event: ClipboardEvent) => {
+    if (options.paste) options.paste(event);
+    else { event.preventDefault(); text(event.clipboardData?.getData("text/plain") ?? ""); }
+    physicalInput = false; committed = ""; resetField();
+  });
 
   function cancelTouches() {
     cancelHold();
@@ -416,8 +424,7 @@ export function createMobileControls(options: MobileOptions) {
     if (shortcutPointer?.button.hasPointerCapture?.(shortcutPointer.id)) shortcutPointer.button.releasePointerCapture(shortcutPointer.id);
     shortcutPointer = null;
     sticky.clear();
-    if (commitTimer !== null) clearTimeout(commitTimer);
-    commitTimer = null;
+    physicalInput = false;
     hideKeyboard();
   }
 
@@ -434,7 +441,12 @@ export function createMobileControls(options: MobileOptions) {
   requestLayout();
   return {
     handlePointer, reset, update,
-    keyboardActive: () => focused() || closingTimer !== null || (window.visualViewport?.scale ?? 1) > 1.01,
+    focusDesktop: () => {
+      if (touch || !options.ready()) return false;
+      if (!focused()) { resetField(); input.focus({ preventScroll: true }); }
+      return true;
+    },
+    keyboardActive: () => touch && (focused() || closingTimer !== null || (window.visualViewport?.scale ?? 1) > 1.01),
     lostPointer: (id: number) => { if (activeTouches.has(id)) cancelTouches(); },
     bounds: () => touch ? { ...geometry(), bar: bar.getBoundingClientRect().height } : null,
     dispose() {

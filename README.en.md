@@ -71,10 +71,10 @@ does not embed CPython or invoke the original Selkies Python launcher.
   unverified. See [runtime boundaries](docs/runtime-platforms.md).
 - Native Wayland capture and virtual keyboard/pointer through libwayshot and
   standard Wayland protocols; Unicode text injection and held-input cleanup.
-  Captures include the compositor's actual cursor, including text, resize,
-  drag and application-defined shapes. The browser hides its local pointer
-  over the desktop to avoid displaying two cursors. Cursor motion follows the
-  video pipeline's frame rate and latency.
+  Supported Hyprland sessions stream the actual cursor image, hotspot, scale
+  and visibility separately. Native browser cursor motion does not wait for video;
+  text, links, resizing, dragging and custom images retain their remote shapes.
+  Unsupported sessions retain the compositor-embedded cursor fallback.
 - Isolated Cage/wlroots host with nested Hyprland, a private D-Bus, and owned
   process-group cleanup. No UWSM source modification.
 - Persistent encoding (Auto/H.264/JPEG) and scheduling (Auto/Low latency/Smooth/Quality first)
@@ -113,7 +113,7 @@ H.264 samples the latest raw frame only when video credit is available, so it
 does not discard predictive frames after encoding. Reconnect and resolution
 changes create a fresh encoder/keyframe. Automatic, low-latency, smooth and
 quality-first policies adjust pacing and supported encoder bitrate from bounded
-ACK feedback. GPU capture and remote cursor-shape streaming are not implemented.
+ACK feedback. GPU capture is not implemented in this build.
 
 ## AUR installation and updates
 
@@ -469,3 +469,21 @@ runtime dependencies and device-validation limits.
 
 LightOS Remote Desktop is licensed under [MIT](LICENSE). Third-party components
 retain their own licenses; see [third-party notices](docs/third-party.md).
+
+### Independent cursor adapter
+
+An optional read-only Hyprland adapter exports the actual cursor. Build it with a
+C++23 compiler and development headers matching the running compositor:
+
+```sh
+./scripts/build-hyprland-cursor.sh ./target/release/lightos-cursor.so
+```
+
+Place the adapter beside the core before installation. Install/update and rollback
+keep it with that payload; existing legacy installations retain the `--legacy`
+update path. The service checks compositor ownership before loading the adapter
+through its IPC. An ABI mismatch or unavailable image keeps the embedded-cursor
+fallback. Rebuild the adapter after a Hyprland upgrade.
+
+Cursor response is measured separately from desktop content FPS. Moving the
+pointer over a static desktop does not require new video frames.

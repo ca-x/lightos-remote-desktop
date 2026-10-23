@@ -36,7 +36,7 @@ const en = {
   keyboard: "Keyboard & shortcuts", capture: "Capture keyboard in fullscreen", chord: "Send a shortcut to the remote desktop", mainKey: "Main key", sendChord: "Send shortcut",
   keyboardHelp: "Enter fullscreen with the page's fullscreen button to capture keys automatically, then allow the browser's keyboard permission. Browser F11 fullscreen does not enable capture. On Linux, use native Wayland Chrome/Chromium if Super or Alt+Tab still acts on the host. Open the desktop directly over HTTPS or localhost.",
   resolution: "Display & resolution", autoResolution: "Match browser resolution", width: "Width", height: "Height", resize: "Apply resolution",
-  input: "Text input / clipboard", sendText: "Send text", getClipboard: "Read remote clipboard", setClipboard: "Write remote clipboard", pasteLocal: "Paste local text",
+  input: "Text input / clipboard", sendText: "Send text", getClipboard: "Read remote clipboard", setClipboard: "Write remote clipboard", pasteLocal: "Paste local text or image",
   preferences: "Appearance & language", language: "Language", theme: "Theme", system: "Follow system", browser: "Follow browser", light: "Light", dark: "Dark",
   version: "Software version", waiting: "Waiting for video", connecting: "Connecting. Your browser handles authentication.",
   metrics: "FPS counts frames actually drawn in the last second; idle desktops do not repeat frames. RTT measures an application-level WebSocket round trip, not input-to-display latency.",
@@ -81,11 +81,11 @@ const zh: Record<keyof typeof en, string> = {
   keyboard: "键盘与组合键", capture: "全屏捕获键盘", chord: "发送任意组合键到远程", mainKey: "主键", sendChord: "发送组合键",
   keyboardHelp: "点击页面的全屏按钮后自动捕获，并允许浏览器的键盘权限。浏览器 F11 全屏不能开启捕获。Linux 上若 Super 或 Alt+Tab 仍作用于本机，请使用原生 Wayland Chrome/Chromium，并通过 HTTPS 或 localhost 直接打开桌面页面。",
   resolution: "画面与分辨率", autoResolution: "跟随浏览器窗口分辨率", width: "宽", height: "高", resize: "调整分辨率",
-  input: "文字输入 / 剪贴板", sendText: "发送文字", getClipboard: "读取远程剪贴板", setClipboard: "写入远程剪贴板", pasteLocal: "粘贴本地文字",
+  input: "文字输入 / 剪贴板", sendText: "发送文字", getClipboard: "读取远程剪贴板", setClipboard: "写入远程剪贴板", pasteLocal: "粘贴本地文字或图片",
   preferences: "外观与语言", language: "语言", theme: "主题", system: "跟随系统", browser: "跟随浏览器", light: "浅色", dark: "深色",
   version: "软件版本", waiting: "等待画面", connecting: "正在连接，身份验证使用浏览器登录对话框。",
   metrics: "FPS 为最近一秒实际绘制帧数，静止桌面不重复发送。RTT 为 WebSocket 应用层往返时间，包含排队，不等于操作到画面的端到端延迟。",
-  help: "点击桌面即可控制。虚拟桌面中 Super+Space 打开应用，Super+Enter 打开终端；物理桌面遵循本机会话的快捷键。Ctrl+Alt+Shift+Esc 释放捕获并打开工具栏。剪贴板只在点击时读取。切换来源不会关闭虚拟桌面中的应用。",
+  help: "点击桌面即可控制。虚拟桌面中 Super+Space 打开应用，Super+Enter 打开终端；物理桌面遵循本机会话的快捷键。Ctrl+Alt+Shift+Esc 释放捕获并打开工具栏。剪贴板只在主动粘贴时读取。切换来源不会关闭虚拟桌面中的应用。",
   drag: "拖动到屏幕任意边缘；Alt+方向键也可调整工具栏位置。", physicalResize: "物理桌面不支持在此更改显示器分辨率。",
   mobileInput: "远程桌面键盘输入", mobileShortcuts: "桌面快捷键", mobileRow1: "键盘与导航", mobileRow2: "组合键与符号", mobileMenu: "桌面菜单",
   showKeyboard: "展开键盘", hideKeyboard: "收起键盘", stickyKey: "粘滞 {{key}}", arrowUp: "向上", arrowDown: "向下", arrowLeft: "向左", arrowRight: "向右", backspace: "退格",
@@ -93,6 +93,7 @@ const zh: Record<keyof typeof en, string> = {
 };
 
 const clientPairs: [string, string][] = [
+  ["Clipboard image pasted.", "图片已粘贴到远程桌面。"],
   ["Show keyboard", "展开键盘"], ["Hide keyboard", "收起键盘"],
   ["Encode", "编码"], ["Socket send", "连接发送"], ["Decode / draw", "解码 / 绘制"],
   ["Audio", "音频"], ["Buffer", "缓冲"], ["Underruns", "欠载次数"], ["Dropped samples", "丢弃采样数"],

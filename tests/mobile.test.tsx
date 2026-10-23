@@ -79,6 +79,7 @@ it("sends committed Chinese exactly once across compositionend and following inp
   expect(texts).toEqual([]);
   input.dispatchEvent(new CompositionEvent("compositionend", { data: "中文" }));
   input.value = "\u200b中文";
+  vi.advanceTimersByTime(50);
   inputEvent("insertText", "中文");
   expect(texts).toEqual(["中文"]);
   vi.advanceTimersByTime(1);

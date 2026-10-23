@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc as sync_mpsc,
     },
     thread::{self, JoinHandle},
@@ -63,6 +63,7 @@ struct Shared {
     stopped: AtomicBool,
     frames: watch::Sender<Option<Arc<Frame>>>,
     capture_socket: Mutex<Option<UnixStream>>,
+    cursor_owner: AtomicU64,
 }
 
 impl Shared {
@@ -81,9 +82,58 @@ pub struct Backend {
     workers: Mutex<Vec<JoinHandle<()>>>,
     input_socket: UnixStream,
     input_done: Mutex<sync_mpsc::Receiver<()>>,
+    cursor_socket: PathBuf,
+    cursor_output: Option<String>,
 }
 
 impl Backend {
+    pub(crate) fn separate_cursor(&self, owner: u64) {
+        let _ = self.shared.cursor_owner.compare_exchange(
+            owner << 1,
+            (owner << 1) | 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+    pub(crate) fn begin_cursor(&self, owner: u64) {
+        self.shared
+            .cursor_owner
+            .store(owner << 1, Ordering::Release);
+    }
+    pub(crate) fn release_cursor(&self, owner: u64) {
+        let _ = self.shared.cursor_owner.compare_exchange(
+            (owner << 1) | 1,
+            owner << 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+    pub(crate) fn cursor_target(&self) -> Result<(PathBuf, i32, Option<String>)> {
+        let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
+        let mut length = std::mem::size_of_val(&peer) as libc::socklen_t;
+        ensure!(
+            unsafe {
+                libc::getsockopt(
+                    self.input_socket.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_PEERCRED,
+                    (&mut peer as *mut libc::ucred).cast(),
+                    &mut length,
+                )
+            } == 0
+                && peer.uid == unsafe { libc::geteuid() },
+            "cursor compositor owner mismatch"
+        );
+        Ok((
+            self.cursor_socket
+                .parent()
+                .context("cursor runtime unavailable")?
+                .to_owned(),
+            peer.pid,
+            self.cursor_output.clone(),
+        ))
+    }
+
     pub fn release_input(&self) -> bool {
         let (done, completed) = sync_mpsc::sync_channel(1);
         self.input
@@ -141,6 +191,7 @@ impl Backend {
             stopped: AtomicBool::new(false),
             frames: frames_tx,
             capture_socket: Mutex::new(None),
+            cursor_owner: AtomicU64::new(0),
         });
         let (input, input_rx) = mpsc::channel(128);
         let (ready_tx, ready_rx) = sync_mpsc::sync_channel(2);
@@ -154,7 +205,11 @@ impl Backend {
             workers: Mutex::new(Vec::new()),
             input_socket,
             input_done: Mutex::new(input_done),
+            cursor_socket: PathBuf::new(),
+            cursor_output: None,
         };
+        backend.cursor_socket = socket.clone();
+        backend.cursor_output = output.clone();
         let input_shared = shared.clone();
         let input_ready = ready_tx.clone();
         let input_output = output.clone();
@@ -273,6 +328,30 @@ impl crate::backend::DesktopBackend for Backend {
     fn cursor_embedded(&self) -> bool {
         true
     }
+    fn begin_cursor(&self, owner: u64) {
+        Backend::begin_cursor(self, owner);
+    }
+    fn separate_cursor(&self, owner: u64) {
+        Backend::separate_cursor(self, owner);
+    }
+    fn release_cursor(&self, owner: u64) {
+        Backend::release_cursor(self, owner);
+    }
+    fn cursor_target(&self) -> Result<(PathBuf, i32, Option<String>)> {
+        Backend::cursor_target(self)
+    }
+    fn supports_image_clipboard(&self) -> bool {
+        true
+    }
+    fn clipboard_write_png<'a>(
+        &'a self,
+        data: &'a [u8],
+    ) -> futures_util::future::BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            ensure!(data.len() <= 8 * 1024 * 1024, "clipboard image too large");
+            self.write_clipboard_bytes("image/png", data).await
+        })
+    }
     fn frames(&self) -> watch::Receiver<Option<Arc<Frame>>> {
         self.frames.clone()
     }
@@ -322,35 +401,68 @@ impl crate::backend::DesktopBackend for Backend {
         text: &'a str,
     ) -> futures_util::future::BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            use tokio::io::AsyncWriteExt;
             ensure!(
                 text.len() <= crate::backend::MAX_CLIPBOARD_BYTES,
                 "clipboard too large"
             );
-            ensure!(
-                !self.shared.stopped.load(Ordering::Acquire),
-                "desktop stopped"
-            );
-            let mut command = clipboard_command(&self.socket_path, "wl-copy")?;
-            let mut child = command
-                .args(["--foreground", "--type", "text/plain;charset=utf-8"])
-                .stdin(std::process::Stdio::piped())
-                .spawn()?;
-            let mut stdin = child.stdin.take().context("clipboard pipe unavailable")?;
-            tokio::time::timeout(Duration::from_secs(2), async {
-                stdin.write_all(text.as_bytes()).await?;
-                stdin.shutdown().await
-            })
-            .await
-            .context("clipboard write timed out")??;
-            drop(stdin);
-            let mut owner = self.clipboard_owner.lock().await;
-            if let Some(mut previous) = owner.take() {
-                let _ = previous.kill().await;
-            }
-            *owner = Some(child);
-            Ok(())
+            self.write_clipboard_bytes("text/plain;charset=utf-8", text.as_bytes())
+                .await
         })
+    }
+}
+
+impl Backend {
+    async fn write_clipboard_bytes(&self, mime: &str, data: &[u8]) -> Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut owner = self.clipboard_owner.lock().await;
+        ensure!(
+            !self.shared.stopped.load(Ordering::Acquire),
+            "desktop stopped"
+        );
+        let mut command = clipboard_command(&self.socket_path, "wl-copy")?;
+        let mut child = command
+            .args(["--foreground", "--type", mime])
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        let mut stdin = child.stdin.take().context("clipboard pipe unavailable")?;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            stdin.write_all(data).await?;
+            stdin.shutdown().await
+        })
+        .await
+        .context("clipboard write timed out")??;
+        drop(stdin);
+        // Closing stdin only delivers the bytes; wl-copy may not own the
+        // selection yet. Confirm the advertised content before a paste chord.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                ensure!(child.try_wait()?.is_none(), "clipboard owner exited");
+                let mut reader = clipboard_command(&self.socket_path, "wl-paste")?
+                    .args(["--no-newline", "--type", mime])
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()?;
+                let mut bytes = Vec::new();
+                reader
+                    .stdout
+                    .take()
+                    .context("clipboard pipe unavailable")?
+                    .take(data.len() as u64 + 1)
+                    .read_to_end(&mut bytes)
+                    .await?;
+                if reader.wait().await?.success() && bytes == data {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            anyhow::Ok(())
+        })
+        .await
+        .context("clipboard ownership confirmation timed out")??;
+        if let Some(mut previous) = owner.take() {
+            let _ = previous.kill().await;
+        }
+        *owner = Some(child);
+        Ok(())
     }
 }
 
@@ -488,6 +600,7 @@ fn run_capture(
     let mut first = true;
     let mut previous_pixels: Arc<[u8]> = Arc::from([]);
     let mut previous_dimensions = (0, 0);
+    let mut previous_cursor = true;
     let mut batch: Option<CaptureBatch> = None;
     let mut capture_failures = 0;
     while !shared.stopped.load(Ordering::Acquire) {
@@ -533,17 +646,18 @@ fn run_capture(
         let capture = &current.connection;
         // Preserve compositor/application cursor shapes in both video codecs.
         // Readiness advertises this so the browser can hide its local cursor.
+        let cursor_embedded = shared.cursor_owner.load(Ordering::Acquire) & 1 == 0;
         let captured = if let Some(name) = &target.output {
             let output = capture
                 .get_all_outputs()
                 .iter()
                 .find(|output| &output.name == name)
                 .context("selected monitor disconnected")?;
-            capture.screenshot_single_output(output, true)
+            capture.screenshot_single_output(output, cursor_embedded)
         } else if capture.get_all_outputs().len() == 1 {
-            capture.screenshot_single_output(&capture.get_all_outputs()[0], true)
+            capture.screenshot_single_output(&capture.get_all_outputs()[0], cursor_embedded)
         } else {
-            capture.screenshot_all(true)
+            capture.screenshot_all(cursor_embedded)
         };
         let image = match captured {
             Ok(image) => {
@@ -569,7 +683,9 @@ fn run_capture(
         let rgba = image.into_rgba8();
         let dimensions = (rgba.width(), rgba.height());
         let changed = previous_dimensions != dimensions
-            || previous_pixels.as_ref() != rgba.as_raw().as_slice();
+            || previous_pixels.as_ref() != rgba.as_raw().as_slice()
+            || previous_cursor != cursor_embedded;
+        previous_cursor = cursor_embedded;
         if shared.stopped.load(Ordering::Acquire) {
             break;
         }
@@ -583,6 +699,7 @@ fn run_capture(
             jpeg: OnceLock::new(),
             pixels: previous_pixels.clone(),
             captured_at,
+            cursor_embedded,
         });
         publish_frame(shared, frame, changed);
         if first {
@@ -742,6 +859,15 @@ impl Devices {
                     "invalid evdev keycode"
                 );
                 self.key(code, pressed);
+            }
+            InputCommand::Chord { codes } => {
+                self.release();
+                for code in &codes {
+                    self.key(*code, true);
+                }
+                for code in codes.iter().rev() {
+                    self.key(*code, false);
+                }
             }
             InputCommand::Scroll { x, y } => {
                 ensure!(x.is_finite() && y.is_finite(), "non-finite scroll");
@@ -1007,6 +1133,7 @@ pub(crate) mod tests {
             pixels: vec![127; 640 * 360 * 4].into(),
             jpeg: OnceLock::new(),
             captured_at: Instant::now(),
+            cursor_embedded: true,
         };
         assert!(frame.jpeg.get().is_none());
         let jpeg = frame.jpeg(75).unwrap();
@@ -1026,6 +1153,7 @@ pub(crate) mod tests {
             jpeg: OnceLock::new(),
             pixels: Arc::from([]),
             captured_at: Instant::now(),
+            cursor_embedded: true,
         });
         publish_frame(&backend.shared, frame, false);
         assert!(!backend.frames.has_changed().unwrap());
@@ -1040,6 +1168,7 @@ pub(crate) mod tests {
             jpeg: OnceLock::new(),
             pixels: color.repeat(width as usize * height as usize).into(),
             captured_at: Instant::now(),
+            cursor_embedded: true,
         })
     }
 
@@ -1064,6 +1193,7 @@ pub(crate) mod tests {
                 jpeg: OnceLock::new(),
                 pixels: Arc::from([]),
                 captured_at,
+                cursor_embedded: true,
             })
         });
         let (sender, frames) = watch::channel(frame);
@@ -1078,11 +1208,29 @@ pub(crate) mod tests {
                 stopped: AtomicBool::new(false),
                 frames: sender,
                 capture_socket: Mutex::new(None),
+                cursor_owner: AtomicU64::new(0),
             }),
             workers: Mutex::new(Vec::new()),
             input_socket: UnixStream::pair().unwrap().0,
             input_done: Mutex::new(input_done),
+            cursor_socket: PathBuf::new(),
+            cursor_output: None,
         }
+    }
+
+    #[test]
+    fn stale_cursor_channels_cannot_change_a_new_connections_mode() {
+        let backend = backend_with_frame(None);
+        backend.begin_cursor(1);
+        backend.separate_cursor(1);
+        assert_eq!(backend.shared.cursor_owner.load(Ordering::Acquire), 3);
+        backend.begin_cursor(2);
+        backend.separate_cursor(2);
+        backend.release_cursor(1);
+        backend.separate_cursor(1);
+        assert_eq!(backend.shared.cursor_owner.load(Ordering::Acquire), 5);
+        backend.release_cursor(2);
+        assert_eq!(backend.shared.cursor_owner.load(Ordering::Acquire), 4);
     }
 
     #[test]

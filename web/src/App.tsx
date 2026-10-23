@@ -155,6 +155,7 @@ function Workspace() {
     }}
     onKeyDownCapture={(event) => { event.currentTarget.dataset.input = "keyboard"; document.documentElement.dataset.input = "keyboard"; }}>
     <canvas id="desktop" width="1280" height="720" tabIndex={0} aria-label={t("canvas")} aria-describedby="help" />
+    <img id="remote-cursor" className="remote-cursor" alt="" aria-hidden="true" hidden />
     <textarea id="mobile-input" className="mobile-input" tabIndex={-1} aria-label={t("mobileInput")}
       autoCapitalize="off" autoCorrect="off" autoComplete="off" spellCheck={false} inputMode="text" enterKeyHint="enter" />
     <nav id="mobile-shortcuts" className="mobile-shortcuts" aria-label={t("mobileShortcuts")}>

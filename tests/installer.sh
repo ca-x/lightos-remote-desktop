@@ -329,4 +329,19 @@ chmod 0600 "$workspace/lightos-codec-ffmpeg"
 reject run
 pass 'present but non-executable native worker is rejected before staging'
 
+rm "$workspace/lightos-codec-ffmpeg"
+printf 'cursor adapter fixture\n' > "$workspace/lightos-cursor.so"
+run
+with_cursor=$(readlink "$base/current")
+cmp "$workspace/lightos-cursor.so" "$base/current/lightos-cursor.so"
+printf 'updated adapter\n' >> "$workspace/lightos-cursor.so"
+run
+[[ $(readlink "$base/current") != "$with_cursor" ]]
+cmp "$workspace/lightos-cursor.so" "$base/current/lightos-cursor.so"
+pass 'cursor adapter is copied and participates in immutable release identity'
+rm "$workspace/lightos-cursor.so"
+run
+[[ $(readlink "$base/current") == "releases/$software" && ! -e $base/current/lightos-cursor.so ]]
+pass 'software-only rollback identity does not retain a cursor adapter'
+
 printf 'PASS: %s installer behaviors (activation mocked); no host activation or binary execution.\n' "$count"

@@ -36,7 +36,7 @@ base64 = "0.22"
 bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 libc = "0.2"
 libwayshot = { version = "0.9", default-features = false }
 libpulse-binding = "2.30.1"

@@ -9,6 +9,7 @@ body { color: var(--text); }
 #desktop { display: block; width: auto; height: auto; max-width: none; max-height: none; touch-action: none; }
 #viewport.fit { display: flex; align-items: center; justify-content: center; overflow: hidden; }
 #viewport.fit #desktop { width: min(100vw, calc(100dvh * var(--desktop-aspect, 1.777778))); height: auto; max-height: 100dvh; object-fit: contain; }
+#viewport.fit.native-pixel-fit #desktop { width: min(100vw, calc(100dvh * var(--desktop-aspect, 1.777778)), var(--desktop-native-width, 100vw)); }
 #viewport:fullscreen { width: 100vw; height: 100dvh; }
 #tools { position: fixed; z-index: 10; left: var(--tool-x, calc(100vw - 52px)); top: var(--tool-y, 50%); width: 44px; height: 48px; pointer-events: none; }
 button, input, textarea, select { font: inherit; }
@@ -237,3 +238,5 @@ button:active:not(:disabled) { transform: scale(.97); }
 @media (prefers-contrast: more) { .session-menu { border-color: var(--text); } }
 
 .about-brand > img { width: 48px; height: 48px; object-fit: contain; flex-shrink: 0; }
+.remote-cursor { position: fixed; top: 0; left: 0; z-index: 5; pointer-events: none; user-select: none; max-width: none; object-fit: fill; will-change: transform; }
+.remote-cursor[hidden] { display: none; }

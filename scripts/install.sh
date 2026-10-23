@@ -169,6 +169,14 @@ else
         digest=$(printf 'codec-worker-v1\n%s\n%s\n' "$binary_digest" "$worker_digest" | sha256sum); digest=${digest%% *}
     fi
     release=$base/releases/$digest
+    cursor_adapter=${binary%/*}/lightos-cursor.so
+    cursor_digest=
+    if exists "$cursor_adapter"; then
+        [[ -f $cursor_adapter && -s $cursor_adapter && ! -L $cursor_adapter ]] || fail 'optional cursor adapter must be a regular file'
+        cursor_digest=$(sha256sum -- "$cursor_adapter"); cursor_digest=${cursor_digest%% *}
+        digest=$(printf 'cursor-adapter-v1\n%s\n%s\n' "$digest" "$cursor_digest" | sha256sum); digest=${digest%% *}
+        release=$base/releases/$digest
+    fi
     [[ ! -L $release ]] || fail 'release directory must not be a symlink'
     if exists "$release"; then
         [[ -f $release/lightos-remote-desktop && ! -L $release/lightos-remote-desktop ]] || fail 'invalid existing release'
@@ -180,6 +188,13 @@ else
             [[ $actual == "$worker_digest" ]] || fail 'existing release codec worker checksum mismatch'
         else
             ! exists "$release/lightos-codec-ffmpeg" || fail 'unexpected worker in software-only release'
+        fi
+        if [[ -n $cursor_digest ]]; then
+            [[ -f $release/lightos-cursor.so && ! -L $release/lightos-cursor.so ]] || fail 'existing release cursor adapter missing'
+            actual=$(sha256sum -- "$release/lightos-cursor.so"); actual=${actual%% *}
+            [[ $actual == "$cursor_digest" ]] || fail 'existing release cursor adapter checksum mismatch'
+        else
+            ! exists "$release/lightos-cursor.so" || fail 'unexpected cursor adapter in release'
         fi
     fi
 fi
@@ -231,6 +246,11 @@ if [[ ! -d $release ]]; then
         install -m 0755 -- "$worker" "$staging/lightos-codec-ffmpeg"
         actual=$(sha256sum -- "$staging/lightos-codec-ffmpeg"); actual=${actual%% *}
         [[ $actual == "$worker_digest" ]] || fail 'codec worker changed while copying'
+    fi
+    if [[ -n $cursor_digest ]]; then
+        install -m 0644 -- "$cursor_adapter" "$staging/lightos-cursor.so"
+        actual=$(sha256sum -- "$staging/lightos-cursor.so"); actual=${actual%% *}
+        [[ $actual == "$cursor_digest" ]] || fail 'cursor adapter changed while copying'
     fi
     chmod 0755 "$staging"
     mv -T -- "$staging" "$release"

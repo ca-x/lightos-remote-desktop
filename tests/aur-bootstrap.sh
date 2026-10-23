@@ -283,16 +283,20 @@ cp "$root/candidate" "$root/candidate-a"
 printf '# candidate B\n' >> "$root/candidate"
 printf '#!/bin/sh\nexit 0\n# rejected B helper\n' > "$root/lightos-codec-ffmpeg"
 chmod +x "$root/lightos-codec-ffmpeg"
+printf 'rejected cursor adapter\n' > "$root/lightos-cursor.so"
 touch "$root/fail-doctor"
 if install_standalone; then echo 'Rejected helper candidate B unexpectedly activated' >&2; exit 1; fi
 check test -x "$root/usr/lib/lightos-remoted/lightos-codec-ffmpeg"
-rm "$root/lightos-codec-ffmpeg"
+check test -f "$root/usr/lib/lightos-remoted/lightos-cursor.so"
+rm "$root/lightos-codec-ffmpeg" "$root/lightos-cursor.so"
 printf '# candidate C\n' >> "$root/candidate"
 if install_standalone; then echo 'Rejected helper candidate C unexpectedly activated' >&2; exit 1; fi
 check test ! -e "$root/var/lib/lightos-remoted-install/latest/helper"
+check test ! -e "$root/var/lib/lightos-remoted-install/latest/cursor"
 bash "$repository/scripts/service-install.sh" --rollback --stage-only --test-root "$root" > "$root/install-output" 2>&1
 check cmp "$root/candidate-a" "$root/usr/lib/lightos-remoted/lightos-remoted"
 check test ! -e "$root/usr/lib/lightos-remoted/lightos-codec-ffmpeg"
+check test ! -e "$root/usr/lib/lightos-remoted/lightos-cursor.so"
 # v0.1.11's exact paired local fix is redundant with the new exported units.
 short_pair() {
     mkdir -p "$root/etc/systemd/system/lightos-remote-desktop-session.service.d" "$root/etc/systemd/system/lightos-remote-desktop.service.d"

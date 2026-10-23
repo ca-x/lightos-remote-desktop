@@ -4,10 +4,14 @@ import test from "node:test";
 import vm from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
 
-const mobileSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/mobile.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
+const cursorSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/cursor.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
+const updatesSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/desktop-updates.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
+const resolutionSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/resolution.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
+const mobileSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/mobile.ts", import.meta.url), "utf8")).replace(/^export /gm, "").replace(/^import .* from .*;$/gm, "");
+const clipboardSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/clipboard.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const codecSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/video-codec.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const preferenceSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/preferences.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
-const source = mobileSource + "\n" + preferenceSource + "\n" + codecSource + "\n" + stripTypeScriptTypes(readFileSync(new URL("../web/src/client.ts", import.meta.url), "utf8"))
+const source = cursorSource + "\n" + updatesSource + "\n" + resolutionSource + "\n" + mobileSource + "\n" + clipboardSource + "\n" + preferenceSource + "\n" + codecSource + "\n" + stripTypeScriptTypes(readFileSync(new URL("../web/src/client.ts", import.meta.url), "utf8"))
 
   .replace(/^import .* from .*;$/gm, "")
   .replace(/^export /gm, "") + '\nconst audioWorkerUrl = "./audio-worker.js"; const audioWorkletUrl = "./audio-worklet.js"; const client = createClient(clientOptions);';
@@ -27,7 +31,7 @@ test("toolbar displays the server version without accepting malformed values", (
   assert.equal(app.nodes["software-version"].textContent, "v0.1.2");
 });
 
-function harness(pathname = "/", storage = new Map(), clientOptions = {}) {
+function harness(pathname = "/", storage = new Map(), clientOptions = {}, pixelRatio = 1) {
   class Target {
     handlers = new Map();
     disabled = false;
@@ -52,6 +56,7 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}) {
       return event;
     }
     setAttribute(name, value) { this.attributes[name] = value; }
+    removeAttribute(name) { delete this.attributes[name]; }
     appendChild(child) { (this.children ??= []).push(child); }
     replaceChildren(...children) { this.children = children; }
     getBoundingClientRect() { return { left: 10, top: 20, width: 200, height: 100 }; }
@@ -86,6 +91,12 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}) {
   const window = new Target();
   window.innerWidth = 1280;
   window.innerHeight = 720;
+  window.devicePixelRatio = pixelRatio;
+  const mediaQueries = [];
+  window.matchMedia = media => {
+    const query = new Target(); query.media = media; query.matches = false;
+    mediaQueries.push(query); return query;
+  };
   const sockets = [];
   class WebSocket {
     static OPEN = 1;
@@ -166,7 +177,7 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}) {
     animationFrames.clear();
     for (const callback of callbacks) callback();
   };
-  return { nodes, document, window, sockets, ready, fireKey, run, timers, tick, decodes, draws, clears, contexts, navigator, AudioContext, paint, animationFrames, advance: (elapsed) => { now += elapsed; } };
+  return { nodes, document, window, sockets, ready, fireKey, run, timers, tick, decodes, draws, clears, mediaQueries, contexts, navigator, AudioContext, paint, animationFrames, advance: (elapsed) => { now += elapsed; } };
 }
 
 const desktopChoices = [
@@ -705,7 +716,7 @@ test("late keyboard permission cannot capture after disconnect, denial and unsup
   assert.match(unsupported.nodes["keyboard-state"].textContent, /不支持/);
 });
 
-test("captured Super+Enter and Ctrl+V are sent as remote chords and released on focus loss", async () => {
+test("capture sends Super+Enter remotely while Ctrl+V keeps local clipboard paste available", async () => {
   const app = harness();
   app.navigator.keyboard = { lock: async () => {}, unlock() {} };
   const socket = app.ready();
@@ -722,10 +733,9 @@ test("captured Super+Enter and Ctrl+V are sent as remote chords and released on 
   app.window.fire("keyup", { code: "MetaLeft" });
   socket.sent.length = 0;
   const paste = app.fireKey("KeyV", { ctrlKey: true });
-  assert.equal(paste.defaultPrevented, true);
+  assert.equal(paste.defaultPrevented, undefined);
   assert.deepEqual(socket.sent, [
     { type: "key", code: 29, pressed: true },
-    { type: "key", code: 47, pressed: true },
   ]);
   app.nodes.desktop.fire("blur");
   assert.equal(socket.sent.at(-1).type, "release");
@@ -1039,6 +1049,66 @@ test("automatic resolution follows viewport CSS pixels with debounce, even dimen
   assert.equal(app.timers.size, 0);
 });
 
+test("PC follows native pixel density and changes density without a CSS viewport resize", () => {
+  const app = harness("/", new Map(), {}, 2);
+  const socket = app.ready();
+  socket.json({ type: "ready", width: 1280, height: 800, resize_scale: true, resize_scales: [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3] });
+  app.nodes.viewport.clientWidth = 1280; app.nodes.viewport.clientHeight = 800;
+  app.nodes["auto-resolution"].checked = true;
+  app.window.fire("resize"); app.tick();
+  assert.deepEqual(socket.sent.at(-1), { type: "resize", width: 2560, height: 1600, scale: 2 });
+  app.window.devicePixelRatio = 1.25;
+  app.mediaQueries.find(query => query.media === "(resolution: 2dppx)").fire("change");
+  app.tick();
+  assert.deepEqual(socket.sent.at(-1), { type: "resize", width: 1600, height: 1000, scale: 1.25 });
+  assert.equal(app.mediaQueries.at(-1).media, "(resolution: 1.25dppx)");
+  app.window.fire("resize"); app.tick();
+  assert.equal(socket.sent.filter(command => command.type === "resize").length, 2);
+});
+
+test("PC uses only negotiated scales and retains manual resolution opt-out", () => {
+  const app = harness("/", new Map(), {}, 1.25);
+  const socket = app.ready();
+  socket.json({ type: "ready", width: 1280, height: 800, resize_scale: true });
+  app.nodes.viewport.clientWidth = 1280; app.nodes.viewport.clientHeight = 800;
+  app.nodes["auto-resolution"].checked = true;
+  app.window.fire("resize"); app.tick();
+  assert.deepEqual(socket.sent.at(-1), { type: "resize", width: 1280, height: 800, scale: 1 });
+  app.nodes["mode-actual"].fire("click");
+  app.window.devicePixelRatio = 2;
+  app.mediaQueries.find(query => query.media === "(resolution: 1.25dppx)").fire("change");
+  assert.equal(app.timers.size, 0);
+});
+
+test("PC physical fit fills the available window without requesting a physical resize", () => {
+  const app = harness("/", new Map(), {}, 2);
+  const socket = app.ready();
+  socket.json({ type: "ready", desktop: "physical", width: 1920, height: 1080, resize: false });
+  assert.equal(app.nodes.viewport.classList.contains("native-pixel-fit"), false);
+  assert.equal(app.nodes.desktop.style.values["--desktop-native-width"], "960px");
+  app.window.devicePixelRatio = 1.25;
+  app.window.fire("resize");
+  assert.equal(app.nodes.desktop.style.values["--desktop-native-width"], "1536px");
+  assert.equal(socket.sent.some(command => command.type === "resize"), false);
+  socket.json({ type: "ready", desktop: "virtual", width: 1280, height: 720 });
+  assert.equal(app.nodes.viewport.classList.contains("native-pixel-fit"), false);
+});
+
+test("PC fit does not stretch rounded encoder pixels even on a standard-density screen", async () => {
+  const app = harness();
+  const socket = app.ready();
+  socket.json({ type: "ready", width: 1280, height: 720, resize_scale: true });
+  app.nodes.viewport.clientWidth = 1919; app.nodes.viewport.clientHeight = 1079;
+  app.nodes["auto-resolution"].checked = true;
+  app.window.fire("resize"); app.tick();
+  socket.binary(jpeg(1)); app.decodes.at(-1).resolve(bitmap(1918, 1078)); await flush();
+  assert.equal(app.nodes.viewport.classList.contains("native-pixel-fit"), true);
+  assert.equal(app.nodes.desktop.style.values["--desktop-native-width"], "1918px");
+  app.nodes["auto-resolution"].checked = false;
+  app.nodes["auto-resolution"].fire("change");
+  assert.equal(app.nodes.viewport.classList.contains("native-pixel-fit"), false);
+});
+
 for (const acknowledgeInitialResize of [false, true]) {
   test(`fullscreen restores resolution after a manual downsize (${acknowledgeInitialResize ? "completed" : "pending"} earlier request)`, async () => {
     const app = harness();
@@ -1072,6 +1142,31 @@ for (const acknowledgeInitialResize of [false, true]) {
 
 function jpeg(marker) { return new Uint8Array([1, marker]).buffer; }
 function bitmap(width = 1280, height = 720) { return { width, height, closed: false, close() { this.closed = true; } }; }
+function desktopTile(x=5,y=7) {
+  const packet=new ArrayBuffer(41),view=new DataView(packet);view.setUint8(0,4);
+  for(const [offset,value] of [[1,1280],[5,720],[9,1],[13,x],[17,y],[21,1],[25,1],[29,8]])view.setUint32(offset,value,true);
+  new Uint8Array(packet,33).set([137,80,78,71,13,10,26,10]);return packet;
+}
+
+test("lossless damage draws in wire order and ACKs only after real canvas updates", async()=>{
+  const app=harness(),socket=app.sockets[0];socket.open();
+  socket.json({type:"ready",width:1280,height:720,frame_ack:true,frame_ids:true,lossless_updates:true});
+  assert(socket.sent.some(c=>c.type==='lossless_updates'&&c.enabled));socket.sent.length=0;
+  socket.json({type:'frame_id',id:1});socket.binary(desktopTile());
+  socket.json({type:'frame_id',id:2});socket.binary(desktopTile(9,11));
+  await flush();assert.equal(app.decodes.length,1);assert.equal(socket.sent.length,0);
+  const first=bitmap(1,1);app.decodes[0].resolve(first);await flush();
+  assert.deepEqual(socket.sent.at(-1),{type:'frame_ack',id:1});assert.deepEqual(app.draws[0].slice(1),[5,7]);assert(first.closed);
+  assert.equal(app.decodes.length,2);app.decodes[1].resolve(bitmap(1,1));await flush();
+  assert.deepEqual(socket.sent.at(-1),{type:'frame_ack',id:2});assert.deepEqual(app.draws[1].slice(1),[9,11]);
+});
+
+test("stale lossless decoders cannot paint or acknowledge a replacement desktop",async()=>{
+  const app=harness(),socket=app.ready();socket.json({type:'ready',width:1280,height:720,frame_ack:true,frame_ids:true,lossless_updates:true});
+  socket.json({type:'frame_id',id:1});socket.binary(desktopTile());await flush();
+  socket.finishClose();app.tick();const next=app.ready();const before=app.draws.length;
+  app.decodes[0].resolve(bitmap(1,1));await flush();assert.equal(app.draws.length,before);assert.deepEqual(next.sent,[]);
+});
 function pcm(frames = 1) {
   const data = new ArrayBuffer(1 + frames * 8);
   const view = new DataView(data);
@@ -1233,6 +1328,73 @@ test("composition and explicit Unicode text do not duplicate physical keys", () 
   app.nodes.text.value = "界".repeat(6000);
   app.nodes["send-text"].fire("click");
   assert.equal(socket.sent.filter((command) => command.type === "text").length, 2);
+});
+
+test("desktop focus uses an editable IME and preserves physical keys without duplicating input", () => {
+  const app = harness();
+  const socket = app.ready();
+  app.nodes.desktop.fire("focus");
+  const input = app.nodes["mobile-input"];
+  assert.equal(app.document.activeElement, input);
+  assert.equal(input.disabled, false);
+  const down = input.fire("keydown", { code: "KeyA", key: "a" });
+  assert.equal(down.defaultPrevented, undefined);
+  assert.equal(socket.sent.some(c => c.type === "key"), false, "wait for native text vs IME decision");
+  input.fire("beforeinput", { inputType: "insertText", data: "a", cancelable: true });
+  app.window.fire("keyup", { code: "KeyA" });
+  assert.deepEqual(socket.sent.filter(c => c.type === "key"), [
+    { type: "key", code: 30, pressed: true }, { type: "key", code: 30, pressed: false },
+  ]);
+  assert.equal(socket.sent.some(c => c.type === "text"), false);
+  input.fire("keydown", { code: "KeyN", key: "n" });
+  input.fire("compositionstart");
+  input.value = "\u200b你";
+  input.fire("input", { inputType: "insertCompositionText", isComposing: true });
+  input.fire("compositionend", { data: "你好" });
+  input.value = "\u200b你好";
+  input.fire("input", { inputType: "insertText", data: "你好" });
+  assert.deepEqual(socket.sent.filter(c => c.type === "text"), [{ type: "text", text: "你好" }]);
+  assert.equal(socket.sent.some(c => c.code === 49), false, "initial IME key must not leak remotely");
+});
+
+test("clicking the canvas before readiness restores editable focus when physical setup finishes", () => {
+  const app=harness();app.nodes.desktop.focus();
+  const socket=app.ready();
+  socket.json({type:'ready',desktop:'physical',width:1280,height:720,resize:false});
+  assert.equal(app.document.activeElement,app.nodes['mobile-input']);
+  app.nodes.desktop.focus();
+  app.nodes.desktop.fire('pointerdown',{button:0,pointerId:1,clientX:50,clientY:50});
+  assert.equal(app.document.activeElement,app.nodes['mobile-input']);
+});
+
+test("repeated shortcut sender uses atomic chords and restores desktop keyboard focus", () => {
+  const app = harness();
+  const socket = app.ready();
+  socket.json({ type: "ready", width: 1280, height: 720, key_chords: true });
+  app.nodes["shortcut-ctrl"].checked = true;
+  app.nodes["shortcut-key"].value = "KeyA";
+  socket.sent.length = 0;
+  for (let i = 0; i < 30; i++) {
+    app.nodes["send-shortcut"].focus();
+    app.nodes["send-shortcut"].fire("click");
+    assert.equal(app.document.activeElement, app.nodes.desktop);
+    app.fireKey("KeyX");
+    app.window.fire("keyup", { code: "KeyX" });
+  }
+  assert.equal(socket.sent.filter(c => c.type === "chord").length, 30);
+  assert.deepEqual(socket.sent.find(c => c.type === "chord"), { type: "chord", codes: [29, 30] });
+  assert.equal(socket.sent.filter(c => c.code === 45 && c.pressed === true).length, 30);
+  assert.equal(socket.sent.filter(c => c.code === 45 && c.pressed === false).length, 30);
+});
+
+test("negotiated text paste uses the native clipboard and retains terminal Ctrl+Shift+V", () => {
+  const app = harness();
+  const socket = app.ready();
+  socket.json({ type: "ready", width: 1280, height: 720, image_clipboard: true });
+  app.fireKey("KeyV", { ctrlKey: true, shiftKey: true });
+  app.nodes.desktop.fire("paste", { clipboardData: { getData: () => "中文🙂\nsecond line" } });
+  assert.deepEqual(socket.sent.at(-1), { type: "clipboard_paste_text", text: "中文🙂\nsecond line", shift: true });
+  assert.equal(socket.sent.some(c => c.type === "text"), false);
 });
 
 test("clipboard is explicit, paste releases modifiers, and stale async reads are ignored", async () => {
@@ -1824,4 +1986,34 @@ test("desktop pause clears old video and input while preserving the connection f
   assert.equal(app.draws.length, 1);
   assert.equal(socket.readyState, 1);
   assert.equal(app.sockets.length, 1);
+});
+
+test("desktop pause closes independent cursor and resumes a fresh cursor channel", () => {
+  const app = harness();
+  const socket = app.ready();
+  const token = "a".repeat(32);
+  socket.json({ type: "ready", width: 1280, height: 720, cursor: "embedded", cursor_session: token, frame_ack: true, frame_ids: true, key_chords: true });
+  const cursor = app.sockets.at(-1);
+  assert.match(cursor.url, /cursor\?session=/);
+  socket.json({ type: "desktop_state", available: false });
+  assert.equal(cursor.onmessage, null, "paused cursor must discard delayed packets");
+  assert.equal(app.nodes["remote-cursor"].hidden, true);
+  assert.equal(app.nodes["mobile-input"].disabled, true);
+  socket.json({ type: "desktop_state", available: true });
+  assert.notEqual(app.sockets.at(-1), cursor);
+  assert.equal(app.sockets.at(-1).url, cursor.url);
+  assert.equal(app.nodes["mobile-input"].disabled, false);
+});
+
+test("non-embedded backends retain a local pointer through resize and pause", () => {
+  const app = harness();
+  const socket = app.ready();
+  socket.json({ type: "ready", width: 1280, height: 720, cursor: "default" });
+  app.window.fire("resize");
+  assert.equal(app.nodes.desktop.style.values.cursor, "default");
+  socket.json({ type: "desktop_state", available: false });
+  assert.equal(app.nodes.desktop.style.values.cursor, "none");
+  socket.json({ type: "desktop_state", available: true });
+  app.window.fire("resize");
+  assert.equal(app.nodes.desktop.style.values.cursor, "default");
 });

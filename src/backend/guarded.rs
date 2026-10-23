@@ -449,6 +449,43 @@ impl DesktopBackend for GuardedBackend {
     fn cursor_embedded(&self) -> bool {
         self.inner.cursor_embedded()
     }
+    fn begin_cursor(&self, owner: u64) {
+        self.inner.begin_cursor(owner);
+    }
+    fn release_cursor(&self, owner: u64) {
+        self.inner.release_cursor(owner);
+    }
+    fn separate_cursor(&self, owner: u64) {
+        if !self.paused() && !self.is_stopped() {
+            self.inner.separate_cursor(owner);
+        }
+    }
+    fn cursor_target(&self) -> Result<(std::path::PathBuf, i32, Option<String>)> {
+        ensure!(
+            !self.paused() && !self.is_stopped(),
+            "desktop locked or unavailable"
+        );
+        self.inner.cursor_target()
+    }
+    fn supports_image_clipboard(&self) -> bool {
+        self.inner.supports_image_clipboard()
+    }
+    fn clipboard_write_png<'a>(&'a self, data: &'a [u8]) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let generation = self.generation.load(Ordering::Acquire);
+            ensure!(!self.paused(), "desktop locked or unavailable");
+            tokio::select! {
+                biased;
+                _ = self.wait_for_lock(generation) => bail!("desktop locked during clipboard write"),
+                result = self.inner.clipboard_write_png(data) => result?,
+            }
+            ensure!(
+                self.generation.load(Ordering::Acquire) == generation && !self.paused(),
+                "desktop locked during clipboard write"
+            );
+            Ok(())
+        })
+    }
     fn paused(&self) -> bool {
         self.blocked.load(Ordering::Acquire) || self.inner.paused()
     }

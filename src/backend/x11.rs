@@ -1159,6 +1159,35 @@ fn process_input(
                 tracing::warn!("X11 input release failed: {message}");
             }
         }
+        InputCommand::Chord { codes } => {
+            match process.exchange(&WireRequest::Release, REQUEST_TIMEOUT)? {
+                WireReply::Ok { .. } => {}
+                _ => bail!("X11 input release before chord failed"),
+            }
+            let result = (|| -> Result<()> {
+                for code in codes {
+                    if shared.stopped.load(Ordering::Acquire)
+                        || guard.as_ref().is_some_and(|guard| !guard.active())
+                    {
+                        break;
+                    }
+                    send_input(
+                        process,
+                        WireInput::Key {
+                            code,
+                            pressed: true,
+                        },
+                    )?;
+                }
+                Ok(())
+            })();
+            let released = process.exchange(&WireRequest::Release, REQUEST_TIMEOUT);
+            result?;
+            ensure!(
+                matches!(released?, WireReply::Ok { .. }),
+                "X11 chord release failed"
+            );
+        }
         InputCommand::Text { text } => {
             let result = (|| -> Result<()> {
                 match process.exchange(&WireRequest::Release, REQUEST_TIMEOUT)? {

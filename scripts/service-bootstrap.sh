@@ -76,6 +76,10 @@ if ((snapshot_only)); then
             [[ -f $managed/lightos-codec-ffmpeg && ! -L $managed/lightos-codec-ffmpeg ]] || fail 'codec helper must be a regular file'
             install -m 0755 "$managed/lightos-codec-ffmpeg" "$staging/lightos-codec-ffmpeg"
         fi
+        if [[ -e $managed/lightos-cursor.so ]]; then
+            [[ -f $managed/lightos-cursor.so && ! -L $managed/lightos-cursor.so ]] || fail 'cursor adapter must be a regular file'
+            install -m 0644 "$managed/lightos-cursor.so" "$staging/lightos-cursor.so"
+        fi
         rm -rf -- "$state/previous"
         chmod 0755 "$staging"
         mv -T -- "$staging" "$state/previous"

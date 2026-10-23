@@ -41,13 +41,15 @@ pub struct DisplayMode {
 }
 
 impl DisplayMode {
+    pub const SUPPORTED_SCALES: [f64; 9] = [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0];
+
     pub fn validate(self) -> Result<()> {
         ensure!(
             (320..=3840).contains(&self.width) && (200..=2160).contains(&self.height),
             "invalid dimensions"
         );
         ensure!(
-            [1.0, 1.5, 2.0, 2.5, 3.0].contains(&self.scale),
+            Self::SUPPORTED_SCALES.contains(&self.scale),
             "invalid desktop scale"
         );
         let width = self.width as f64 / self.scale;
@@ -119,6 +121,10 @@ mod mode_tests {
             (801, 601, 1.0),
             (970, 1840, 2.5),
             (1080, 1602, 3.0),
+            (1600, 1000, 1.25),
+            (2240, 1400, 1.75),
+            (2880, 1800, 2.25),
+            (3520, 2112, 2.75),
         ] {
             assert!(
                 DisplayMode {
@@ -137,6 +143,8 @@ mod mode_tests {
             (320, 200, 2.0),
             (4000, 2000, 2.0),
             (800, 600, f64::NAN),
+            (1600, 1000, 1.2),
+            (1602, 1000, 1.25),
         ] {
             assert!(
                 DisplayMode {

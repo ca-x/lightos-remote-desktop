@@ -40,6 +40,7 @@ struct MockBackend {
     input_worker: Mutex<Option<thread::JoinHandle<()>>>,
     clipboard_started: tokio::sync::Notify,
     clipboard_finish: tokio::sync::Notify,
+    image_written: AtomicBool,
 }
 
 impl MockBackend {
@@ -79,6 +80,7 @@ impl MockBackend {
                 input_worker: Mutex::new(Some(input_worker)),
                 clipboard_started: tokio::sync::Notify::new(),
                 clipboard_finish: tokio::sync::Notify::new(),
+                image_written: AtomicBool::new(false),
             }),
             received,
         )
@@ -101,6 +103,20 @@ impl DesktopBackend for MockBackend {
         if let Some(worker) = self.input_worker.lock().unwrap().take() {
             let _ = worker.join();
         }
+    }
+    fn cursor_target(&self) -> Result<(std::path::PathBuf, i32, Option<String>)> {
+        Ok(("/mock-cursor".into(), 1, None))
+    }
+    fn supports_image_clipboard(&self) -> bool {
+        true
+    }
+    fn clipboard_write_png<'a>(&'a self, _data: &'a [u8]) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async {
+            self.clipboard_started.notify_one();
+            self.clipboard_finish.notified().await;
+            self.image_written.store(true, Ordering::Release);
+            Ok(())
+        })
     }
     fn clipboard_read(&self) -> BoxFuture<'_, Result<String>> {
         Box::pin(async {
@@ -405,4 +421,43 @@ async fn clipboard_read_started_before_lock_cannot_return_text_after_lock() {
         InputEvent::ReleaseStarted
     );
     guard.stop();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lock_blocks_cursor_source_and_cancels_image_write() {
+    let (inner, _) = MockBackend::new(Duration::ZERO);
+    let monitor = MockMonitor::new(false);
+    let guard = attach_with_monitor(inner.clone(), Some(monitor.clone())).unwrap();
+    assert!(guard.cursor_target().is_ok());
+    assert!(guard.supports_image_clipboard());
+    let writing = guard.clone();
+    let task = tokio::spawn(async move { writing.clipboard_write_png(b"png").await });
+    tokio::time::timeout(Duration::from_secs(1), inner.clipboard_started.notified())
+        .await
+        .unwrap();
+    monitor.locked.store(true, Ordering::Release);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err()
+    );
+    assert!(guard.cursor_target().is_err());
+    inner.clipboard_finish.notify_one();
+    assert!(!inner.image_written.load(Ordering::Acquire));
+    assert!(guard.clipboard_write_png(b"png").await.is_err());
+    monitor.locked.store(false, Ordering::Release);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while guard.paused() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(guard.cursor_target().is_ok());
+    guard.clipboard_write_png(b"png").await.unwrap();
+    assert!(inner.image_written.load(Ordering::Acquire));
+    guard.stop();
+    assert!(guard.cursor_target().is_err());
 }

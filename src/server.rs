@@ -42,6 +42,7 @@ use crate::{
     audio::{AudioFormat, AudioStream},
     audio_channel::{self, AudioHub},
     backend::{self, BackendKind, BackendReport, DesktopBackend, InputCommand},
+    clipboard::ImageUpload,
     config::Config,
     session::Session,
 };
@@ -77,6 +78,7 @@ pub struct AppState {
     pub session: Arc<Mutex<Session>>,
     controller: Arc<AtomicBool>,
     audio_hub: Arc<AudioHub>,
+    cursor_hub: Arc<crate::cursor::Hub>,
     desktop: DesktopMode,
     output: Option<String>,
     outputs: Vec<DisplayOutput>,
@@ -188,6 +190,7 @@ impl AppState {
             session: Arc::new(Mutex::new(session)),
             controller: Arc::new(AtomicBool::new(false)),
             audio_hub: Arc::new(AudioHub::default()),
+            cursor_hub: Arc::new(crate::cursor::Hub::default()),
             desktop,
             output: None,
             outputs: Vec::new(),
@@ -340,6 +343,7 @@ impl AppState {
             controller: self.controller,
             audio_hub: self.audio_hub,
             backend,
+            cursor_hub: self.cursor_hub,
             session: Arc::new(Mutex::new(session)),
             desktop: mode,
             output: selected,
@@ -405,6 +409,7 @@ pub fn router(state: AppState) -> Router {
             }),
         )
         .route("/audio", get(upgrade_audio))
+        .route("/cursor", get(upgrade_cursor))
         .route("/desktops", get(desktops))
         .merge(crate::rdp::settings::routes())
         .merge(crate::mcp::management(state.mcp.clone()).with_state(()));
@@ -774,6 +779,27 @@ async fn startup_disconnect(socket: &mut WebSocket) {
     }
 }
 
+#[derive(Deserialize)]
+struct CursorRequest {
+    session: String,
+}
+async fn upgrade_cursor(
+    State(state): State<AppState>,
+    Query(request): Query<CursorRequest>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    if !origin_allowed(&headers) {
+        return (StatusCode::FORBIDDEN, "Same-origin WebSocket required").into_response();
+    }
+    let Some(lease) = state.cursor_hub.attach(&request.session) else {
+        return (StatusCode::CONFLICT, "Cursor session unavailable").into_response();
+    };
+    upgrade
+        .max_message_size(1024)
+        .on_upgrade(move |socket| crate::cursor::connection(socket, lease))
+}
+
 async fn upgrade_audio(
     State(state): State<AppState>,
     Query(request): Query<AudioRequest>,
@@ -835,6 +861,7 @@ async fn connection(
     let audio_available = state.config.audio && audio_source.is_some();
     let audio_session = audio_available.then(|| state.audio_hub.start());
     let display_capabilities = state.displays.capabilities().await;
+    let cursor_scope = state.cursor_hub.start(state.backend.clone());
     let codec_capabilities = state
         .codec_capabilities
         .get_or_init(|| async {
@@ -856,7 +883,7 @@ async fn connection(
     .await
     .ok()?;
     let ready = Message::Text(
-        json!({"type":"ready","backend_selection":true,"video_request_ids":true,"control_release":true,"resize_scale":display_capabilities.resize_scale,"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":if state.backend.cursor_embedded() { "embedded" } else { "default" },"audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktop_backend":state.backend.kind(),"desktops":desktop_options,"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
+        json!({"type":"ready","key_chords":true,"image_clipboard":state.backend.supports_image_clipboard(),"backend_selection":true,"video_request_ids":true,"control_release":true,"resize_scale":display_capabilities.resize_scale,"resize_scales":if display_capabilities.resize_scale { DisplayMode::SUPPORTED_SCALES.as_slice() } else { &[] },"cursor_session":if state.backend.kind() == BackendKind::Wayland { Some(cursor_scope.token()) } else { None },"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":if state.backend.cursor_embedded() { "embedded" } else { "default" },"audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktop_backend":state.backend.kind(),"desktops":desktop_options,"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
 
             .to_string()
             .into(),
@@ -877,6 +904,7 @@ async fn connection(
         .iter()
         .any(|c| c.codec == VideoCodec::H264 && c.available && c.dynamic_bitrate);
     let mut audio = None;
+    let mut clipboard_upload = None;
     let mut audio_buffer = vec![0_u8; 3840];
     let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
     let mut qos_ticks = tokio::time::interval(Duration::from_millis(250));
@@ -949,6 +977,7 @@ async fn connection(
                         if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(resumed)).await, Ok(Ok(()))) { break; }
                         discard_stale_frame!(frame_epoch);
                     }
+                    let cursor_embedded = frame.cursor_embedded;
                     pacing_tx.send_modify(|flow| flow.begin_frame((frame.width, frame.height)));
                     let target = pacing.borrow().target();
                     let encode_started = Instant::now();
@@ -1048,7 +1077,7 @@ async fn connection(
                     pacing_tx.send_modify(|flow| flow.sent(frame_id, Instant::now()));
                     if pacing.borrow().sequenced() {
                         discard_stale_frame!(frame_epoch);
-                        let metadata = Message::Text(json!({"type":"frame_id","id":frame_id}).to_string().into());
+                        let metadata = Message::Text(json!({"type":"frame_id","id":frame_id,"cursor_embedded":if state.backend.kind() == BackendKind::Wayland { Some(cursor_embedded) } else { None }}).to_string().into());
                         if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(metadata)).await, Ok(Ok(()))) { break; }
                         discard_stale_frame!(frame_epoch);
                     }
@@ -1128,7 +1157,7 @@ async fn connection(
                                 }
                                 continue;
                             }
-                            match handle_command(&state, &text, &mut audio, audio_source.as_deref()).await {
+                            match handle_command(&state, &text, &mut audio, audio_source.as_deref(), &mut clipboard_upload).await {
                                 Ok(response) => response,
                                 Err(error) => Some(error_message(&error.to_string())),
                             }
@@ -1306,6 +1335,7 @@ async fn handle_command(
     text: &str,
     audio: &mut Option<AudioStream>,
     source: Option<&str>,
+    clipboard_upload: &mut Option<ImageUpload>,
 ) -> anyhow::Result<Option<Message>> {
     anyhow::ensure!(text.len() <= 96 * 1024, "control message too large");
     let value: serde_json::Value = serde_json::from_str(text)?;
@@ -1314,6 +1344,91 @@ async fn handle_command(
         .and_then(|kind| kind.as_str())
         .unwrap_or_default();
     match kind {
+        "clipboard_paste_text" => {
+            let content = value
+                .get("text")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing clipboard text"))?;
+            anyhow::ensure!(content.len() <= 64 * 1024, "clipboard text too large");
+            state.backend.clipboard_write(content).await?;
+            timeout(
+                Duration::from_millis(500),
+                state.backend.input().send(InputCommand::Chord {
+                    codes: if value.get("shift").and_then(|value| value.as_bool()) == Some(true) {
+                        vec![29, 42, 47]
+                    } else {
+                        vec![29, 47]
+                    },
+                }),
+            )
+            .await??;
+        }
+        "clipboard_image_start" | "clipboard_image_chunk" | "clipboard_image_paste" => {
+            let id = value
+                .get("id")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let step = value
+                .get("step")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(u64::MAX);
+            let result = async {
+                match kind {
+                    "clipboard_image_start" => {
+                        anyhow::ensure!(step == 0, "invalid clipboard start");
+                        *clipboard_upload = None;
+                        *clipboard_upload = Some(ImageUpload::start(
+                            id,
+                            value
+                                .get("size")
+                                .and_then(|value| value.as_u64())
+                                .unwrap_or(0),
+                        )?);
+                    }
+                    "clipboard_image_chunk" => {
+                        clipboard_upload
+                            .as_mut()
+                            .ok_or_else(|| anyhow::anyhow!("no clipboard image transfer"))?
+                            .append(
+                                id,
+                                step,
+                                value
+                                    .get("data")
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or(""),
+                            )?;
+                    }
+                    _ => {
+                        let image = clipboard_upload
+                            .take()
+                            .ok_or_else(|| anyhow::anyhow!("no clipboard image transfer"))?
+                            .finish(id, step)?;
+                        state.backend.clipboard_write_png(&image).await?;
+                        timeout(
+                            Duration::from_millis(500),
+                            state.backend.input().send(InputCommand::Chord {
+                                codes: if value.get("shift").and_then(|value| value.as_bool())
+                                    == Some(true)
+                                {
+                                    vec![29, 42, 47]
+                                } else {
+                                    vec![29, 47]
+                                },
+                            }),
+                        )
+                        .await??;
+                    }
+                }
+                anyhow::Ok(())
+            }
+            .await;
+            let mut ack = json!({"type":"clipboard_ack", "id":id, "step":step});
+            if let Err(error) = result {
+                *clipboard_upload = None;
+                ack["error"] = error.to_string().into();
+            }
+            return Ok(Some(Message::Text(ack.to_string().into())));
+        }
         "ping" => {
             let id = value.get("id").and_then(|id| id.as_u64());
             anyhow::ensure!(id.is_some(), "invalid ping id");

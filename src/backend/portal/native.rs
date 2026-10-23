@@ -669,6 +669,30 @@ async fn apply_input(
                 held_keys.remove(&code);
             }
         }
+        InputCommand::Chord { codes } => {
+            release_input(desktop, session, held_keys, held_buttons).await?;
+            let result = async {
+                for code in codes {
+                    if guard.as_ref().is_some_and(|guard| !guard.active()) {
+                        break;
+                    }
+                    desktop
+                        .notify_keyboard_keycode(
+                            session,
+                            code as i32,
+                            KeyState::Pressed,
+                            NotifyKeyboardKeycodeOptions::default(),
+                        )
+                        .await?;
+                    held_keys.insert(code);
+                }
+                anyhow::Ok(())
+            }
+            .await;
+            let released = release_input(desktop, session, held_keys, held_buttons).await;
+            result?;
+            released?;
+        }
         InputCommand::Scroll { x, y } => {
             ensure!(x.is_finite() && y.is_finite(), "invalid Portal scroll");
             desktop

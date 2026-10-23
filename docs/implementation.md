@@ -57,13 +57,32 @@ installed Python service. Source lives in ~/code/rust/lightos-remote-desktop.
   {type:"scroll",x,y}; {type:"release"}; {type:"text",text};
   {type:"resize",width,height}; {type:"clipboard_get"};
   {type:"clipboard_set",text}; {type:"audio",enabled:bool}.
+  Servers advertise `key_chords` and `image_clipboard` in ready. Negotiated
+  `{type:"chord",codes:[...]}` sends at most eight distinct evdev keys as one
+  input operation, releasing in reverse order. Image paste uses connection-local
+  `clipboard_image_start` (`id`, `step:0`, `size`), `clipboard_image_chunk`
+  (`id`, increasing `step`, base64 `data`, at most 48 KiB decoded per chunk),
+  and `clipboard_image_paste` (`id`, final `step`, optional `shift`). Every request waits for a
+  matching `clipboard_ack` (`id`, `step`, optional `error`). Transfers are PNG
+  only, at most 8 MiB and 8192 pixels per dimension / 32 MiPixels total, with
+  a 15-second idle limit. Failed or disconnected uploads are discarded; only
+  a complete, valid image is offered to the selected Wayland clipboard before
+  sending Ctrl+V (or Ctrl+Shift+V when the initiating gesture held Shift).
+  `clipboard_paste_text` accepts UTF-8 `text` up to 64 KiB plus the same optional
+  `shift`; it offers text before pasting, preserving astral Unicode and terminal
+  bracketed paste. It does not synchronize clipboard contents in the background.
 - Keycode is Linux evdev, without the XKB +8 offset. Browser event.code mapping
   must not forward arbitrary strings to a shell. Text uses a Unicode-aware
   virtual keymap in the backend. Bounded text and clipboard sizes.
-- Server readiness includes `cursor: "embedded"`: the compositor overlays its
-  actual cursor in both JPEG and H.264 captures. The client hides the local
-  cursor only for this capability and restores it on disconnect or when
-  connecting to an older server. Cursor changes and motion publish new frames.
+- Readiness starts with `cursor: "embedded"` and an optional connection-scoped
+  `cursor_session`. A same-origin authenticated `/cursor?session=...` socket
+  carries actual shapes/positions independently of video. The optional Hyprland
+  observer verifies the exact running ABI and exposes read-only cursor data.
+  `frame_id.cursor_embedded` identifies the actual capture mode of a displayed
+  frame, so switching local/embedded presentation cannot duplicate the cursor.
+  Session generations prevent an old cursor connection from changing the new
+  controller's mode. Unsupported or failed cursor channels retain video capture
+  with its embedded cursor.
 - While dragging the floating toolbar, all layout requests retain the current
   pointer-relative position, including React updates and resize callbacks.
   The toolbar docks and persists its position only on pointer release;
@@ -73,8 +92,11 @@ installed Python service. Source lives in ~/code/rust/lightos-remote-desktop.
   leaving fullscreen, losing focus, disconnecting, or Ctrl+Alt+Shift+Esc
   releases held input and keyboard capture. A new manual fullscreen entry
   re-enables capture after an explicit release. Clicking the focused desktop
-  can retry a denied request. Captured shortcuts (including Ctrl+V) go to the
-  remote desktop; windowed Ctrl+V preserves browser-to-remote text transfer.
+  can retry a denied request. Captured shortcuts go to the remote desktop;
+  Ctrl+V and Ctrl+Shift+V preserve browser-to-remote text/image
+  paste in both windowed and captured fullscreen modes. An editable textarea
+  proxy receives local IME composition; printable physical keys wait until
+  native insertText confirms they are not the start of composition.
   OS shortcut suppression requires browser/compositor support and permission;
   on Wayland hosts, use native Wayland Chrome/Chromium with shortcut inhibition.
 

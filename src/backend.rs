@@ -41,6 +41,18 @@ pub trait DesktopBackend: Send + Sync {
     fn cursor_embedded(&self) -> bool {
         false
     }
+    fn begin_cursor(&self, _owner: u64) {}
+    fn separate_cursor(&self, _owner: u64) {}
+    fn release_cursor(&self, _owner: u64) {}
+    fn cursor_target(&self) -> Result<(std::path::PathBuf, i32, Option<String>)> {
+        bail!("independent cursor unavailable for this desktop backend")
+    }
+    fn supports_image_clipboard(&self) -> bool {
+        false
+    }
+    fn clipboard_write_png<'a>(&'a self, _data: &'a [u8]) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { bail!("image clipboard unavailable for this desktop backend") })
+    }
     fn frames(&self) -> watch::Receiver<Option<Arc<Frame>>>;
     fn input(&self) -> mpsc::Sender<InputCommand>;
     fn stop(&self);
@@ -146,6 +158,7 @@ pub struct Frame {
     pub(crate) jpeg: OnceLock<(u8, Arc<[u8]>)>,
     pub pixels: Arc<[u8]>,
     pub captured_at: Instant,
+    pub cursor_embedded: bool,
 }
 
 impl Frame {
@@ -156,6 +169,7 @@ impl Frame {
             pixels,
             jpeg: OnceLock::new(),
             captured_at: Instant::now(),
+            cursor_embedded: false,
         }
     }
 
@@ -167,6 +181,7 @@ impl Frame {
             jpeg: OnceLock::new(),
             pixels: [24, 64, 128, 255].repeat((width * height) as usize).into(),
             captured_at: Instant::now(),
+            cursor_embedded: false,
         }
     }
 
@@ -241,6 +256,9 @@ pub enum InputCommand {
         code: u32,
         pressed: bool,
     },
+    Chord {
+        codes: Vec<u32>,
+    },
     Scroll {
         x: f64,
         y: f64,
@@ -281,6 +299,21 @@ impl InputCommand {
             }
             Self::Key { code, .. } => {
                 ensure!((1..=MAX_EVDEV_CODE).contains(code), "invalid evdev keycode");
+            }
+            Self::Chord { codes } => {
+                ensure!(!codes.is_empty() && codes.len() <= 8, "invalid key chord");
+                ensure!(
+                    codes.iter().all(|code| (1..=MAX_EVDEV_CODE).contains(code)),
+                    "invalid chord keycode"
+                );
+                ensure!(
+                    codes
+                        .iter()
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                        == codes.len(),
+                    "duplicate chord keycode"
+                );
             }
             Self::Scroll { x, y } => ensure!(
                 x.is_finite() && y.is_finite() && x.abs() <= 1000.0 && y.abs() <= 1000.0,

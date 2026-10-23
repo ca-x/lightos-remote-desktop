@@ -20,7 +20,7 @@
   如果 Super 或 Alt + Tab 仍作用于本机 Omarchy / Hyprland，可用 `--ozone-platform=wayland` 让 Chrome / Chromium 原生运行在 Wayland 上，以便请求合成器的快捷键抑制协议。以顶层 HTTPS 或 localhost 页面打开桌面，并允许键盘权限。参见 [Chrome Keyboard Lock 要求](https://developer.chrome.com/docs/capabilities/web-apis/keyboard-lock)和 [Chromium Wayland 实现](https://chromium.googlesource.com/chromium/src/+/main/ui/ozone/platform/wayland/host/wayland_keyboard.cc)。
 - 工具栏的连接信息菜单显示实际绘制 FPS、编码和分辨率，以及应用层 WebSocket RTT，包括最新值和最近 30 次响应的 P95。RTT 包含排队时间，不等于输入到画面的延迟。静态桌面会跳过重复帧，空闲时 FPS 较低属于正常现象；测量使用浏览器单调时钟。
 - 通过 `DesktopBackend` trait 统一采集、键鼠输入和文本剪贴板，并在可信目标会话上自动选择原生 Wayland、Portal 或 X11。原生 Wayland 使用 libwayshot 与虚拟输入协议；GNOME / KDE 在能核实唯一 Portal 实现及目标 compositor 身份时，可使用共享 RemoteDesktop / ScreenCast 授权与 PipeWire；X11 使用 x11rb、enigo 和 arboard，并隔离目标 display / authority。发现阶段不弹授权窗口，实际连接才请求 Portal 授权；拒绝后不会切换路径绕过授权。X11 已有独立 Xvfb 验收；Portal 尚未在 GNOME / KDE 真机和分数缩放环境验收，限制见[运行平台说明](docs/runtime-platforms.md)。
-- 原生 Wayland 支持 Unicode 文本注入和按住输入的清理。画面包含合成器实际绘制的光标，包括文本、缩放、拖拽和应用自定义形状。浏览器会隐藏本地指针以免出现双光标，远程光标移动受视频帧率和延迟影响。
+- 独立光标通过单独连接同步远端真实形状、热点、缩放与隐藏状态，本地鼠标移动无需等待视频。输入框、链接、窗口边缘、拖拽及应用自定义光标均沿用远端图像；不支持独立通道时回退到画面内光标。
 - 在隔离的 Cage / wlroots 环境中运行嵌套 Hyprland，使用私有 D-Bus，并清理所拥有的进程组，不修改 UWSM 源码。
 - 保存编码选择（自动 / H.264 / JPEG）和传输调度策略（自动 / 低延迟 / 流畅）。显示控制、媒体编码和传输调度已拆成独立 crate，桌面后端、实际能力探测和平台限制参见[运行平台说明](docs/runtime-platforms.md)。
 - 支持动态分辨率、文本剪贴板，以及可选的私有 PipeWire / Pulse 音频 sink 和浏览器音频播放。
@@ -230,3 +230,15 @@ sudo bash scripts/install.sh --rollback --activate
 ## 许可证
 
 LightOS Remote Desktop 使用 [MIT 许可证](LICENSE)。第三方组件保留各自许可证，参见[第三方声明](docs/third-party.md)。
+
+### 独立光标适配器
+
+本机 Hyprland 可通过一个可选的只读适配器导出真实光标。使用与正在运行的 Hyprland 匹配的开发头文件及 C++23 编译器构建：
+
+```sh
+./scripts/build-hyprland-cursor.sh ./target/release/lightos-cursor.so
+```
+
+将适配器放在待安装的 `lightos-remoted` 旁，安装器会一起复制并纳入回滚快照；已有旧式安装沿用 `--legacy` 更新方式。服务首次建立独立光标连接时，通过已验证归属的合成器 IPC 加载适配器。运行 ABI 不匹配或图像不可用时保留画面内光标。Hyprland 升级后需使用匹配头文件重新构建适配器。
+
+光标位置与视频帧率分别衡量；鼠标在静止桌面上移动时，低视频 FPS 属于正常情况。
