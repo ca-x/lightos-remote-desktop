@@ -73,6 +73,8 @@
 
 按相同前端工具链重建主分支归档源码，加入实验支持后 `app.js` 从 549,699 B 增至 616,990 B；gzip level 9 从 182,539 B 增至 200,365 B，增加 17,826 B。这个原型静态导入 Protobuf，即使选择 legacy 也有加载成本；后续若保留，需要另评估按需加载或更小生成代码的维护成本。
 
+后续已完成缩放 + 转换 + 软件编码联测及滚动对齐控制，见[编码前缩放报告](2026-10-23-encoder-scaling.md)。下方保留最初独立微基准及其测量范围。
+
 **缩放路径与 crate 选择**
 
 当前虚拟桌面通过 DisplayController 调整远端分辨率；物理桌面保持显示分辨率，浏览器负责显示大小。JPEG 直接走 TurboJPEG，OpenH264 调用 YUVBuffer::read_rgba8；FFmpeg worker 的 libswscale 目前做相同尺寸的 RGBA→NV12 转换。直接引入 CPU resize 库不会加速已有浏览器缩放。
