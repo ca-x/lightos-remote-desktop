@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Deterministic encoder scaling fixture</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#edf0f4;color:#202735;font:14px "Liberation Sans",Arial,sans-serif;overflow:hidden}header{height:56px;background:#182536;color:#f5f7fa;padding:18px 25px;display:flex;justify-content:space-between}aside{position:absolute;top:56px;bottom:0;width:214px;background:#fafbfd;border-right:1px solid #d2d9e1;padding:28px 22px}aside div{padding:12px 0}aside strong{display:block;margin:16px 0;color:#52657c;font-size:12px}.main{position:absolute;top:56px;left:214px;right:0;bottom:0;padding:24px}h1{font-size:24px;margin:0 0 8px}.muted{color:#607088}.workspace{display:grid;grid-template-columns:56% 1fr;gap:22px;margin-top:22px;height:calc(100% - 78px)}.panel{border:1px solid #cdd5e0;border-radius:7px;background:white;overflow:hidden}.title{height:39px;background:#f6f8fa;border-bottom:1px solid #d8dee7;padding:11px 16px;font-size:13px;font-weight:bold}.code{padding:14px 18px;font:14px/23px "Liberation Mono",monospace;white-space:pre;overflow:hidden;height:calc(100% - 39px)}.kw{color:#763ac5}.fn{color:#006b9d}.str{color:#267848}.comment{color:#718192}.num{color:#b35913}.right{display:flex;flex-direction:column;gap:18px}table{border-collapse:collapse;width:100%;font-size:14px}td,th{text-align:left;padding:12px 17px;border-bottom:1px solid #e3e8ed}th{background:#fafbfd;color:#62748d;font-size:12px}.graph{height:200px;padding:20px}svg{width:100%;height:100%}.small{font-size:12px;line-height:20px;padding:16px}.lines{height:92px;margin:8px 16px; background:repeating-linear-gradient(0deg,#202735 0 1px,white 1px 5px)}.lines2{height:40px;margin:8px 16px;background:repeating-linear-gradient(90deg,#d24b30 0 1px,white 1px 4px)}footer{position:absolute;bottom:0;left:214px;right:0;height:27px;background:#e3e9f0;padding:6px 24px;font-size:12px}
+</style>
+<header><b>LightOS Desktop · local benchmark fixture</b><span>100% display scale · native text · no private data</span></header>
+<aside><b>Workspace</b><strong>PROJECT</strong><div>Overview</div><div>Source files</div><div>Terminal</div><div>Performance</div><strong>SETTINGS</strong><div>Display</div><div>Network</div><div>About</div></aside>
+<div class="main"><h1>Remote desktop rendering</h1><div class="muted">Text, colored syntax, one-pixel lines and chart detail · static / scrolling input</div><div class="workspace"><section class="panel"><div class="title">src/desktop.rs &nbsp; / &nbsp; 14 px monospace</div><div class="code" id="code"></div></section><div class="right"><section class="panel"><div class="title">Connection statistics</div><table><thead><tr><th>METRIC</th><th>VALUE</th><th>STATE</th></tr></thead><tbody><tr><td>Target frame rate</td><td>30 FPS</td><td>Connected</td></tr><tr><td>Video quality</td><td>75 / 100</td><td>Automatic</td></tr><tr><td>Desktop resolution</td><td id="dimensions"></td><td>Native</td></tr><tr><td>Loss / latency</td><td>0% / 24 ms</td><td>Stable</td></tr></tbody></table><div class="graph"><svg viewBox="0 0 700 140" preserveAspectRatio="none"><path d="M0 20H700M0 60H700M0 100H700" stroke="#d7e0e9" fill="none"/><path d="M0 120L25 95L50 103L75 45L100 58L125 50L150 70L175 35L200 56L225 44L250 87L275 92L300 63L325 52L350 60L375 25L400 43L425 34L450 76L475 65L500 52L525 70L550 30L575 45L600 25L625 15L650 35L700 20" stroke="#197aa4" stroke-width="2" fill="none"/></svg></div></section><section class="panel"><div class="title">Fine detail and small UI labels</div><div class="small">12 px: Il1 O0 0123456789 {}[]() &lt;&gt; /\\ ;:.,<br>14 px text keeps the native application layout.<br>Downscaling may lose information even with a better filter.</div><div class="lines"></div><div class="lines2"></div></section></div></div></div><footer>UTF-8 &nbsp; · &nbsp; RGBA8 &nbsp; · &nbsp; deterministic synthetic desktop</footer>
+<script>
+const block=[
+'<span class="comment">// Keep desktop layout separate from video size.</span>',
+'<span class="kw">pub trait</span> <span class="fn">DesktopBackend</span> {',
+'    <span class="kw">fn</span> <span class="fn">capture</span>(&amp;<span class="kw">mut self</span>) -&gt; Result&lt;Frame&gt;;',
+'    <span class="kw">fn</span> <span class="fn">dimensions</span>(&amp;self) -&gt; (u32, u32);',
+'}',
+'',
+'<span class="kw">let</span> policy = <span class="str">"automatic"</span>;',
+'<span class="kw">let</span> target = (width * <span class="num">2</span> / <span class="num">3</span>, height * <span class="num">2</span> / <span class="num">3</span>);',
+'<span class="kw">if</span> network.is_congested() {',
+'    encoder.<span class="fn">set_target</span>(target)?;',
+'    tracing::info!(<span class="str">"keep the latest frame"</span>);',
+'}',
+'',
+'<span class="comment">// 0123456789: braces, punctuation, fine edges.</span>',
+'<span class="kw">let</span> rgba = desktop.<span class="fn">capture</span>()?;',
+'<span class="kw">let</span> frame = codec.<span class="fn">encode</span>(&amp;rgba).await?;',
+'connection.<span class="fn">send</span>(frame).await?;',
+''];
+document.querySelector('#code').innerHTML=Array.from({length:150},(_,i)=>String(i+1).padStart(3,' ')+'  '+block[i%block.length]).join('\n');
+document.querySelector('#dimensions').textContent=innerWidth+' × '+innerHeight;
+</script>

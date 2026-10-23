@@ -116,7 +116,7 @@ fn main() {
                     output = destination.into_vec();
                 }
                 assert_eq!(output.len(), reference.len());
-                assert!(output.chunks_exact(4).all(|p| p[3] == 255));
+                assert!(output.as_chunks::<4>().0.iter().all(|p| p[3] == 255));
                 let mse = output
                     .iter()
                     .zip(&reference)

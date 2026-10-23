@@ -5,11 +5,17 @@ edition = "2024"
 rust-version = "1.88"
 license = "MIT"
 publish = false
+default-run = "lightos-resize-benchmark"
 
 # Kept outside the application workspace: these are experiment dependencies.
 [workspace]
 
 [dependencies]
 fast_image_resize = "=6.1.0"
-image = { version = "0.25", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }
 serde_json = "1"
+
+anyhow = "1"
+media-codec = { path = "../../crates/media-codec" }
+openh264 = { version = "=0.9.9", default-features = false, features = ["source"] }
+turbojpeg = { version = "=1.5.1", default-features = false, features = ["pkg-config"] }
