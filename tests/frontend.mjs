@@ -2017,3 +2017,90 @@ test("non-embedded backends retain a local pointer through resize and pause", ()
   app.window.fire("resize");
   assert.equal(app.nodes.desktop.style.values.cursor, "default");
 });
+
+test("fit negotiates encoding device pixels while original and quality-first request native video", async () => {
+  const app = harness("/", new Map(), {}, 2);
+  app.nodes.viewport.clientWidth = 1280;
+  app.nodes.viewport.clientHeight = 800;
+  const socket = app.sockets.at(-1); socket.open();
+  socket.json({ type: "ready", width: 3840, height: 2400, desktop: "physical", resize: false,
+    frame_ack: true, frame_ids: true, video_scaling: true });
+  assert.deepEqual(socket.sent.find(p => p.type === "video_scale"), { type: "video_scale", max_size: { width: 2560, height: 1600 } });
+  assert.equal(socket.sent.some(p => p.type === "resize"), false, "physical desktop mode is untouched");
+  app.nodes["mode-actual"].fire("click"); await flush();
+  assert.deepEqual(socket.sent.filter(p => p.type === "video_scale").at(-1).max_size, null);
+  app.nodes["mode-fit"].fire("click"); await flush();
+  assert.deepEqual(socket.sent.filter(p => p.type === "video_scale").at(-1).max_size, { width: 2560, height: 1600 });
+  app.nodes["stream-strategy"].value = "quality_first";
+  app.nodes["stream-strategy"].fire("change");
+  assert.equal(socket.sent.filter(p => p.type === "video_scale").at(-1).max_size, null);
+  app.nodes["stream-strategy"].value = "auto";
+  app.nodes["stream-strategy"].fire("change");
+  app.window.devicePixelRatio = 1.25;
+  app.mediaQueries.find(query => query.media === "(resolution: 2dppx)").fire("change");
+  for (const [id, timer] of [...app.timers]) if (timer.delay === 250) { app.timers.delete(id); timer.callback(); }
+  assert.deepEqual(socket.sent.filter(p => p.type === "video_scale").at(-1).max_size, { width: 1600, height: 1000 });
+  app.window.fire("resize");
+  app.run("client.destroy()");
+  assert.equal(app.timers.size, 0);
+});
+
+test("scaled JPEG keeps source geometry per decoded frame and normalized input", async () => {
+  const views = [];
+  const app = harness("/", new Map(), { onSessionView: value => views.push(value) }, 2);
+  app.nodes.viewport.clientWidth = 1280; app.nodes.viewport.clientHeight = 800;
+  const socket = app.sockets.at(-1); socket.open();
+  socket.json({ type: "ready", width: 3840, height: 2400, frame_ack: true, frame_ids: true, video_scaling: true });
+  socket.json({ type: "frame_id", id: 1, source_width: 3840, source_height: 2400 });
+  socket.binary(jpeg(1));
+  socket.json({ type: "frame_id", id: 2, source_width: 3200, source_height: 2000 });
+  socket.binary(jpeg(2));
+  app.decodes[0].resolve(bitmap(1280, 800)); await flush();
+  assert.equal(views.at(-1).width, 3840, "later metadata must not change an earlier decoded frame");
+  assert.equal(app.nodes.desktop.style.values["--desktop-native-width"], "1920px");
+  app.decodes[1].resolve(bitmap(1280, 800)); await flush();
+  assert.equal(views.at(-1).width, 3200);
+  assert.equal(views.at(-1).height, 2000);
+  assert.equal(app.nodes.desktop.width, 1280);
+  assert.equal(app.nodes.desktop.height, 800);
+  assert.equal(app.nodes.desktop.style.values["--desktop-native-width"], "1600px");
+  app.nodes.desktop.fire("pointermove", { clientX: 110, clientY: 70, pointerType: "mouse" }); app.paint();
+  assert.ok(socket.sent.some(p => p.type === "move" && p.x === 0.5 && p.y === 0.5));
+  assert.ok(socket.sent.some(p => p.type === "frame_ack" && p.id === 2));
+});
+
+test("scaled H264 associates source geometry with output timestamps", async () => {
+  const views = [];
+  const app = harness("/", new Map(), { onSessionView: value => views.push(value) });
+  let decoder;
+  app.window.VideoDecoder = class {
+    state = "unconfigured"; decodeQueueSize = 0; chunks = [];
+    static async isConfigSupported() { return { supported: true }; }
+    constructor(callbacks) { this.callbacks = callbacks; decoder = this; }
+    configure() { this.state = "configured"; }
+    decode(chunk) { this.chunks.push(chunk); }
+    close() { this.state = "closed"; }
+  };
+  app.window.EncodedVideoChunk = class { constructor(value) { Object.assign(this, value); } };
+  const socket = app.sockets.at(-1); socket.open();
+  socket.json({ type: "ready", width: 3840, height: 2400, frame_ack: true, frame_ids: true, video_scaling: true, video_codecs: ["h264", "jpeg"] });
+  socket.json({ type: "video_config", codec: "avc1.42c01f", width: 1280, height: 800 }); await flush();
+  for (const [id, width, height] of [[1, 3840, 2400], [2, 3200, 2000]]) {
+    socket.json({ type: "frame_id", id, source_width: width, source_height: height });
+    socket.binary(new Uint8Array([3, id === 1 ? 1 : 0, id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x65]).buffer);
+  }
+  for (const [id, width] of [[1, 3840], [2, 3200]]) {
+    decoder.callbacks.output({ displayWidth: 1280, displayHeight: 800, timestamp: id, close() {} });
+    assert.equal(views.at(-1).width, width);
+    assert.equal(app.nodes.desktop.width, 1280);
+    assert.equal(socket.sent.at(-1).id, id);
+  }
+});
+
+test("older peers and lossless updates do not negotiate video downscaling", () => {
+  for (const extra of [{}, { video_scaling: true }, { video_scaling: true, frame_ack: true, frame_ids: true, lossless_updates: true }]) {
+    const app = harness(); const socket = app.sockets.at(-1); socket.open();
+    socket.json({ type: "ready", width: 1280, height: 800, ...extra });
+    assert.equal(socket.sent.some(p => p.type === "video_scale"), false);
+  }
+});

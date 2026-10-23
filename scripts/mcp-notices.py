@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect locked MCP, RDP, desktop backend and codec-protocol runtime notices."""
+"""Collect locked MCP, RDP, desktop backend and media codec runtime notices."""
 import hashlib
 import json
 import os
@@ -16,7 +16,7 @@ fallback_root = repository / "docs/licenses/protocols"
 fallbacks = {(entry["name"], entry["version"]): entry for entry in json.loads((fallback_root / "sources.json").read_text())}
 packages = {package["id"]: package for package in metadata["packages"]}
 nodes = {node["id"]: node for node in metadata["resolve"]["nodes"]}
-roots = {"rmcp", "schemars", "rand", "sha2", "tokio-util", "ironrdp-server", "ironrdp-pdu", "rustls-pemfile", "rcgen", "bincode", "x11rb", "enigo", "arboard", "zbus", "ashpd", "pipewire", "configparser"}
+roots = {"rmcp", "schemars", "rand", "sha2", "tokio-util", "ironrdp-server", "ironrdp-pdu", "rustls-pemfile", "rcgen", "bincode", "x11rb", "enigo", "arboard", "zbus", "ashpd", "pipewire", "configparser", "fast_image_resize"}
 pending = [key for key, package in packages.items() if package["name"] in roots]
 visited = set()
 while pending:
@@ -27,7 +27,7 @@ while pending:
     pending.extend(dep["pkg"] for dep in nodes[key]["deps"]
                    if any(kind["kind"] is None for kind in dep["dep_kinds"]))
 missing = []
-notices = ["Locked Linux x86_64 MCP, RDP, desktop backend and codec-protocol dependency notices (bundled-jpeg,rdp,portal).\n"]
+notices = ["Locked Linux x86_64 MCP, RDP, desktop backend and media codec dependency notices (bundled-jpeg,rdp,portal).\n"]
 for package in sorted((packages[key] for key in visited), key=lambda p: (p["name"], p["version"])):
     if package["source"] is None:
         continue

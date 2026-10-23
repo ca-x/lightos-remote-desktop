@@ -23,3 +23,14 @@ it("retains negotiated older scale support", () => {
   expect(captureResolution(1280, 800, 1.25, LEGACY_SCALES)).toEqual({ width: 1280, height: 800, scale: 1 });
   expect(captureResolution(1280, 800, 1.75, LEGACY_SCALES)).toEqual({ width: 1920, height: 1200, scale: 1.5 });
 });
+
+it("limits encoding to visible device pixels without changing capture density", async () => {
+  const { encodingBounds } = await import("../web/src/resolution");
+  expect(encodingBounds(1280, 800, 2)).toEqual({ width: 2560, height: 1600 });
+  expect(encodingBounds(1280, 800, 1.25)).toEqual({ width: 1600, height: 1000 });
+  expect(encodingBounds(1280, 800, NaN)).toEqual({ width: 1280, height: 800 });
+  expect(encodingBounds(0, 800, 2)).toBeNull();
+  expect(encodingBounds(Infinity, 800, 2)).toBeNull();
+  const large = encodingBounds(100000, 100000, 3)!;
+  expect(large.width * large.height).toBeLessThanOrEqual(33554432);
+});

@@ -15,3 +15,16 @@ export function captureResolution(cssWidth: number, cssHeight: number, pixelRati
   }
   return { width: Math.min(3840, Math.max(320, Math.floor(cssWidth / 2) * 2)), height: Math.min(2160, Math.max(200, Math.floor(cssHeight / 2) * 2)), scale: 1 };
 }
+
+// A video limit only affects encoding. Capture resolution and compositor scale
+// remain independent, including on physical desktops.
+export function encodingBounds(cssWidth: number, cssHeight: number, pixelRatio: number) {
+  if (!Number.isFinite(cssWidth) || !Number.isFinite(cssHeight) || cssWidth <= 0 || cssHeight <= 0) return null;
+  const ratio = Number.isFinite(pixelRatio) && pixelRatio > 0 ? pixelRatio : 1;
+  let width = Math.min(8192, Math.max(1, Math.ceil(cssWidth * ratio)));
+  let height = Math.min(8192, Math.max(1, Math.ceil(cssHeight * ratio)));
+  const areaScale = Math.min(1, Math.sqrt(33554432 / (width * height)));
+  width = Math.max(1, Math.floor(width * areaScale));
+  height = Math.max(1, Math.floor(height * areaScale));
+  return { width, height };
+}

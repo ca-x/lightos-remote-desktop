@@ -4,7 +4,7 @@ import type { ClientOptions, DesktopChoice, DesktopOutput, Elements, SessionView
 import { createMobileControls, mobileResolution } from "./mobile";
 import { createCursorLayer } from "./cursor";
 import { createClipboard } from "./clipboard";
-import { captureResolution, CAPTURE_SCALES, LEGACY_SCALES } from "./resolution";
+import { captureResolution, encodingBounds, CAPTURE_SCALES, LEGACY_SCALES } from "./resolution";
 import { decodeDesktopTiles, parseDesktopUpdate } from "./desktop-updates";
 import audioWorkerUrl from "./audio-worker.js?url";
 import audioWorkletUrl from "./audio-worklet.js?url";
@@ -102,6 +102,12 @@ export function createClient(options: ClientOptions = {}) {
   let backendPreference = readPreference(encoderBackendKey, encoderBackends, "auto");
   let backendSelection = false;
   let videoRequestIds = false;
+  let videoScaling = false;
+  let sourceWidth = canvas.width;
+  let sourceHeight = canvas.height;
+  let lastVideoBounds: string | null = null;
+  let videoScaleTimer: Timer | null = null;
+  const frameSourceSizes = new Map<number, { width: number; height: number }>();
   let videoRequestId = 0;
   let activeBackend: string | null = null;
   let waitingForBackend = false;
@@ -357,6 +363,7 @@ export function createClient(options: ClientOptions = {}) {
       const embedded = frameCursorModes.get(id);
       if (typeof embedded === "boolean") cursor.present(embedded);
       for (const key of frameCursorModes.keys()) if (key <= id) frameCursorModes.delete(key);
+      for (const key of frameSourceSizes.keys()) if (key <= id) frameSourceSizes.delete(key);
     }
     renderedFrames += 1;
     if (started !== undefined) {
@@ -449,12 +456,17 @@ export function createClient(options: ClientOptions = {}) {
       width <= 8192 && height <= 8192 && width * height <= 33554432;
   }
 
-  function resizeCanvas(width: number, height: number) {
-    if (lastRequestedSize === `${width}x${height}`) lastRequestedSize = null;
-    const changed = canvas.width !== width || canvas.height !== height;
+  function resizeCanvas(width: number, height: number, id?: number | null) {
+    const source = typeof id === "number" ? frameSourceSizes.get(id) : undefined;
+    const nextWidth = source?.width ?? (videoScaling ? sourceWidth : width);
+    const nextHeight = source?.height ?? (videoScaling ? sourceHeight : height);
+    const changed = canvas.width !== width || canvas.height !== height || sourceWidth !== nextWidth || sourceHeight !== nextHeight;
+    sourceWidth = nextWidth;
+    sourceHeight = nextHeight;
+    if (lastRequestedSize === `${sourceWidth}x${sourceHeight}`) lastRequestedSize = null;
     if (canvas.width !== width) canvas.width = width;
     if (canvas.height !== height) canvas.height = height;
-    canvas.style.setProperty("--desktop-aspect", String(width / height));
+    canvas.style.setProperty("--desktop-aspect", String(sourceWidth / sourceHeight));
     updateCanvasDensity();
     if (changed) publishSessionView();
   }
@@ -464,7 +476,7 @@ export function createClient(options: ClientOptions = {}) {
     const next: SessionView = {
       mode: isDesktopFullscreen() || windowMode !== "actual" ? "fit" : "actual",
       fullscreen: isDesktopFullscreen(), autoResolution: element("auto-resolution").checked,
-      strategy: strategyPreference, width: canvas.width, height: canvas.height,
+      strategy: strategyPreference, width: sourceWidth, height: sourceHeight,
       keyboardCaptured, version: element("software-version").textContent ?? "", output: selectedOutput ?? "",
     };
     if (publishedView && (Object.keys(next) as (keyof SessionView)[]).every((key) => publishedView![key] === next[key])) return;
@@ -474,8 +486,8 @@ export function createClient(options: ClientOptions = {}) {
 
   function updateCanvasDensity() {
     const ratio = Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
-    canvas.style.setProperty("--desktop-native-width", `${canvas.width / ratio}px`);
-    const matchedDensity = element("auto-resolution").checked && lastAutoResolution === `${canvas.width}x${canvas.height}@${ratio}`;
+    canvas.style.setProperty("--desktop-native-width", `${sourceWidth / ratio}px`);
+    const matchedDensity = element("auto-resolution").checked && lastAutoResolution === `${sourceWidth}x${sourceHeight}@${ratio}`;
     viewport.classList.toggle("native-pixel-fit", !mobile?.bounds() && desktopMode !== "physical" && matchedDensity);
   }
 
@@ -573,7 +585,10 @@ export function createClient(options: ClientOptions = {}) {
   function resetSession() {
     desktopInitializing = false;
     cursorSession = null;
-    cursor.reset(); frameCursorModes.clear();
+    cursor.reset(); frameCursorModes.clear(); frameSourceSizes.clear();
+    videoScaling = false;
+    lastVideoBounds = null;
+    cancelTimer(videoScaleTimer); videoScaleTimer = null;
     clipboard.reset();
     keyChords = false;
     imageClipboard = false;
@@ -809,6 +824,7 @@ export function createClient(options: ClientOptions = {}) {
         message("Server supplied an invalid desktop size.");
         return;
       }
+      sourceWidth = width; sourceHeight = height;
       resizeCanvas(width, height);
       cursorEmbedded = value.cursor === "embedded";
       cursor.present(cursorEmbedded);
@@ -847,6 +863,8 @@ export function createClient(options: ClientOptions = {}) {
       serverVideoCodecs = Array.isArray(value.video_codecs) ? value.video_codecs.filter((codec: unknown) => typeof codec === "string") : [];
       backendSelection = value.backend_selection === true;
       videoRequestIds = value.video_request_ids === true;
+      videoScaling = value.video_scaling === true && frameAcknowledgements && sequencedFrames && !losslessAvailable;
+      lastVideoBounds = null;
       videoRequestId = 0;
       activeBackend = null; waitingForBackend = false; rejectedBackends.clear();
       configureStreamStrategy();
@@ -860,6 +878,7 @@ export function createClient(options: ClientOptions = {}) {
       setText("state", "Connected");
       message(audioAvailable ? `Desktop ready. Audio is ${audioEnabled ? "on" : "off until enabled"}.` : "Desktop ready. Server audio is unavailable.");
       requestPreferredVideo(true);
+      configureVideoScale();
       if (losslessAvailable) send({ type: "lossless_updates", enabled: true });
       if (sequencedFrames && frameAcknowledgements && typeof value.cursor_session === "string" && /^[0-9a-f]{32}$/.test(value.cursor_session)) {
         cursorSession = value.cursor_session;
@@ -872,7 +891,7 @@ export function createClient(options: ClientOptions = {}) {
     } else if (value.type === "desktop_state" && typeof value.available === "boolean") {
       desktopPaused = !value.available;
       if (desktopPaused) {
-        cursor.reset(); frameCursorModes.clear();
+        cursor.reset(); frameCursorModes.clear(); frameSourceSizes.clear();
         clipboard.reset();
         closeVideo();
         pendingFrame = null;
@@ -895,6 +914,11 @@ export function createClient(options: ClientOptions = {}) {
     } else if (value.type === "frame_id" && Number.isSafeInteger(value.id) && value.id > 0) {
       pendingFrameId = value.id;
       if (typeof value.cursor_embedded === "boolean") frameCursorModes.set(value.id, value.cursor_embedded);
+      if (videoScaling && validDimensions(value.source_width, value.source_height)) {
+        frameSourceSizes.set(value.id, { width: value.source_width, height: value.source_height });
+        // Bound metadata retained while an asynchronous decode is pending.
+        while (frameSourceSizes.size > 120) frameSourceSizes.delete(frameSourceSizes.keys().next().value!);
+      }
     } else if (value.type === "video_config" && typeof value.codec === "string") {
       void configureVideo(value);
     } else if (value.type === "clipboard" && typeof value.text === "string") {
@@ -935,7 +959,7 @@ export function createClient(options: ClientOptions = {}) {
               message("Server supplied invalid JPEG dimensions.");
               continue;
             }
-            resizeCanvas(bitmap.width, bitmap.height);
+            resizeCanvas(bitmap.width, bitmap.height, frame.id);
             drawing?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
             canvas.hidden = false;
             recordFrame("JPEG", started, frame.id);
@@ -996,6 +1020,23 @@ export function createClient(options: ClientOptions = {}) {
     if (ready && frameAcknowledgements) send({ type: "video_flow", enabled: true, sequenced: sequencedFrames, strategy: strategyPreference });
   }
 
+  function configureVideoScale() {
+    if (!ready || !videoScaling || document.hidden || destroyed) return;
+    const bounds = mobile?.bounds();
+    const native = strategyPreference === "quality_first" || (!isDesktopFullscreen() && windowMode === "actual");
+    if (!native && mobile?.keyboardActive()) return;
+    const maxSize = native ? null : encodingBounds(bounds?.width ?? viewport.clientWidth,
+      bounds ? bounds.height - bounds.bar : viewport.clientHeight, window.devicePixelRatio);
+    const key = JSON.stringify(maxSize);
+    if (key !== lastVideoBounds && send({ type: "video_scale", max_size: maxSize })) lastVideoBounds = key;
+  }
+
+  function scheduleVideoScale() {
+    if (!ready || !videoScaling) return;
+    cancelTimer(videoScaleTimer);
+    videoScaleTimer = setTimeout(() => { videoScaleTimer = null; configureVideoScale(); }, 250);
+  }
+
   function requestVideo(codec: string, rejected?: string) {
     closeVideo();
     activeBackend = null;
@@ -1033,6 +1074,7 @@ export function createClient(options: ClientOptions = {}) {
     strategyPreference = streamStrategies.includes(element("stream-strategy").value as typeof strategyPreference) ? element("stream-strategy").value as typeof strategyPreference : "auto";
     savePreference(streamStrategyKey, strategyPreference);
     configureStreamStrategy();
+    configureVideoScale();
     publishSessionView();
   });
 
@@ -1070,7 +1112,7 @@ export function createClient(options: ClientOptions = {}) {
             cancelTimer(videoTimer);
             videoTimer = null;
             if (!validDimensions(frame.displayWidth, frame.displayHeight)) { fallbackVideo(); return; }
-            resizeCanvas(frame.displayWidth, frame.displayHeight);
+            resizeCanvas(frame.displayWidth, frame.displayHeight, videoFrameIds.get(frame.timestamp));
             drawing?.drawImage(frame, 0, 0, canvas.width, canvas.height);
             canvas.hidden = false;
             recordFrame("H.264", videoDecodeStarted.get(frame.timestamp), videoFrameIds.get(frame.timestamp));
@@ -1478,7 +1520,7 @@ export function createClient(options: ClientOptions = {}) {
   listen(window, "blur", () => { composing = false; release(); unlockKeyboard(); });
   listen(document, "visibilitychange", () => {
     if (document.hidden) { composing = false; release(); stopAudio(); unlockKeyboard(); }
-    else scheduleAutoResize();
+    else { scheduleAutoResize(); scheduleVideoScale(); }
   });
   listen(element("connection"), "click", () => {
     if (wanted) disconnect();
@@ -1541,6 +1583,7 @@ export function createClient(options: ClientOptions = {}) {
     }
   }
   function updateDisplayMode() {
+    configureVideoScale();
     publishSessionView();
     updateCanvasDensity();
     const mode = isDesktopFullscreen() ? "fullscreen" : windowMode;
@@ -1570,7 +1613,7 @@ export function createClient(options: ClientOptions = {}) {
       const { width, height, scale } = target;
       const size = `${width}x${height}`;
       const resolution = `${size}@${scale}`;
-      if (scaled ? lastAutoResolution === resolution : lastRequestedSize === size || (canvas.width === width && canvas.height === height)) return;
+      if (scaled ? lastAutoResolution === resolution : lastRequestedSize === size || (sourceWidth === width && sourceHeight === height)) return;
       release();
       if (send({ type: "resize", width, height, ...(scaled ? { scale } : {}) })) {
         lastAutoResolution = resolution;
@@ -1582,10 +1625,10 @@ export function createClient(options: ClientOptions = {}) {
       }
     }, 250);
   }
-  listen(window, "resize", () => { updateCanvasDensity(); scheduleAutoResize(); publishSessionView(); });
+  listen(window, "resize", () => { updateCanvasDensity(); scheduleAutoResize(); scheduleVideoScale(); publishSessionView(); });
   function watchPixelRatio() {
     const query = window.matchMedia?.(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
-    if (query) listen(query, "change", () => { updateCanvasDensity(); scheduleAutoResize(); watchPixelRatio(); }, { once: true });
+    if (query) listen(query, "change", () => { updateCanvasDensity(); scheduleAutoResize(); scheduleVideoScale(); watchPixelRatio(); }, { once: true });
   }
   watchPixelRatio();
   listen(element("auto-resolution"), "change", () => { lastAutoResolution = null; updateCanvasDensity(); scheduleAutoResize(); publishSessionView(); });
@@ -1732,7 +1775,7 @@ export function createClient(options: ClientOptions = {}) {
     },
     paste: (event) => { void clipboard.paste(event); },
     chord: (codes) => { if (ready && codes.every((code) => Object.hasOwn(KEY_CODES, code))) sendChord(codes.map((code) => KEY_CODES[code])); },
-    layout: () => { updateCanvasDensity(); layoutTools(); scheduleAutoResize(); },
+    layout: () => { updateCanvasDensity(); layoutTools(); scheduleAutoResize(); scheduleVideoScale(); },
   });
   wanted = true;
   setToolsOpen(false);

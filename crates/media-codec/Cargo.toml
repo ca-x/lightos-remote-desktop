@@ -12,6 +12,7 @@ bundled-jpeg = ["turbojpeg/cmake", "turbojpeg/require-simd"]
 anyhow = "1"
 bincode = { version = "2", features = ["serde"] }
 bytes = "1"
+fast_image_resize = { version = "6.1", features = ["only_u8x4"] }
 futures-util = { version = "0.3", features = ["sink"] }
 openh264 = { version = "0.9.9", default-features = false, features = ["source"] }
 openh264-sys2 = { version = "0.9.9", default-features = false }
@@ -22,5 +23,5 @@ turbojpeg = { version = "1.5", default-features = false, features = ["pkg-config
 
 [dev-dependencies]
 tempfile = "3"
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }

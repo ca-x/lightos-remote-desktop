@@ -9,6 +9,8 @@
 A native Rust browser remote desktop service for Linux/LightOS. The runtime
 does not embed CPython or invoke the original Selkies Python launcher.
 
+Fit and fullscreen modes can downscale video to the visible device pixels using FIR SIMD and reusable buffers. Quality-first and actual-size modes keep native video. Encoding size remains separate from capture resolution, display modes, normalized input, and cursor coordinates; see the [scaling behavior and measured limits](docs/encoder-scaling.md).
+
 ## Current implementation
 
 - Embedded React/TypeScript frontend with Radix UI menus, Headless UI dialogs and Lucide React icons.

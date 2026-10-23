@@ -27,8 +27,8 @@ use display_control::{
 use futures_util::{SinkExt, Stream, StreamExt, stream::SplitSink};
 use media_codec::{
     BackendPreference, CodecCapability, EncoderBackend, EncoderFactory, EncoderRate,
-    EncoderSettings, HardwareEncoders, SoftwareEncoders, VideoCodec, VideoEncoder,
-    choose_h264_backend,
+    EncoderSettings, HardwareEncoders, RgbaScaler, SoftwareEncoders, VideoCodec, VideoEncoder,
+    choose_h264_backend, fit_dimensions,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -46,6 +46,9 @@ use crate::{
     config::Config,
     session::Session,
 };
+
+#[cfg(test)]
+mod scaling_tests;
 
 static NEXT_CONNECTION: AtomicU64 = AtomicU64::new(1);
 
@@ -883,7 +886,7 @@ async fn connection(
     .await
     .ok()?;
     let ready = Message::Text(
-        json!({"type":"ready","key_chords":true,"image_clipboard":state.backend.supports_image_clipboard(),"backend_selection":true,"video_request_ids":true,"control_release":true,"resize_scale":display_capabilities.resize_scale,"resize_scales":if display_capabilities.resize_scale { DisplayMode::SUPPORTED_SCALES.as_slice() } else { &[] },"cursor_session":if state.backend.kind() == BackendKind::Wayland { Some(cursor_scope.token()) } else { None },"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":if state.backend.cursor_embedded() { "embedded" } else { "default" },"audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktop_backend":state.backend.kind(),"desktops":desktop_options,"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
+        json!({"type":"ready","key_chords":true,"image_clipboard":state.backend.supports_image_clipboard(),"backend_selection":true,"video_request_ids":true,"video_scaling":true,"control_release":true,"resize_scale":display_capabilities.resize_scale,"resize_scales":if display_capabilities.resize_scale { DisplayMode::SUPPORTED_SCALES.as_slice() } else { &[] },"cursor_session":if state.backend.kind() == BackendKind::Wayland { Some(cursor_scope.token()) } else { None },"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":if state.backend.cursor_embedded() { "embedded" } else { "default" },"audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktop_backend":state.backend.kind(),"desktops":desktop_options,"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
 
             .to_string()
             .into(),
@@ -917,6 +920,8 @@ async fn connection(
     let mut fallback_reason: Option<String> = None;
     let mut h264 = false;
     let mut video_request_id = None;
+    let mut video_bounds = None;
+    let mut scaler = None;
     let mut encoder: Option<Box<dyn VideoEncoder>> = None;
     let mut codec = None;
     let video_started = std::time::Instant::now();
@@ -933,6 +938,7 @@ async fn connection(
             ($epoch:expr) => {
                 if !frame_privacy_current(state.backend.as_ref(), $epoch) {
                     encoder.take();
+                    scaler = None;
                     codec = None;
                     applied_rate = None;
                     applied_jpeg_quality = None;
@@ -944,6 +950,7 @@ async fn connection(
         loop {
             let current_epoch = state.backend.privacy_epoch();
             if current_epoch != observed_epoch {
+                scaler = None;
                 encoder.take();
                 codec = None;
                 applied_rate = None;
@@ -963,6 +970,7 @@ async fn connection(
                         if state.backend.is_stopped() { break; }
                         if !capture_paused {
                             capture_paused = true;
+                            scaler = None;
                             encoder.take(); codec = None;
                             pacing_tx.send_modify(FrameScheduler::reset);
                             let paused = Message::Text(json!({"type":"desktop_state","available":false}).to_string().into());
@@ -978,23 +986,44 @@ async fn connection(
                         discard_stale_frame!(frame_epoch);
                     }
                     let cursor_embedded = frame.cursor_embedded;
-                    pacing_tx.send_modify(|flow| flow.begin_frame((frame.width, frame.height)));
+                    let source_size = (frame.width, frame.height);
+                    let bounds = {
+                        let flow = pacing.borrow();
+                        if flow.sequenced() && flow.strategy() != SchedulingStrategy::QualityFirst { video_bounds } else { None }
+                    };
+                    let (width, height) = fit_dimensions(source_size, bounds);
+                    pacing_tx.send_modify(|flow| flow.begin_frame((width, height)));
                     let target = pacing.borrow().target();
                     let encode_started = Instant::now();
                     pacing_tx.send_modify(|flow| flow.frame_started(encode_started));
+                    let scaled_pixels = if (width, height) != source_size {
+                        let mut worker = scaler.take().unwrap_or_else(RgbaScaler::default);
+                        let pixels = frame.pixels.clone();
+                        let result = tokio::task::spawn_blocking(move || {
+                            let pixels = worker.resize(pixels, source_size, (width, height));
+                            (worker, pixels)
+                        }).await;
+                        let pixels = match result {
+                            Ok((worker, Ok(pixels))) => { scaler = Some(worker); pixels }
+                            Ok((_, Err(error))) => { tracing::warn!(%error, "video scaling failed"); break; }
+                            Err(error) => { tracing::warn!(%error, "video scaling worker failed"); break; }
+                        };
+                        discard_stale_frame!(frame_epoch);
+                        Some(pixels)
+                    } else { scaler = None; None };
                     let mut packet = None;
                     if h264 {
                         let result = async {
-                            if encoder.as_ref().is_none_or(|encoder| encoder.dimensions() != (frame.width, frame.height)) {
-                                let settings = EncoderSettings {width:frame.width,height:frame.height,fps:state.config.fps,quality:state.config.quality};
+                            if encoder.as_ref().is_none_or(|encoder| encoder.dimensions() != (width, height)) {
+                                let settings = EncoderSettings {width,height,fps:state.config.fps,quality:state.config.quality};
                                 let backend = selected_backend.ok_or_else(|| anyhow::anyhow!("no validated H264 backend"))?;
                                 encoder = Some(if backend.is_hardware() { hardware.create(backend, settings)? } else { SoftwareEncoders.create(VideoCodec::H264, settings)? });
                                 codec = None;
                             }
                             let encoder = encoder.as_mut().ok_or_else(|| anyhow::anyhow!("encoder missing"))?;
-                            let rate = encoder_rate(frame.width, frame.height, state.config.fps, target);
+                            let rate = encoder_rate(width, height, state.config.fps, target);
                             if h264_dynamic_rate { encoder.set_rate(rate)?; }
-                            let encoded = encoder.encode(frame.pixels.clone()).await?;
+                            let encoded = encoder.encode(scaled_pixels.as_ref().unwrap_or(&frame.pixels).clone()).await?;
                             applied_rate = h264_dynamic_rate.then_some(rate);
                             applied_jpeg_quality = None;
                             Ok::<_, anyhow::Error>(encoded)
@@ -1013,7 +1042,7 @@ async fn connection(
                                 if let Some(configuration) = encoded.codec
                                     && codec.as_ref() != Some(&configuration) {
                                         discard_stale_frame!(frame_epoch);
-                                        let message = Message::Text(json!({"type":"video_config","request_id":video_request_id,"codec":configuration,"width":frame.width,"height":frame.height,"backend":selected_backend.map(EncoderBackend::id),"fallback_reason":fallback_reason}).to_string().into());
+                                        let message = Message::Text(json!({"type":"video_config","request_id":video_request_id,"codec":configuration,"width":width,"height":height,"backend":selected_backend.map(EncoderBackend::id),"fallback_reason":fallback_reason}).to_string().into());
                                         if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(message)).await, Ok(Ok(()))) { break; }
                                         discard_stale_frame!(frame_epoch);
                                         codec = Some(configuration);
@@ -1059,7 +1088,10 @@ async fn connection(
                                         release.recv_timeout(Duration::from_secs(3)).expect("resume JPEG encode");
                                     }
                                 }
-                                frame.jpeg(quality)
+                                match scaled_pixels {
+                                    Some(pixels) => media_codec::encode_jpeg(width, height, &pixels, quality),
+                                    None => frame.jpeg(quality),
+                                }
                             }).await {
                                 Ok(Ok(jpeg)) => jpeg,
                                 result => {
@@ -1077,7 +1109,7 @@ async fn connection(
                     pacing_tx.send_modify(|flow| flow.sent(frame_id, Instant::now()));
                     if pacing.borrow().sequenced() {
                         discard_stale_frame!(frame_epoch);
-                        let metadata = Message::Text(json!({"type":"frame_id","id":frame_id,"cursor_embedded":if state.backend.kind() == BackendKind::Wayland { Some(cursor_embedded) } else { None }}).to_string().into());
+                        let metadata = Message::Text(json!({"type":"frame_id","id":frame_id,"source_width":source_size.0,"source_height":source_size.1,"cursor_embedded":if state.backend.kind() == BackendKind::Wayland { Some(cursor_embedded) } else { None }}).to_string().into());
                         if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(metadata)).await, Ok(Ok(()))) { break; }
                         discard_stale_frame!(frame_epoch);
                     }
@@ -1125,6 +1157,23 @@ async fn connection(
                                 drop(flow);
                                 Some(message)
                             } else {
+                            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
+                                && value.get("type").and_then(|kind| kind.as_str()) == Some("video_scale")
+                            {
+                                match parse_video_bounds(&value) {
+                                    Ok(bounds) => {
+                                        if video_bounds != bounds {
+                                            video_bounds = bounds;
+                                            pacing_tx.send_modify(FrameScheduler::reset);
+                                        }
+                                    }
+                                    Err(error) => {
+                                        let message = error_message(&error.to_string());
+                                        if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(message)).await, Ok(Ok(()))) { break; }
+                                    }
+                                }
+                                continue;
+                            }
                             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
                                 && value.get("type").and_then(|kind| kind.as_str()) == Some("video")
                             {
@@ -1229,6 +1278,33 @@ fn encoder_rate(width: u32, height: u32, cap: u32, target: RateTarget) -> Encode
         fps: target.fps,
     }
 }
+/// null explicitly restores native encoding. Missing/malformed bounds must not
+/// silently alter a running stream or trigger an unbounded allocation.
+fn parse_video_bounds(value: &serde_json::Value) -> anyhow::Result<Option<(u32, u32)>> {
+    #[derive(Deserialize)]
+    struct Bounds {
+        width: u32,
+        height: u32,
+    }
+    let bounds: Option<Bounds> = serde_json::from_value(
+        value
+            .get("max_size")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing video max_size"))?,
+    )?;
+    bounds
+        .map(|bounds| {
+            anyhow::ensure!(
+                (1..=8192).contains(&bounds.width)
+                    && (1..=8192).contains(&bounds.height)
+                    && u64::from(bounds.width) * u64::from(bounds.height) <= 33_554_432,
+                "invalid video max_size"
+            );
+            Ok((bounds.width, bounds.height))
+        })
+        .transpose()
+}
+
 fn jpeg_quality(configured: u8, percent: u32) -> u8 {
     configured
         .saturating_sub(((100 - percent.min(100)) / 2) as u8)

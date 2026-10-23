@@ -22,7 +22,8 @@
 - 通过 `DesktopBackend` trait 统一采集、键鼠输入和文本剪贴板，并在可信目标会话上自动选择原生 Wayland、Portal 或 X11。原生 Wayland 使用 libwayshot 与虚拟输入协议；GNOME / KDE 在能核实唯一 Portal 实现及目标 compositor 身份时，可使用共享 RemoteDesktop / ScreenCast 授权与 PipeWire；X11 使用 x11rb、enigo 和 arboard，并隔离目标 display / authority。发现阶段不弹授权窗口，实际连接才请求 Portal 授权；拒绝后不会切换路径绕过授权。X11 已有独立 Xvfb 验收；Portal 尚未在 GNOME / KDE 真机和分数缩放环境验收，限制见[运行平台说明](docs/runtime-platforms.md)。
 - 独立光标通过单独连接同步远端真实形状、热点、缩放与隐藏状态，本地鼠标移动无需等待视频。输入框、链接、窗口边缘、拖拽及应用自定义光标均沿用远端图像；不支持独立通道时回退到画面内光标。
 - 在隔离的 Cage / wlroots 环境中运行嵌套 Hyprland，使用私有 D-Bus，并清理所拥有的进程组，不修改 UWSM 源码。
-- 保存编码选择（自动 / H.264 / JPEG）和传输调度策略（自动 / 低延迟 / 流畅）。显示控制、媒体编码和传输调度已拆成独立 crate，桌面后端、实际能力探测和平台限制参见[运行平台说明](docs/runtime-platforms.md)。
+- 保存编码选择（自动 / H.264 / JPEG）和传输调度策略（自动 / 低延迟 / 流畅 / 清晰优先）。显示控制、媒体编码和传输调度已拆成独立 crate，桌面后端、实际能力探测和平台限制参见[运行平台说明](docs/runtime-platforms.md)。
+- 适应窗口和全屏时，按可见区域的设备像素自动缩小编码画面，使用 FIR SIMD 并复用缓冲；清晰优先和原始大小保持原生尺寸。编码缩放独立于桌面分辨率、输入与光标，参见[编码前缩放与实测](docs/encoder-scaling.md)。
 - 支持动态分辨率、文本剪贴板，以及可选的私有 PipeWire / Pulse 音频 sink 和浏览器音频播放。
 - 音频使用独立 WebSocket 和发送任务，不受视频编码或画面 ACK 阻塞，生命周期与限制参见[音频通道说明](docs/audio-channel.md)。
 - 桌面启动的应用会收到实际的 Xwayland 显示环境；D-Bus 激活只在私有总线上使用合成器最终环境，不会将远程环境导入宿主用户的 systemd manager。

@@ -2,7 +2,9 @@
 mod hardware;
 mod jpeg;
 mod openh264;
+mod scaling;
 mod selection;
+pub use scaling::{RgbaScaler, fit_dimensions};
 pub mod worker_protocol;
 pub use hardware::{HardwareEncoders, WorkerDeadlines};
 pub use selection::{BackendPreference, EncoderBackend, choose_h264_backend};
