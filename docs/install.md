@@ -36,12 +36,35 @@ running owner is retained. Attached physical mode does not start a virtual
 owner, and disables its future startup without stopping a previously running
 owner. Save work before deliberately switching or ending that existing desktop.
 The transport unit orders after the owner but does not unconditionally require it.
+Its packaged session runtime is a fallback default; an explicit Wayland or X11
+attachment takes precedence without a conflicting persistent-session argument.
+Both attachment types disable future virtual-owner startup while preserving an
+already-running owner. Recovery of an older owned transport retains the legacy
+session-runtime environment so it reconnects to the existing owner.
 
 Custom or legacy `/etc/systemd/system` units/drop-ins are not silently replaced.
 Back them up and follow the README migration steps. The old migration path
 remains available explicitly through `install-service --legacy` and
 `rollback-service --legacy`. The rest of this document describes that legacy
 transactional layout and compatibility-library provisioning.
+
+## Capture backends and runtime libraries
+
+Official binaries enable `bundled-jpeg,rdp,portal`. Portal support links
+`libpipewire-0.3.so.0` even when private audio is disabled. Building that feature
+requires the PipeWire/SPA development headers, pkg-config and libclang in
+addition to the existing Wayland, XKB, Pulse and codec build tools. CI installs
+these dependencies before compiling; AUR already includes PipeWire. A custom
+build without `portal` still supports native Wayland and X11 and reports Portal
+as unavailable instead of advertising a nonfunctional backend.
+
+Owned virtual sessions retain their Cage/Hyprland/D-Bus dependencies. Attaching
+to an existing session does not start those programs. Native Wayland clipboard
+uses optional `wl-copy`/`wl-paste`; X11 authentication requires `xauth`, with
+capture and XTest input checked on the exact display. `doctor` separates
+required startup dependencies from optional clipboard and shell helpers. A
+successful probe still requires a real first frame before the backend is ready.
+See [runtime platforms](runtime-platforms.md) and [desktop switching](desktop-switching.md).
 
 ## Legacy migration reference
 

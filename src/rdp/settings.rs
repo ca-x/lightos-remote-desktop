@@ -114,7 +114,7 @@ impl Manager {
             #[cfg(feature = "rdp")]
             path,
             config: config.rdp.clone(),
-            attached: config.wayland_socket.is_some(),
+            attached: (config.wayland_socket.is_some() || config.x11_display.is_some()),
             runtime: Mutex::new(Runtime {
                 settings,
                 invalid_store,
@@ -385,7 +385,9 @@ async fn update(State(state): State<AppState>, Json(settings): Json<Settings>) -
     if settings.port == 0 {
         return (StatusCode::BAD_REQUEST, "Port must be 1–65535").into_response();
     }
-    if settings.enabled && state.config.wayland_socket.is_some() {
+    if settings.enabled
+        && (state.config.wayland_socket.is_some() || state.config.x11_display.is_some())
+    {
         return StatusCode::CONFLICT.into_response();
     }
     // Finish the transaction even if a browser closes the settings tab mid-request.

@@ -61,6 +61,8 @@ export function createClient(options: ClientOptions = {}) {
   let socket: WebSocket | null = null;
   let wanted = false;
   let ready = false;
+  let desktopPaused = false;
+  let desktopInitializing = false;
   let destroyed = false;
   let generation = 0;
   let retryTimer: Timer | null = null;
@@ -126,6 +128,7 @@ export function createClient(options: ClientOptions = {}) {
   let keyboardRequest = false;
   let keyboardToken = 0;
   let desktopMode = "virtual";
+  let desktopConfirmed = false;
   let selectedOutput: string | null = null;
   let desktopChoices: DesktopChoice[] = [];
   let desktopOutputs: DesktopOutput[] = [];
@@ -210,6 +213,7 @@ export function createClient(options: ClientOptions = {}) {
     if (connectionFailure) wanted = true;
     connectionFailure = "";
     desktopMode = mode;
+    desktopConfirmed = true;
     selectedOutput = mode === "physical" ? output : null;
     switchingDesktop = socket !== null;
     cancelTimer(retryTimer);
@@ -446,10 +450,10 @@ export function createClient(options: ClientOptions = {}) {
   function updateControls() {
     publishSessionView();
     mobile?.update();
-    options.onControls?.({ ready, wanted, audioAvailable, audioEnabled, resizeAvailable, desktopMode,
+    options.onControls?.({ ready: ready && !desktopPaused, wanted, audioAvailable, audioEnabled, resizeAvailable, desktopMode,
       switchingDesktop, refreshingDesktops, choices: desktopChoices, outputs: desktopOutputs });
-    for (const id of controls) element(id).disabled = !ready;
-    for (const id of ["width", "height", "apply-size", "auto-resolution"] as const) element(id).disabled = !ready || !resizeAvailable;
+    for (const id of controls) element(id).disabled = !ready || desktopPaused;
+    for (const id of ["width", "height", "apply-size", "auto-resolution"] as const) element(id).disabled = !ready || desktopPaused || !resizeAvailable;
     element("resize").setAttribute("aria-disabled", String(!ready || !resizeAvailable));
     element("resize").setAttribute("title", translate(resizeAvailable ? "调整虚拟桌面分辨率" : "物理桌面不支持更改显示器分辨率"));
     element("desktop-controls").hidden = desktopChoices.length === 0;
@@ -467,6 +471,7 @@ export function createClient(options: ClientOptions = {}) {
 
   function send(command: Record<string, unknown>) {
     if (!ready || !socket || socket.readyState !== WebSocket.OPEN) return false;
+    if (desktopPaused && ["move", "button", "key", "scroll", "text", "clipboard_get", "clipboard_set", "resize"].includes(String(command.type))) return false;
     if (socket.bufferedAmount > 262144) {
       message("Connection is too slow; reconnecting to release input safely.");
       closeSocket(socket, 4001, "Input backpressure");
@@ -533,6 +538,7 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   function resetSession() {
+    desktopInitializing = false;
     resizeScaleAvailable = false;
     lastAutoResolution = null;
     mobile?.reset();
@@ -613,13 +619,29 @@ export function createClient(options: ClientOptions = {}) {
     connect();
   }
 
+  function armReadinessTimeout(current: WebSocket, delay: number) {
+    cancelTimer(connectionTimer);
+    connectionTimer = setTimeout(() => {
+      connectionTimer = null;
+      if (socket !== current || ready) return;
+      if (desktopInitializing) wanted = false;
+      connectionFailure = desktopInitializing
+        ? "Desktop initialization timed out. Reconnect to try again."
+        : "Desktop readiness timed out; reconnecting.";
+      message(connectionFailure);
+      desktopStatus(`${desktopLabel()}连接超时，可切回虚拟桌面。`);
+      closeSocket(current, 4000, "Readiness timeout");
+      resetSession();
+    }, delay);
+  }
+
   function connect() {
     if (!wanted || destroyed || socket || retryTimer !== null) return;
     if (navigator.onLine === false) { setText("state", "Waiting for network"); return; }
     setText("state", "Connecting");
     const url = new URL("./ws", location.href);
     url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    url.searchParams.set("desktop", desktopMode);
+    if (desktopConfirmed) url.searchParams.set("desktop", desktopMode);
     if (desktopMode === "physical" && selectedOutput) url.searchParams.set("output", selectedOutput);
     if (desktopChoices.length) desktopStatus(`正在连接${desktopLabel()}，尚未确认${selectedOutput ? ` · ${selectedOutput}` : ""}。`);
     let current;
@@ -630,15 +652,7 @@ export function createClient(options: ClientOptions = {}) {
       return;
     }
     socket = current;
-    connectionTimer = setTimeout(() => {
-      connectionTimer = null;
-      if (socket !== current || ready) return;
-      connectionFailure = "Desktop readiness timed out; reconnecting.";
-      message(connectionFailure);
-      desktopStatus(`${desktopLabel()}连接超时，可切回虚拟桌面。`);
-      closeSocket(current, 4000, "Readiness timeout");
-      resetSession();
-    }, 15000);
+    armReadinessTimeout(current, 15000);
     current.binaryType = "arraybuffer";
     current.onopen = () => {
       if (current !== socket || !wanted || destroyed) { current.close(); return; }
@@ -656,7 +670,7 @@ export function createClient(options: ClientOptions = {}) {
       }
       if (typeof event.data === "string") {
         receiveJSON(event.data);
-      } else if (ready && event.data instanceof ArrayBuffer && event.data.byteLength > 1) {
+      } else if (ready && !desktopPaused && event.data instanceof ArrayBuffer && event.data.byteLength > 1) {
         const kind = new Uint8Array(event.data, 0, 1)[0];
         if (kind === 1 && event.data.byteLength <= 16777216) {
           pendingFrame = { data: event.data.slice(1), generation, videoToken, id: pendingFrameId };
@@ -688,6 +702,12 @@ export function createClient(options: ClientOptions = {}) {
       releasingSocket = null;
       if (connectedAt !== null && performance.now() - connectedAt >= 10_000) retries = 0;
       connectedAt = null;
+      if (desktopInitializing && !ready && !switchingDesktop) {
+        wanted = false;
+        connectionFailure ||= "Desktop initialization stopped. Reconnect to try again.";
+        message(connectionFailure);
+        desktopStatus(connectionFailure);
+      }
       resetSession();
       setText("state", "Disconnected");
       if (switchingDesktop) {
@@ -734,7 +754,12 @@ export function createClient(options: ClientOptions = {}) {
     let value;
     try { value = JSON.parse(raw); } catch { message("Invalid server JSON."); return; }
     if (!value || typeof value !== "object") return;
-    if (value.type === "ready") {
+    if (value.type === "desktop_initializing" && !ready && socket) {
+      desktopInitializing = true;
+      // Portal consent and first-frame capture have a bounded server deadline.
+      // A broken initialization must not automatically reopen consent.
+      armReadinessTimeout(socket, 60000);
+    } else if (value.type === "ready") {
       const { width, height } = value;
       if (!validDimensions(width, height)) {
         message("Server supplied an invalid desktop size.");
@@ -747,6 +772,8 @@ export function createClient(options: ClientOptions = {}) {
         element("height").value = String(height);
       }
       ready = true;
+      desktopInitializing = false;
+      desktopPaused = false;
       resizeScaleAvailable = value.resize_scale === true;
       lastAutoResolution = null;
       controlRelease = value.control_release === true;
@@ -755,6 +782,7 @@ export function createClient(options: ClientOptions = {}) {
         setText("software-version", `v${value.version}`);
       }
       desktopMode = value.desktop === "physical" ? "physical" : "virtual";
+      desktopConfirmed = true;
       selectedOutput = desktopMode === "physical" && typeof value.output === "string" ? value.output : null;
       resizeAvailable = desktopMode !== "physical" && value.resize !== false;
       desktopStatus(`已连接${desktopLabel()}${selectedOutput ? ` · ${selectedOutput}` : ""}。`);
@@ -785,6 +813,19 @@ export function createClient(options: ClientOptions = {}) {
       updateControls();
       scheduleAutoResize();
       void captureKeyboard();
+    } else if (value.type === "desktop_state" && typeof value.available === "boolean") {
+      desktopPaused = !value.available;
+      if (desktopPaused) {
+        closeVideo();
+        pendingFrame = null;
+        pendingFrameId = null;
+        drawing?.clearRect(0, 0, canvas.width, canvas.height);
+        keys.clear(); buttons.clear();
+        desktopStatus("Desktop locked or temporarily unavailable.");
+      } else {
+        desktopStatus(`已连接${desktopLabel()}${selectedOutput ? ` · ${selectedOutput}` : ""}。`);
+      }
+      updateControls();
     } else if (value.type === "pong" && pendingPing && value.id === pendingPing.id) {
       latestRtt = Math.max(0, performance.now() - pendingPing.started);
       rttSamples.push(latestRtt);
@@ -803,7 +844,15 @@ export function createClient(options: ClientOptions = {}) {
         message("Remote clipboard loaded into the text box.");
       }
     } else if (value.type === "error" && typeof value.message === "string") {
-      if (!ready) connectionFailure = `Server: ${value.message.slice(0, 2048)}`;
+      if (!ready) {
+        connectionFailure = `Server: ${value.message.slice(0, 2048)}`;
+        if (value.retryable === false) {
+          wanted = false;
+          cancelTimer(connectionTimer); connectionTimer = null;
+          cancelTimer(retryTimer); retryTimer = null;
+          updateControls();
+        }
+      }
       message(`Server: ${value.message.slice(0, 2048)}`);
       desktopStatus(`${desktopLabel()}：${value.message.slice(0, 2048)}`);
     }
@@ -820,7 +869,7 @@ export function createClient(options: ClientOptions = {}) {
         const started = performance.now();
         try {
           bitmap = await createImageBitmap(new Blob([frame.data], { type: "image/jpeg" }));
-          if (frame.generation === generation && frame.videoToken === videoToken && ready && !destroyed) {
+          if (frame.generation === generation && frame.videoToken === videoToken && ready && !desktopPaused && !destroyed) {
             if (!validDimensions(bitmap.width, bitmap.height)) {
               message("Server supplied invalid JPEG dimensions.");
               continue;
@@ -928,12 +977,12 @@ export function createClient(options: ClientOptions = {}) {
     configuringVideo = true;
     try {
       const config = await supportedVideoConfig(window.VideoDecoder, value.codec, value.width, value.height);
-      if (token !== videoToken || session !== generation || !ready || destroyed) return;
+      if (token !== videoToken || session !== generation || !ready || desktopPaused || destroyed) return;
       if (!config) { fallbackVideo(); return; }
       videoDecoder = new window.VideoDecoder({
         output(frame) {
           try {
-            if (token !== videoToken || session !== generation || !ready || destroyed) return;
+            if (token !== videoToken || session !== generation || !ready || desktopPaused || destroyed) return;
             cancelTimer(videoTimer);
             videoTimer = null;
             if (!validDimensions(frame.displayWidth, frame.displayHeight)) { fallbackVideo(); return; }

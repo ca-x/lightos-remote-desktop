@@ -227,7 +227,7 @@ async fn disconnect_waits_for_accepted_input_before_releasing_the_controller() {
     });
     state
         .backend
-        .input
+        .input()
         .try_send(InputCommand::Key {
             code: 31,
             pressed: true,

@@ -25,7 +25,9 @@ struct Monitor {
     name: String,
     width: u32,
     height: u32,
+    #[serde(default)]
     x: i32,
+    #[serde(default)]
     y: i32,
     #[serde(default)]
     transform: u32,
@@ -118,7 +120,11 @@ impl HyprlandDisplay {
             "unsupported output identifier"
         );
         if selected.resolution() != resolution {
-            let DisplayMode { width, height, scale } = resolution;
+            let DisplayMode {
+                width,
+                height,
+                scale,
+            } = resolution;
             let (width, height) = if selected.transform % 2 == 1 {
                 (height, width)
             } else {
@@ -147,9 +153,9 @@ impl HyprlandDisplay {
                 .find(|m| m.name == *name)
                 .context("selected output disconnected")?;
             if monitor.resolution() == resolution
-                && monitor.transform == selected.transform
                 && monitor.x == selected.x
                 && monitor.y == selected.y
+                && monitor.transform == selected.transform
             {
                 return Ok(resolution);
             }
@@ -192,8 +198,8 @@ impl DisplayController for HyprlandDisplay {
 mod tests {
     use super::*;
     use tokio::net::UnixListener;
-    const OLD: &str = r#"[{"name":"WAYLAND-1","width":1280,"height":720,"x":0,"y":0}]"#;
-    const NEW: &str = r#"[{"name":"WAYLAND-1","width":800,"height":600,"x":0,"y":0}]"#;
+    const OLD: &str = r#"[{"name":"WAYLAND-1","width":1280,"height":720}]"#;
+    const NEW: &str = r#"[{"name":"WAYLAND-1","width":800,"height":600}]"#;
 
     fn controller() -> (tempfile::TempDir, HyprlandDisplay, UnixListener) {
         let dir = tempfile::tempdir().unwrap();
@@ -235,6 +241,84 @@ mod tests {
         assert_eq!(control.resize(None, size(), 30).await.unwrap(), size());
         server.await.unwrap();
     }
+    async fn resize_preserves_layout_and_transform(lua: bool) {
+        for (transform, native_width, native_height) in [
+            (1, 600, 800),
+            (0, 800, 600),
+            (2, 800, 600),
+            (3, 600, 800),
+            (4, 800, 600),
+            (5, 600, 800),
+            (6, 800, 600),
+            (7, 600, 800),
+        ] {
+            let (_dir, control, listener) = controller();
+            let server = tokio::spawn(async move {
+                let state = |width, height| {
+                    serde_json::json!([
+                        {"name":"WAYLAND-1", "width":width, "height":height,
+                         "x":-1280, "y":-120, "transform":transform},
+                        {"name":"DP-2", "width":1920, "height":1080,
+                         "x":0, "y":0, "transform":0}
+                    ])
+                    .to_string()
+                };
+                let old = state(1280, 720);
+                let new = state(native_width, native_height);
+                reply(&listener, "j/monitors", &old).await;
+                reply(
+                        &listener,
+                        &format!("keyword monitor WAYLAND-1,{native_width}x{native_height}@30,-1280x-120,1,transform,{transform}"),
+                        if lua { LUA_REQUIRED } else { "ok" },
+                    ).await;
+                if lua {
+                    reply(
+                            &listener,
+                            &format!("eval hl.monitor({{ output = \"WAYLAND-1\", mode = \"{native_width}x{native_height}@30\", position = \"-1280x-120\", scale = 1, transform = {transform} }})"),
+                            "ok",
+                        ).await;
+                }
+                reply(&listener, "j/monitors", &old).await;
+                reply(&listener, "j/monitors", &new).await;
+            });
+            let result = control.resize(Some("WAYLAND-1"), size(), 30).await;
+            server.await.unwrap();
+            assert_eq!(result.unwrap(), size(), "transform={transform}, lua={lua}");
+        }
+    }
+    #[tokio::test]
+    async fn legacy_resize_preserves_layout_and_transform() {
+        resize_preserves_layout_and_transform(false).await;
+    }
+    #[tokio::test]
+    async fn lua_resize_preserves_layout_and_transform() {
+        resize_preserves_layout_and_transform(true).await;
+    }
+    #[tokio::test]
+    async fn matching_dimensions_cannot_hide_changed_position_or_transform() {
+        for (x, transform) in [(0, 0), (-1280, 2)] {
+            let (_dir, control, listener) = controller();
+            let server = tokio::spawn(async move {
+                let old =
+                    r#"[{"name":"WAYLAND-1","width":1280,"height":720,"x":-1280,"transform":0}]"#;
+                let changed = serde_json::json!([
+                    {"name":"WAYLAND-1", "width":800, "height":600, "x":x, "transform":transform}
+                ])
+                .to_string();
+                reply(&listener, "j/monitors", old).await;
+                reply(
+                    &listener,
+                    "keyword monitor WAYLAND-1,800x600@30,-1280x0,1,transform,0",
+                    "ok",
+                )
+                .await;
+                reply(&listener, "j/monitors", &changed).await;
+            });
+            assert!(control.resize(Some("WAYLAND-1"), size(), 30).await.is_err());
+            server.await.unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn lua_resize_uses_eval_only_for_explicit_capability_reply() {
         let (_dir, control, listener) = controller();
@@ -268,7 +352,7 @@ mod tests {
             reply(
                 &listener,
                 "j/monitors",
-                r#"[{"name":"WAYLAND-1","width":800,"height":600,"x":0,"y":0,"scale":2}]"#,
+                r#"[{"name":"WAYLAND-1","width":800,"height":600,"scale":2}]"#,
             )
             .await;
         });
@@ -398,14 +482,20 @@ mod tests {
         for transform in 0..=7 {
             for lua in [false, true] {
                 let (_dir, control, listener) = controller();
-                let old = format!(r#"[{{"name":"WAYLAND-1","width":1280,"height":720,"x":-1234,"y":-250,"transform":{transform}}}]"#);
+                let old = format!(
+                    r#"[{{"name":"WAYLAND-1","width":1280,"height":720,"x":-1234,"y":-250,"transform":{transform}}}]"#
+                );
                 let (native_width, native_height) = if transform % 2 == 1 {
                     (600, 800)
                 } else {
                     (800, 600)
                 };
-                let changed = format!(r#"[{{"name":"WAYLAND-1","width":{native_width},"height":{native_height},"x":-1234,"y":-250,"transform":{transform}}}]"#);
-                let stale = format!(r#"[{{"name":"WAYLAND-1","width":{native_width},"height":{native_height},"x":0,"y":0,"transform":{transform}}}]"#);
+                let changed = format!(
+                    r#"[{{"name":"WAYLAND-1","width":{native_width},"height":{native_height},"x":-1234,"y":-250,"transform":{transform}}}]"#
+                );
+                let stale = format!(
+                    r#"[{{"name":"WAYLAND-1","width":{native_width},"height":{native_height},"x":0,"y":0,"transform":{transform}}}]"#
+                );
                 let legacy = format!(
                     "keyword monitor WAYLAND-1,{native_width}x{native_height}@30,-1234x-250,1,transform,{transform}"
                 );
@@ -433,10 +523,10 @@ mod tests {
             name: "DP-1".into(),
             width: 600,
             height: 800,
-            transform: 1,
-            scale: 1.0,
             x: 0,
             y: 0,
+            transform: 1,
+            scale: 1.0,
         };
         assert_eq!(rotated.resolution(), size());
     }

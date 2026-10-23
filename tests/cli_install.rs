@@ -292,6 +292,7 @@ fn exported_units_share_a_short_private_session_runtime() {
     assert!(owner.contains("RuntimeDirectory=lrd-session\n"));
     assert!(owner.contains("RuntimeDirectoryMode=0700\n"));
     assert!(transport.contains(&format!(
-        "Environment=LIGHTOS_REMOTE_DESKTOP_SESSION_RUNTIME={runtime}\n"
+        "Environment=LIGHTOS_REMOTE_DESKTOP_DEFAULT_SESSION_RUNTIME={runtime}\n"
     )));
+    assert!(!transport.contains("Environment=LIGHTOS_REMOTE_DESKTOP_SESSION_RUNTIME="));
 }

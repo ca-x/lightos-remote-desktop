@@ -29,17 +29,67 @@ desktops remain read-only. A backend does not grant permission to alter them.
 A query or update failure includes a reason, and helpers/IPC have deadlines.
 Ambiguous output selection requires an explicit name. No backend writes host
 configuration files. Mutter refuses mirrored-group changes or a global-scale
-change that would modify other outputs. GNOME/KDE/wlroots/X11 backend adapters
-exist, but the service's capture/input path is still Linux Wayland with the
-required capture and virtual-input protocols; this change does not implement
-full GNOME/KDE capture, X11 capture, Windows or macOS remote sessions.
+change that would modify other outputs. Display management does not prove that
+capture or input is available.
 
-The service's owned compositor remains Hyprland. GNOME/KDE adapters can be
-selected for existing Wayland output discovery; their mutation methods are
-available to callers supplying an authorized session. The X11 adapter is a
-library backend for an explicit `SessionTarget`; an X11 capture service is not
-available through the Wayland-only service CLI. New backends implement this
-same trait without distribution checks or edits to the WebSocket server.
+`DesktopBackend` owns frames, input, text clipboard, pause state and input-release
+barriers. WebSocket, MCP and RDP consume this shared contract. The service first
+resolves a trusted, same-user `SessionTarget`, then selects the backend by actual
+capabilities; users normally do not select a capture backend.
+
+| Capture/input backend | Requirements | Selection and verification boundary |
+| --- | --- | --- |
+| Native Wayland | Supported libwayshot capture globals and virtual keyboard/pointer with the required versions | Preferred on a usable selected Wayland socket; a bounded registry probe is followed by real first-frame initialization |
+| Portal (`portal` build feature) | One verifiable GNOME/KDE RemoteDesktop + ScreenCast provider, matching compositor/session identities, keyboard/pointer devices, monitor source, embedded cursor, PipeWire | Used when native Wayland protocols are unavailable and the exact target can be proved. Discovery only reads capabilities; an explicit connection opens one shared authorization session and the local chooser selects the monitor |
+| Native X11 | Local display, valid authority when configured, XTest, readable root window | `x11rb` core GetImage with a real pixel probe. Input/text and `arboard` clipboard run in an isolated child with explicit display/authority; the parent environment is untouched |
+
+A selected Wayland session never falls back to its XWayland `DISPLAY`. Explicit
+Wayland/X11 targets fail visibly if invalid; ambient protocol ambiguity also
+requires an exact target. Portal denial/cancellation does not fall through to a
+different backend or repeatedly reopen consent. Without RandR metadata, an X11
+connection can still capture the root window; a specifically requested monitor
+must be resolved successfully. Physical desktop resizing remains forbidden.
+
+The owned virtual desktop remains isolated Cage/Hyprland. GNOME/KDE use the Portal
+path only when their installed portal advertises and grants these capabilities,
+and one provider can be tied to the selected compositor. The frontend, actual
+implementation and Mutter/KWin service identities must match that target; sharing
+a UID, runtime or user bus alone is insufficient.
+
+The Portal frontend must share the service's filesystem mount namespace and use
+a recognized installation prefix or an explicit descriptor directory. Its
+provider registry is checked across the conservative union of descriptor paths,
+including competing files with the same basename. Registry files and directories
+must predate frontend startup and remain unchanged during validation. Custom or
+ambiguous providers, an unknown registry scope, and unavailable identity evidence
+make this backend unavailable before consent. Backend owners are pinned through
+authorization and checked during the session; a restart ends the grant. Attached
+Portal services wait for an explicit browser connection rather than requesting
+consent at daemon startup. Portal closure ends that authorization session;
+reconnect may need new consent.
+
+Native X11 has isolated authenticated Xvfb acceptance coverage for capture, input,
+Unicode, clipboard and two-display isolation. The Portal path has compile/unit
+validation, not GNOME/KDE hardware or fractional-scaling acceptance. Neither
+backend adds Windows/macOS sessions, KMS capture, image clipboard or DMA-BUF
+zero-copy capture. X11 currently uses core image reads with a local browser
+pointer and without SHM/Damage optimizations; no performance improvement over
+the Wayland path is claimed.
+
+Official Linux binaries keep the Ubuntu 22.04 glibc and PipeWire library
+baseline. Their Rust SPA bindings compile against a checksum-pinned, private
+SPA 1.0.5 header SDK; stock 0.3.48 headers lack required inline APIs and field
+declarations. This replaces build headers only, not the system PipeWire library.
+The archive records the SDK source/checksum, linked SDK version and copyright.
+GNOME/KDE hardware acceptance remains separate from build compatibility.
+
+Attached physical sessions use logind lock state where an exact local session
+can be identified. Locking clears the video, releases input and blocks further
+input/clipboard operations while retaining the browser connection; unlocking
+resumes on the same backend. A running logind with an unidentifiable or failed
+session query is not treated as an unlocked desktop. The service never unlocks a
+login session or changes host lock policy. See [desktop switching](desktop-switching.md)
+for explicit target options and current platform verification boundaries.
 
 `media-codec` owns `EncoderFactory` and `VideoEncoder`, current OpenH264 and
 TurboJPEG implementations and real test-frame availability probes. Metadata

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button, Dialog, DialogBackdrop, DialogPanel, DialogTitle, Field, Input, Label, Select, Tab, TabGroup, TabList, TabPanel, TabPanels, Textarea } from "@headlessui/react";
-import { Activity, Bot, Cable, Check, ChevronDown, ChevronRight, Clipboard, Expand, Grip, Info, Keyboard, Menu, Monitor, Palette, Settings2, Shrink, SlidersHorizontal, Volume2, VolumeX, X } from "lucide-react";
+import { Activity, Bot, Cable, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clipboard, Expand, Info, Keyboard, Menu, Monitor, Palette, Settings2, Shrink, SlidersHorizontal, Volume2, VolumeX, X } from "lucide-react";
 import logo from "./assets/logo.webp?inline";
 import * as Menubar from "@radix-ui/react-menubar";
 import { useTranslation } from "react-i18next";
@@ -134,6 +134,9 @@ function Workspace() {
   };
   const showSettings = (tab = settingsTab) => { setMenu(""); setSettingsTab(tab); setSettingsOpen(true); };
   const showUtility = (mode: "clipboard" | "keyboard") => { setMenu(""); setUtility(mode); };
+  const CollapseChevron = { top: ChevronUp, bottom: ChevronDown, left: ChevronLeft, right: ChevronRight }[edge];
+  const ExpandChevron = { top: ChevronDown, bottom: ChevronUp, left: ChevronRight, right: ChevronLeft }[edge];
+  const ToggleChevron = open ? CollapseChevron : ExpandChevron;
   const noResize = !controls.ready || !controls.resizeAvailable;
   const shortcut = (item: MobileShortcut) => {
     const names: Record<string, string> = { ArrowUp: t("arrowUp"), ArrowDown: t("arrowDown"), ArrowLeft: t("arrowLeft"), ArrowRight: t("arrowRight"), Backspace: t("backspace") };
@@ -165,7 +168,7 @@ function Workspace() {
       </div>
     </nav>
     <aside id="tools" aria-label={t("title")}>
-      <button type="button" id="tools-toggle" className="tool-handle" title={t("drag")} aria-label={t(open ? "close" : "open")} aria-expanded={open} aria-controls="tool-panel" onClick={() => { setOpen(!open); setMenu(""); }}><Grip size={20} aria-hidden="true" /></button>
+      <button type="button" id="tools-toggle" className="tool-handle" title={t("drag")} aria-label={t(open ? "close" : "open")} aria-expanded={open} aria-controls="tool-panel" onClick={() => { setOpen(!open); setMenu(""); }}><ToggleChevron size={22} strokeWidth={2.25} aria-hidden="true" /></button>
       <div id="tool-panel" className={`panel remote-toolbar ${open ? "is-open" : ""}`} inert={!open} aria-hidden={!open} aria-label={t("toolbar")}>
         <div className="toolbar-brand" aria-hidden="true"><Monitor size={18} /><span>LightOS</span><span className={controls.ready ? "connection-dot online" : "connection-dot"} /></div>
         <div className="toolbar-actions" role="toolbar" aria-label={t("toolbar")} onKeyDown={(event) => {
@@ -237,7 +240,7 @@ function Workspace() {
           <div className="toolbar-end">
             <Button id="settings-toggle" className="icon-button toolbar-action" title={t("settings")} aria-label={t("settings")} onClick={() => showSettings()}><Settings2 size={19} aria-hidden="true" /></Button>
             <Button id="fullscreen" className="icon-button toolbar-action" title={t(view.fullscreen ? "exitFullscreen" : "fullscreen")} aria-label={t(view.fullscreen ? "exitFullscreen" : "fullscreen")} aria-pressed={view.fullscreen}>{view.fullscreen ? <Shrink size={19} aria-hidden="true" /> : <Expand size={19} aria-hidden="true" />}</Button>
-            <Button id="tools-close" className="icon-button toolbar-action" title={t("close")} aria-label={t("close")}><ChevronDown size={18} aria-hidden="true" /></Button>
+            <Button id="tools-close" className="icon-button toolbar-action" title={t("close")} aria-label={t("close")}><CollapseChevron size={18} aria-hidden="true" /></Button>
           </div>
         </div>
       </div>

@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "../web/src/App";
 import { createClient } from "../web/src/client";
 import i18n from "../web/src/i18n";
@@ -146,6 +146,26 @@ describe("React shell, menus and dialog lifecycle", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open desktop tools" }));
     expect(screen.queryByRole("menu", { name: "Display" })).toBeNull();
     expect(screen.getByRole("menuitem", { name: "Display" }).getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it.each([
+    ["top", "down", "up"], ["bottom", "up", "down"],
+    ["left", "right", "left"], ["right", "left", "right"],
+  ] as const)("points the transparent trigger toward the toolbar when docked %s and toward the edge when expanded", async (edge, expand, collapse) => {
+    render(<App />);
+    await waitFor(() => expect(createClient).toHaveBeenCalledTimes(1));
+    act(() => vi.mocked(createClient).mock.calls[0][0]?.onToolbarDock?.(edge));
+    const toggle = screen.getByRole("button", { name: "Open desktop tools" });
+    expect(toggle.querySelector(`.lucide-chevron-${expand}`)).not.toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    expect(toggle.querySelector(`.lucide-chevron-${collapse}`)).not.toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(document.getElementById("tools-close")!.querySelector(`.lucide-chevron-${collapse}`)).not.toBeNull();
+    fireEvent.click(toggle);
+    expect(toggle.querySelector(`.lucide-chevron-${expand}`)).not.toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(createClient).toHaveBeenCalledTimes(1);
   });
 
   it("keeps fullscreen directly accessible and About last in Settings with a compact logo", async () => {

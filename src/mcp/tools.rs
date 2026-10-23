@@ -26,7 +26,7 @@ use serde_json::json;
 use tokio::sync::{mpsc, watch};
 
 use super::store::{Principal, Scope, TokenStore};
-use crate::wayland::{Backend, Frame, InputCommand, InputGuard};
+use crate::backend::{DesktopBackend, Frame, InputCommand, InputGuard};
 
 const DEADLINE: Duration = Duration::from_secs(5);
 const MAX_FRAME_AGE: Duration = Duration::from_secs(3);
@@ -38,15 +38,21 @@ pub(super) struct Desktop {
     pub(super) controller: Arc<AtomicBool>,
     pub(super) owned: bool,
     pub(super) release_input: Arc<dyn Fn() -> bool + Send + Sync>,
+    pub(super) privacy_state: Arc<dyn Fn() -> Option<u64> + Send + Sync>,
     #[cfg(test)]
     pub(super) text_probe: Option<Arc<crate::wayland::TextProbe>>,
 }
 
 impl Desktop {
-    pub(super) fn new(backend: Arc<Backend>, controller: Arc<AtomicBool>, owned: bool) -> Self {
+    pub(super) fn new(
+        backend: Arc<dyn DesktopBackend>,
+        controller: Arc<AtomicBool>,
+        owned: bool,
+    ) -> Self {
+        let privacy_backend = backend.clone();
         Self {
-            frames: backend.frames.clone(),
-            input: backend.input.clone(),
+            frames: backend.frames(),
+            input: backend.input(),
             controller,
             owned,
             #[cfg(test)]
@@ -58,10 +64,27 @@ impl Desktop {
                 }
                 released
             }),
+            privacy_state: Arc::new(move || {
+                (!privacy_backend.paused() && !privacy_backend.is_stopped())
+                    .then(|| privacy_backend.privacy_epoch())
+            }),
         }
     }
 
+    fn privacy_epoch(&self) -> Result<u64> {
+        (self.privacy_state)().ok_or_else(|| anyhow::anyhow!("Desktop locked or unavailable"))
+    }
+
+    fn ensure_privacy_epoch(&self, expected: u64) -> Result<()> {
+        ensure!(
+            self.privacy_epoch()? == expected,
+            "Desktop changed privacy state during capture"
+        );
+        Ok(())
+    }
+
     fn frame(&self) -> Result<Arc<Frame>> {
+        let epoch = self.privacy_epoch()?;
         let frame = self
             .frames
             .borrow()
@@ -76,6 +99,7 @@ impl Desktop {
             frame.width > 1 && frame.height > 1,
             "Desktop capture dimensions unavailable"
         );
+        self.ensure_privacy_epoch(epoch)?;
         Ok(frame)
     }
 
@@ -377,15 +401,20 @@ impl DesktopTools {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         self.run(context, Scope::Observe, |_| async {
+            let epoch = self.desktop.privacy_epoch()?;
             let frame = self.desktop.frame()?;
             let (width, height) = (frame.width, frame.height);
-            let image = tokio::task::spawn_blocking(move || frame.jpeg(85)).await??;
+            let encoded = tokio::task::spawn_blocking(move || {
+                frame.jpeg(85).map(|image| STANDARD.encode(&*image))
+            })
+            .await??;
+            self.desktop.ensure_privacy_epoch(epoch)?;
             Ok(CallToolResult::success(vec![
                 ContentBlock::text(
                     json!({"width":width,"height":height,"coordinate_space":"screenshot_pixels"})
                         .to_string(),
                 ),
-                ContentBlock::image(STANDARD.encode(&*image), "image/jpeg"),
+                ContentBlock::image(encoded, "image/jpeg"),
             ]))
         })
         .await
@@ -612,6 +641,38 @@ impl ServerHandler for DesktopTools {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicU64;
+
+    #[test]
+    fn retained_physical_screenshot_is_rejected_after_lock_and_unlock() {
+        let (_capture, frames) = watch::channel(Some(Arc::new(Frame::test_frame(8, 8))));
+        let (input, _commands) = mpsc::channel(1);
+        let epoch = Arc::new(AtomicU64::new(0));
+        let locked = Arc::new(AtomicBool::new(false));
+        let observed_epoch = epoch.clone();
+        let observed_lock = locked.clone();
+        let desktop = Desktop {
+            frames,
+            input,
+            controller: Arc::new(AtomicBool::new(false)),
+            owned: false,
+            release_input: Arc::new(|| true),
+            privacy_state: Arc::new(move || {
+                (!observed_lock.load(Ordering::Acquire))
+                    .then(|| observed_epoch.load(Ordering::Acquire))
+            }),
+            text_probe: None,
+        };
+        let started = desktop.privacy_epoch().unwrap();
+        let jpeg = desktop.frame().unwrap().jpeg(85).unwrap();
+        assert!(!jpeg.is_empty());
+        locked.store(true, Ordering::Release);
+        epoch.fetch_add(1, Ordering::AcqRel);
+        assert!(desktop.ensure_privacy_epoch(started).is_err());
+        locked.store(false, Ordering::Release);
+        epoch.fetch_add(1, Ordering::AcqRel);
+        assert!(desktop.ensure_privacy_epoch(started).is_err());
+    }
 
     #[tokio::test]
     async fn failed_worker_ack_is_reported_as_a_tool_failure() {
@@ -624,6 +685,7 @@ mod tests {
             controller: controller.clone(),
             owned: true,
             release_input: Arc::new(|| false),
+            privacy_state: Arc::new(|| Some(0)),
             text_probe: None,
         };
         let directory = tempfile::tempdir().unwrap();

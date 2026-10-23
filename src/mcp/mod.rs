@@ -19,7 +19,7 @@ use serde::Deserialize;
 pub use store::{Scope, TokenInfo, TokenStore};
 use tools::Desktop;
 
-use crate::{config::Config, server::origin_allowed, wayland::Backend};
+use crate::{backend::DesktopBackend, config::Config, server::origin_allowed};
 
 pub(crate) fn settings_path(config: &Config) -> Option<PathBuf> {
     config.mcp_settings.clone().or_else(store::default_path)
@@ -37,7 +37,7 @@ pub(crate) fn management(store: Arc<TokenStore>) -> Router {
 
 pub(crate) fn transport(
     store: Arc<TokenStore>,
-    backend: Arc<Backend>,
+    backend: Arc<dyn DesktopBackend>,
     controller: Arc<std::sync::atomic::AtomicBool>,
     owned: bool,
 ) -> Router {

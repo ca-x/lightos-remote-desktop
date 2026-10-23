@@ -110,6 +110,8 @@ const clientPairs: [string, string][] = [
   ["Connection stopped responding; reconnecting.", "连接长时间无响应，正在重新连接。"],
   ["Connection close timed out; retrying.", "连接关闭超时，正在重试。"],
   ["Desktop readiness timed out; reconnecting.", "桌面就绪超时，正在重新连接。"],
+  ["Desktop initialization timed out. Reconnect to try again.", "桌面初始化超时，请手动重新连接。"],
+  ["Desktop initialization stopped. Reconnect to try again.", "桌面初始化已中断，请手动重新连接。"],
   ["Previous connection did not close within 3 seconds. Reconnect or select another desktop.", "旧连接在 3 秒内未完成关闭，请重新连接或选择其他桌面。"],
   ["Desktop connection failed.", "桌面连接失败。"],
   ["Connected; waiting for server readiness.", "连接已建立，等待服务就绪。"],
@@ -127,6 +129,7 @@ const clientPairs: [string, string][] = [
   ["Enable audio", "开启声音"], ["Mute audio", "关闭声音"], ["Disconnect", "断开连接"], ["Reconnect", "重新连接"],
   ["Fullscreen", "全屏"], ["Exit fullscreen", "退出全屏"], ["Open desktop tools", "打开桌面工具栏"], ["Close desktop tools", "收起桌面工具栏"],
   ["Resize virtual desktop", "调整虚拟桌面分辨率"], ["Physical monitor resolution cannot be changed here", "物理桌面不支持更改显示器分辨率"],
+  ["Desktop locked or temporarily unavailable.", "桌面已锁定或暂时不可用。"],
   ["Choose a physical monitor", "选择一块物理显示器"],
 ];
 

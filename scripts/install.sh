@@ -133,11 +133,12 @@ else
     done
     if ((${#environment_sources[@]})); then
         attached=$(awk '
-            /^[[:space:]]*LIGHTOS_REMOTE_DESKTOP_WAYLAND_SOCKET[[:space:]]*=/ {
+            /^[[:space:]]*LIGHTOS_REMOTE_DESKTOP_(WAYLAND_SOCKET|X11_DISPLAY)[[:space:]]*=/ {
+                key=$0; sub(/[[:space:]]*=.*/, "", key); sub(/^[[:space:]]*/, "", key)
                 value=$0; sub(/^[^=]*=[[:space:]]*/, "", value); sub(/[[:space:]]*$/, "", value)
-                present=(value != "" && value != "\"\"" && value != "\047\047")
+                present[key]=(value != "" && value != "\"\"" && value != "\047\047")
             }
-            END { print present ? 1 : 0 }
+            END { print (present["LIGHTOS_REMOTE_DESKTOP_WAYLAND_SOCKET"] || present["LIGHTOS_REMOTE_DESKTOP_X11_DISPLAY"]) ? 1 : 0 }
         ' "${environment_sources[@]}")
     fi
     if ((!activate && !attached)); then

@@ -87,15 +87,18 @@ check test "$(cat "$root/etc/lightos/remote-desktop.env")" = "$password"
 check test "$(grep -c useradd "$root/events")" = 1
 check test "$(grep -c '^systemctl start lightos-remote-desktop-session.service$' "$root/events")" = 1
 check grep -q '^systemctl enable lightos-remote-desktop-session.service$' "$root/events"
-# An attached physical socket never starts a virtual owner; native-file overrides count.
+# Attached Wayland and X11 never start a virtual owner; native-file overrides count.
 for configuration in remote-desktop.env remote-desktop-native.env; do
-    fixture "attached-$configuration"
-    mkdir -p "$root/etc/lightos"
-    printf 'LIGHTOS_REMOTE_DESKTOP_USER=lightos-remoted\nLIGHTOS_REMOTE_DESKTOP_AUTH_PASSWORD=preserved\n' > "$root/etc/lightos/remote-desktop.env"
-    printf 'LIGHTOS_REMOTE_DESKTOP_WAYLAND_SOCKET=/run/user/1000/wayland-0\n' >> "$root/etc/lightos/$configuration"
-    bootstrap
-    check test "$(grep -c '^systemctl start lightos-remote-desktop-session.service$' "$root/events" || true)" = 0
-    check grep -q '^systemctl disable lightos-remote-desktop-session.service$' "$root/events"
+    for protocol in WAYLAND_SOCKET X11_DISPLAY; do
+        fixture "attached-$protocol-$configuration"
+        mkdir -p "$root/etc/lightos"
+        printf 'LIGHTOS_REMOTE_DESKTOP_USER=lightos-remoted\nLIGHTOS_REMOTE_DESKTOP_AUTH_PASSWORD=preserved\n' > "$root/etc/lightos/remote-desktop.env"
+        if [[ $protocol == WAYLAND_SOCKET ]]; then target=/run/user/1000/wayland-0; else target=:0; fi
+        printf 'LIGHTOS_REMOTE_DESKTOP_%s=%s\n' "$protocol" "$target" >> "$root/etc/lightos/$configuration"
+        bootstrap
+        check test "$(grep -c '^systemctl start lightos-remote-desktop-session.service$' "$root/events" || true)" = 0
+        check grep -q '^systemctl disable lightos-remote-desktop-session.service$' "$root/events"
+    done
 done
 fixture fresh2
 bootstrap

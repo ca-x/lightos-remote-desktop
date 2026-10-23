@@ -64,6 +64,85 @@ mod tests {
             .is_err()
         );
     }
+
+    #[test]
+    fn x11_attachment_requires_local_display_and_does_not_mix_session_modes() {
+        let base = ["test", "--password", "some-long-secret"];
+        for display in ["localhost:0", "host:0", ":", ":0.", ":-1", ":1.2.3"] {
+            let mut args = base.to_vec();
+            args.extend(["--x11-display", display]);
+            assert!(config(&args).validate().is_err(), "{display}");
+        }
+        for display in [":0", ":12.2"] {
+            let mut args = base.to_vec();
+            args.extend([
+                "--x11-display",
+                display,
+                "--xauthority",
+                "/tmp/test-Xauthority",
+            ]);
+            assert!(config(&args).validate().is_ok(), "{display}");
+        }
+        for conflicting in ["--wayland-socket", "--session-runtime"] {
+            let mut args = base.to_vec();
+            args.extend(["--x11-display", ":0", conflicting, "/tmp/other"]);
+            assert!(Config::try_parse_from(args).is_err(), "{conflicting}");
+        }
+        assert!(
+            config(&[
+                "test",
+                "--password",
+                "some-long-secret",
+                "--xauthority",
+                "relative"
+            ])
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn service_runtime_default_preserves_explicit_targets() {
+        let default = PathBuf::from("/run/lrd-session");
+        let mut owned = config(&["test", "--password", "some-long-secret"]);
+        owned.apply_service_defaults(Some(default.clone()));
+        assert_eq!(owned.session_runtime, Some(default.clone()));
+        assert!(owned.validate().is_ok());
+
+        for arguments in [
+            vec![
+                "test",
+                "--password",
+                "some-long-secret",
+                "--session-runtime",
+                "/run/custom",
+            ],
+            vec![
+                "test",
+                "--password",
+                "some-long-secret",
+                "--wayland-socket",
+                "/run/user/1000/wayland-0",
+            ],
+            vec![
+                "test",
+                "--password",
+                "some-long-secret",
+                "--x11-display",
+                ":0",
+            ],
+        ] {
+            let mut settings = config(&arguments);
+            let selected = settings.session_runtime.clone();
+            settings.apply_service_defaults(Some(default.clone()));
+            assert_eq!(settings.session_runtime, selected);
+            assert!(settings.validate().is_ok());
+        }
+
+        let mut no_default = config(&["test", "--password", "some-long-secret"]);
+        no_default.apply_service_defaults(None);
+        assert!(no_default.session_runtime.is_none());
+    }
 }
 use std::{net::IpAddr, path::PathBuf};
 
@@ -118,11 +197,25 @@ pub struct Config {
     #[arg(
         long,
         env = "LIGHTOS_REMOTE_DESKTOP_SESSION_RUNTIME",
-        conflicts_with = "wayland_socket"
+        conflicts_with_all = ["wayland_socket", "x11_display"]
     )]
     pub session_runtime: Option<PathBuf>,
-    #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_WAYLAND_SOCKET")]
+    #[arg(
+        long,
+        env = "LIGHTOS_REMOTE_DESKTOP_WAYLAND_SOCKET",
+        conflicts_with = "x11_display"
+    )]
     pub wayland_socket: Option<PathBuf>,
+    /// Attach to one local X11 display (for example, :0 or :0.0).
+    #[arg(
+        long,
+        env = "LIGHTOS_REMOTE_DESKTOP_X11_DISPLAY",
+        conflicts_with = "physical_wayland_socket"
+    )]
+    pub x11_display: Option<String>,
+    /// Exact X11 authorization file; defaults to XAUTHORITY or ~/.Xauthority.
+    #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_XAUTHORITY")]
+    pub xauthority: Option<PathBuf>,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_PHYSICAL_WAYLAND_SOCKET")]
     pub physical_wayland_socket: Option<PathBuf>,
     /// Display protocol override, independent of distribution and desktop configuration flavor.
@@ -150,10 +243,21 @@ pub struct Config {
 }
 
 impl Config {
+    /// The service-owned runtime is a fallback, never a competing target.
+    pub fn apply_service_defaults(&mut self, default_runtime: Option<PathBuf>) {
+        if self.session_runtime.is_none()
+            && self.wayland_socket.is_none()
+            && self.x11_display.is_none()
+        {
+            self.session_runtime = default_runtime;
+        }
+    }
+
     pub fn omarchy_path(&self) -> Result<Option<PathBuf>> {
         if self.desktop_shell == DesktopShell::Minimal
             || self.desktop_config.is_some()
             || self.wayland_socket.is_some()
+            || self.x11_display.is_some()
         {
             return Ok(None);
         }
@@ -176,7 +280,8 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
-        self.rdp.validate(self.wayland_socket.is_some())?;
+        self.rdp
+            .validate(self.wayland_socket.is_some() || self.x11_display.is_some())?;
         let (width, height) = self.dimensions()?;
         ensure!(
             (320..=3840).contains(&width) && (200..=2160).contains(&height),
@@ -235,6 +340,12 @@ impl Config {
                 socket.is_absolute(),
                 "Wayland socket must be an absolute path"
             );
+        }
+        if let Some(display) = &self.x11_display {
+            crate::session::validate_local_x11_display(display)?;
+        }
+        if let Some(path) = &self.xauthority {
+            ensure!(path.is_absolute(), "Xauthority must be an absolute path");
         }
         if let Some(socket) = &self.physical_wayland_socket {
             ensure!(
