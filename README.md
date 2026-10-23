@@ -24,12 +24,12 @@
 - 在隔离的 Cage / wlroots 环境中运行嵌套 Hyprland，使用私有 D-Bus，并清理所拥有的进程组，不修改 UWSM 源码。
 - 保存编码选择（自动 / H.264 / JPEG）和传输调度策略（自动 / 低延迟 / 流畅 / 清晰优先）。显示控制、媒体编码和传输调度已拆成独立 crate，桌面后端、实际能力探测和平台限制参见[运行平台说明](docs/runtime-platforms.md)。
 - 适应窗口和全屏时，按可见区域的设备像素自动缩小编码画面，使用 FIR SIMD 并复用缓冲；清晰优先和原始大小保持原生尺寸。编码缩放独立于桌面分辨率、输入与光标，参见[编码前缩放与实测](docs/encoder-scaling.md)。
-- 支持动态分辨率、文本剪贴板，以及可选的私有 PipeWire / Pulse 音频 sink 和浏览器音频播放。
+- 支持动态分辨率、文本与图片剪贴板，以及可选的私有 PipeWire / Pulse 音频 sink 和浏览器音频播放。
 - 音频使用独立 WebSocket 和发送任务，不受视频编码或画面 ACK 阻塞，生命周期与限制参见[音频通道说明](docs/audio-channel.md)。
 - 桌面启动的应用会收到实际的 Xwayland 显示环境；D-Bus 激活只在私有总线上使用合成器最终环境，不会将远程环境导入宿主用户的 systemd manager。
 - 提供受监督的健康检查、就绪检查，以及现有 `lightos-remote-desktop.service` 的事务迁移和回退。
 
-**当前原生实现尚未覆盖 Selkies 的全部功能。** 视频优先通过进程内 OpenH264 与浏览器 WebCodecs 协商 H.264；WebCodecs 或编码不可用时回退到 SIMD JPEG。WebCodecs 要求 HTTPS 或 localhost 等安全上下文，H.264 要求宽高为偶数，默认截图上限为 30 FPS。软件 H.264 已内置，可选原生 worker 可探测并使用 VA-API / NVENC / AMF / VideoToolbox 硬件 H.264，失败时回退到软件编码。截图仍使用 CPU 缓冲区，尚无 DMA-BUF 零拷贝。音频使用双声道 Opus，并保留 PCM 回退。麦克风上行、图片剪贴板、文件传输、手柄和多显示器控制尚未实现，带宽和延迟需要在实际部署环境中测量。
+**当前原生实现尚未覆盖 Selkies 的全部功能。** 视频优先通过进程内 OpenH264 与浏览器 WebCodecs 协商 H.264；WebCodecs 或编码不可用时回退到 SIMD JPEG。WebCodecs 要求 HTTPS 或 localhost 等安全上下文，H.264 要求宽高为偶数，默认截图上限为 30 FPS。软件 H.264 已内置，可选原生 worker 可探测并使用 VA-API / NVENC / AMF / VideoToolbox 硬件 H.264，失败时回退到软件编码。截图仍使用 CPU 缓冲区，尚无 DMA-BUF 零拷贝。音频使用双声道 Opus，并保留 PCM 回退。麦克风上行、文件传输、手柄和多显示器同时控制尚未实现，带宽和延迟需要在实际部署环境中测量。
 
 截图连接最多复用 8 帧，或在两次截图间隔达到 250 ms 后刷新，以减少 AF_UNIX 和 Wayland 初始化成本，同时限制 libwayshot 0.9 的协议对象保留并更新输出信息。只有请求 JPEG 时才生成 JPEG；H.264 worker 共用截图缓冲区。画面不变时不会重复编码或传输，客户端对已绘制帧发送 ACK，输入处理独立于视频写入。带序号的客户端使用由绘制 ACK 驱动的 1 至 3 帧窗口，切换编码或创建 H.264 编码器后，先等首帧完成绘制再扩展窗口。
 

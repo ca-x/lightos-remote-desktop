@@ -83,7 +83,7 @@ Fit and fullscreen modes can downscale video to the visible device pixels using 
   choices. Independent display-control, media-codec and stream-scheduler crates;
   see [runtime platform boundaries](docs/runtime-platforms.md) for desktop backends,
   real capability probes and current platform limits.
-- Dynamic resolution, text clipboard and optional private PipeWire/Pulse sink
+- Dynamic resolution, text/image clipboard and optional private PipeWire/Pulse sink
   with browser audio playback.
 - Independent audio WebSocket and sender, so video encoding and render ACKs do
   not hold audio delivery. See `docs/audio-channel.md` for lifecycle and limits.
@@ -100,8 +100,8 @@ a secure browser context (HTTPS or localhost); H.264 requires even dimensions.
 The default capture cap is 30 FPS. Software H.264 is built in; an optional native
 worker adds probed VA-API/NVENC/AMF/VideoToolbox H.264 encoding with software
 fallback. Capture still uses CPU buffers, without DMA-BUF zero-copy. Audio uses
-stereo Opus with PCM fallback. Microphone uplink, image clipboard, file transfer,
-gamepads and multi-monitor control are not implemented.
+stereo Opus with PCM fallback. Microphone uplink, file transfer, gamepads and simultaneous multi-monitor control
+are not implemented.
 Do not assume equivalent bandwidth or latency; benchmark your deployment.
 Capture reuses a connection for at most eight frames / 250 ms between captures,
 amortizing AF_UNIX and Wayland setup while still bounding libwayshot 0.9
