@@ -38,6 +38,51 @@ use xkbcommon::xkb;
 
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 
+#[derive(Debug)]
+struct StartupTimeout {
+    capture_ready: bool,
+    pending_workers: usize,
+}
+impl std::fmt::Display for StartupTimeout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Wayland startup did not become ready: timed out (capture_ready={}, pending_workers={})",
+            self.capture_ready, self.pending_workers
+        )
+    }
+}
+impl std::error::Error for StartupTimeout {}
+
+fn retry_startup<T>(
+    cancelled: &AtomicBool,
+    total: Duration,
+    windows: &[Duration],
+    mut attempt: impl FnMut(Instant) -> Result<T>,
+) -> Result<T> {
+    ensure!(!windows.is_empty(), "missing startup attempt window");
+    let deadline = Instant::now() + total;
+    for (index, window) in windows.iter().enumerate() {
+        ensure!(
+            !cancelled.load(Ordering::Acquire),
+            "Wayland startup cancelled"
+        );
+        let result = attempt(deadline.min(Instant::now() + *window));
+        match result {
+            Err(error)
+                if error.downcast_ref::<StartupTimeout>().is_some()
+                    && index + 1 < windows.len()
+                    && Instant::now() < deadline
+                    && !cancelled.load(Ordering::Acquire) =>
+            {
+                tracing::warn!(attempt = index + 1, %error, "recreating stalled Wayland startup connections");
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the final attempt returns its result")
+}
+
 struct CaptureTarget {
     socket: PathBuf,
     output: Option<String>,
@@ -182,7 +227,38 @@ impl Backend {
             (1..=100).contains(&quality),
             "JPEG quality must be between 1 and 100"
         );
-        let deadline = Instant::now() + START_TIMEOUT;
+        // A selected monitor is the transient physical-desktop path. Rebuild
+        // only a stalled initialization, using the same target and protocols.
+        // start_once drops and joins both workers before a new attempt begins.
+        let windows: &[Duration] = if output.is_some() {
+            &[
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                START_TIMEOUT,
+            ]
+        } else {
+            &[START_TIMEOUT]
+        };
+        retry_startup(&cancelled, START_TIMEOUT, windows, |deadline| {
+            Self::start_once(
+                socket.clone(),
+                fps,
+                quality,
+                output.clone(),
+                cancelled.clone(),
+                deadline,
+            )
+        })
+    }
+
+    fn start_once(
+        socket: PathBuf,
+        fps: u32,
+        _quality: u8,
+        output: Option<String>,
+        cancelled: Arc<AtomicBool>,
+        deadline: Instant,
+    ) -> Result<Self> {
         let capture_stream = connect(&socket, deadline, Some(&cancelled))?;
         let input_stream = connect(&socket, deadline, Some(&cancelled))?;
         let input_socket = input_stream.try_clone()?;
@@ -261,10 +337,14 @@ impl Backend {
                 "Wayland startup cancelled"
             );
             let remaining = deadline.saturating_duration_since(Instant::now());
-            ensure!(
-                !remaining.is_zero(),
-                "Wayland startup did not become ready: timed out"
-            );
+            if remaining.is_zero() {
+                let capture_ready = backend.frames.borrow().is_some();
+                return Err(StartupTimeout {
+                    capture_ready,
+                    pending_workers: pending,
+                }
+                .into());
+            }
             match ready_rx.recv_timeout(remaining.min(Duration::from_millis(50))) {
                 Ok(Ok(())) => pending -= 1,
                 Ok(Err(error)) => bail!(error),
@@ -1455,6 +1535,118 @@ pub(crate) mod tests {
         assert!(Backend::start(PathBuf::from("/nonexistent"), 0, 80).is_err());
         assert!(Backend::start(PathBuf::from("/nonexistent"), 61, 80).is_err());
         assert!(Backend::start(PathBuf::from("/nonexistent"), 30, 0).is_err());
+    }
+
+    #[test]
+    fn stalled_startup_retries_are_bounded_and_stop_on_permission_or_cancellation() {
+        let cancel = AtomicBool::new(false);
+        let mut calls = 0;
+        let result = retry_startup(
+            &cancel,
+            Duration::from_secs(1),
+            &[Duration::from_millis(50); 3],
+            |_| {
+                calls += 1;
+                if calls == 1 {
+                    Err(StartupTimeout {
+                        capture_ready: false,
+                        pending_workers: 1,
+                    }
+                    .into())
+                } else {
+                    Ok("ready")
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(result, "ready");
+        assert_eq!(calls, 2);
+        calls = 0;
+        let failed: Result<()> = retry_startup(
+            &cancel,
+            Duration::from_secs(1),
+            &[Duration::from_millis(50); 3],
+            |_| {
+                calls += 1;
+                bail!("capture permission denied")
+            },
+        );
+        assert!(failed.is_err());
+        assert_eq!(calls, 1);
+        calls = 0;
+        let failed: Result<()> = retry_startup(
+            &cancel,
+            Duration::from_secs(1),
+            &[Duration::from_millis(50); 3],
+            |_| {
+                calls += 1;
+                cancel.store(true, Ordering::Release);
+                Err(StartupTimeout {
+                    capture_ready: true,
+                    pending_workers: 1,
+                }
+                .into())
+            },
+        );
+        assert!(failed.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn timed_out_attempts_close_both_sockets_before_retrying() {
+        use std::io::Read;
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("wayland-retry");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let (closed, completed) = sync_mpsc::channel();
+        let server = thread::spawn(move || {
+            for _ in 0..3 {
+                let mut capture = listener.accept().unwrap().0;
+                let mut input = listener.accept().unwrap().0;
+                capture
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                input
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                capture.read_to_end(&mut Vec::new()).unwrap();
+                input.read_to_end(&mut Vec::new()).unwrap();
+                closed.send(()).unwrap();
+            }
+        });
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut calls = 0;
+        let started = Instant::now();
+        let result = retry_startup(
+            &cancel,
+            Duration::from_secs(2),
+            &[Duration::from_millis(60); 3],
+            |deadline| {
+                if calls > 0 {
+                    completed.recv_timeout(Duration::from_secs(1)).unwrap();
+                }
+                calls += 1;
+                Backend::start_once(
+                    socket.clone(),
+                    30,
+                    80,
+                    Some("test-monitor".into()),
+                    cancel.clone(),
+                    deadline,
+                )
+            },
+        );
+        assert!(
+            result
+                .err()
+                .unwrap()
+                .downcast_ref::<StartupTimeout>()
+                .is_some()
+        );
+        assert_eq!(calls, 3);
+        completed.recv_timeout(Duration::from_secs(1)).unwrap();
+        server.join().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

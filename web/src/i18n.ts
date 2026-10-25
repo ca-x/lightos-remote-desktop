@@ -3,6 +3,7 @@ import { initReactI18next } from "react-i18next";
 import { languageKey, languages, readPreference, resolveLanguage } from "./preferences";
 
 const en = {
+  desktopNotConnected: "Desktop not connected", desktopRecoveryHint: "Open the tools menu to check the status, reconnect, or select another desktop.",
   rdpTitle: "RDP access",
   rdpEnabled: "Enable RDP",
   rdpHelp: "Connect an RDP client to this virtual desktop using your desktop login. Disconnect browser control first. Video quality is negotiated with the RDP client.",
@@ -48,6 +49,7 @@ const en = {
   touchHelp: "Tap to click, drag with one finger, hold to right-click, and scroll with two fingers. Use the leftmost keyboard button to show or hide the keyboard. Highlighted modifiers apply to the next key.",
 };
 const zh: Record<keyof typeof en, string> = {
+  desktopNotConnected: "桌面尚未连接", desktopRecoveryHint: "打开工具菜单可查看状态、重新连接或切换桌面。",
   rdpTitle: "RDP 接入",
   rdpEnabled: "启用 RDP",
   rdpHelp: "使用桌面登录凭据，通过 RDP 客户端连接此虚拟桌面。请先断开浏览器控制。画质由 RDP 客户端协商。",

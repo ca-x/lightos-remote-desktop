@@ -123,7 +123,7 @@ export function createMobileControls(options: MobileOptions) {
       floating.tabIndex = touch ? -1 : 0;
       floating.setAttribute("aria-hidden", String(touch));
     }
-    for (const button of buttons) button.disabled = !options.ready();
+    for (const button of buttons) button.disabled = button.dataset.mobileAction !== "menu" && !options.ready();
     input.disabled = !options.ready();
     toggle.disabled = !options.ready();
     toggle.setAttribute("aria-pressed", String(focused()));
@@ -229,7 +229,13 @@ export function createMobileControls(options: MobileOptions) {
   }
 
   function action(button: HTMLButtonElement) {
-    if (!options.ready() || button.disabled) return;
+    if (button.disabled) return;
+    if (button.dataset.mobileAction === "menu") {
+      hideKeyboard();
+      options.tools(true);
+      return;
+    }
+    if (!options.ready()) return;
     if (button === toggle) { if (focused()) hideKeyboard(); else showKeyboard(); return; }
     const code = button.dataset.mobileKey;
     if (code && MODIFIERS.has(code)) {
@@ -239,9 +245,6 @@ export function createMobileControls(options: MobileOptions) {
       key(code, (button.dataset.mobileModifiers ?? "").split(" ").filter(Boolean));
     } else if (button.dataset.mobileText) {
       text(button.dataset.mobileText);
-    } else if (button.dataset.mobileAction === "menu") {
-      hideKeyboard();
-      options.tools(true);
     }
   }
 
