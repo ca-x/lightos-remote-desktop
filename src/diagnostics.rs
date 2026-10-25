@@ -82,7 +82,7 @@ pub fn dependencies(
                 "Omarchy configuration check",
                 resolve(Path::new("timeout")).is_some(),
             ));
-            optional.extend(["gtk-launch", "xdg-settings"].map(|name| {
+            optional.extend(["gtk-launch", "xdg-settings", "gio"].map(|name| {
                 (
                     name.into(),
                     "Omarchy browser launcher",

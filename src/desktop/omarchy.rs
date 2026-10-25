@@ -32,6 +32,12 @@ impl DesktopInitializer for OmarchyInitializer {
             ),
             ("PATH".into(), path.clone()),
             (
+                "CHROME_CONFIG_HOME".into(),
+                crate::applications::profile_root(runtime)?
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            (
                 "DBUS_SESSION_BUS_ADDRESS".into(),
                 format!("unix:path={}/bus", runtime.display()),
             ),

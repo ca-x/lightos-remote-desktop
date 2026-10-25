@@ -203,6 +203,7 @@ fn transport_restart_preserves_native_desktop_and_gui_process() {
             .arg("--aquamarine-dir")
             .arg(&compat)
             .env_remove("LIGHTOS_REMOTE_DESKTOP_SESSION_RUNTIME")
+            .env("XDG_DATA_HOME", runtime.path().join("data"))
             .stdout(log.try_clone().unwrap())
             .stderr(log)
             .spawn()

@@ -1,5 +1,10 @@
 #!/bin/sh
 set -eu
+lightos_application_environment="$(dirname -- "$0")/application-environment.sh"
+if [ -f "$lightos_application_environment" ]; then
+    . "$lightos_application_environment"
+fi
+unset lightos_application_environment
 dbus-update-activation-environment \
     "DISPLAY=${DISPLAY:-}" \
     "WAYLAND_DISPLAY=$WAYLAND_DISPLAY" \
@@ -12,6 +17,8 @@ dbus-update-activation-environment \
     "XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-Hyprland}" \
     "XDG_SESSION_TYPE=wayland" \
     "PATH=$PATH" \
+    "CHROME_CONFIG_HOME=${CHROME_CONFIG_HOME:-}" \
+    "CHROME_USER_DATA_DIR=" \
     "PULSE_SERVER=${PULSE_SERVER:-}" \
     "PULSE_CLIENTCONFIG=${PULSE_CLIENTCONFIG:-}"
 printf '%s\n' "${DISPLAY:-}" > "$1.pending"

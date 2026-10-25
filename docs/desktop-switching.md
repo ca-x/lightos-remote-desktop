@@ -125,3 +125,33 @@ limits are tracked in [runtime platforms](runtime-platforms.md).
 
 Keep authentication configured through the normal password environment variable.
 The UI never changes this path and never starts or unlocks a physical login session.
+
+## Application launch ownership
+
+Owned virtual desktops keep a private display and D-Bus activation environment.
+Chromium-family browsers additionally receive a persistent, session-specific
+`CHROME_CONFIG_HOME` under the user's XDG data directory. This prevents Chrome's
+profile singleton from forwarding web-app launches to a physical browser.
+Physical sessions keep their normal profile. Website logins in the virtual
+browser are independent; existing physical profiles and cookies are not copied.
+
+Session-local launchers cover Omarchy web apps, the default-browser entry,
+GTK/URL activation, and installed Chromium-family command names. They preserve
+arguments and reject a different runtime, bus or display endpoint. Native virtual
+browser launches select Wayland even if the host Chrome flags force X11; an
+explicit platform argument remains a caller override. Browser desktop entries
+are adapted in the private runtime through GIO, leaving installed entries intact. New virtual
+processes and private D-Bus activations inherit the same profile root. A transport
+upgrade refreshes the running owned session's launchers without restarting its
+compositor or applications. Existing windows stay on their original desktop;
+long-running applications that launch a browser directly with an old inherited
+environment may need to be reopened. Explicit `--user-data-dir` arguments remain
+an advanced user override. This is application routing, not a same-user security
+sandbox for every third-party application's singleton protocol.
+
+These adapters are limited to tool-owned Wayland sessions. Attached physical
+Wayland/X11 sessions are not given these scripts, and non-Chromium GTK entries
+retain their original launcher. The service does not edit host Chrome flag files.
+If Chrome itself is forced to X11 while the host X server is unavailable, repair
+the host X11 setup or explicitly configure Chrome for the working Wayland session;
+that host configuration issue is distinct from virtual-session routing.

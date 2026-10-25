@@ -163,6 +163,13 @@ impl Session {
                     "persistent desktop connection cancelled"
                 );
                 if let Some(session) = crate::handoff::attach_persistent(runtime)? {
+                    // Refresh session-local launchers without stopping the owner
+                    // or its applications during a transport upgrade.
+                    let applications = crate::applications::prepare(
+                        &session.runtime,
+                        config.omarchy_path()?.as_deref(),
+                    )?;
+                    applications.update_activation(&session.runtime)?;
                     return Ok(session);
                 }
                 ensure!(
@@ -247,7 +254,9 @@ impl Session {
             .arg(format!("--address=unix:path={}", bus_path.display()))
             .env("XDG_RUNTIME_DIR", &session.runtime)
             .env_remove("DISPLAY")
-            .env_remove("WAYLAND_DISPLAY");
+            .env_remove("WAYLAND_DISPLAY")
+            .env_remove("CHROME_CONFIG_HOME")
+            .env_remove("CHROME_USER_DATA_DIR");
         session.spawn(bus, "dbus.log")?;
         session.wait_for(Duration::from_secs(5), || bus_path.exists())?;
         if config.audio {
@@ -257,9 +266,7 @@ impl Session {
         }
         let prepared = crate::desktop::prepare(config, &session.runtime)?;
         let omarchy = prepared.omarchy;
-        if omarchy.is_some() {
-            session.prepare_application_launchers()?;
-        }
+        let applications = crate::applications::prepare(&session.runtime, omarchy.as_deref())?;
         let desktop_config = prepared.configuration;
         let lua = desktop_config
             .extension()
@@ -303,6 +310,7 @@ impl Session {
             .env("XDG_CURRENT_DESKTOP", "Hyprland")
             .env("XDG_SESSION_TYPE", "wayland");
         command.envs(prepared.environment.iter().cloned());
+        applications.apply(&mut command);
         session.audio_environment(&mut command);
         if let Some(path) = &omarchy {
             session.omarchy_environment(&mut command, path)?;
@@ -350,6 +358,7 @@ impl Session {
                 shell.env("HYPRLAND_INSTANCE_SIGNATURE", signature);
             }
             shell.envs(prepared.environment.iter().cloned());
+            applications.apply(&mut shell);
             session.audio_environment(&mut shell);
             session.omarchy_environment(&mut shell, path)?;
             session.spawn(shell, "omarchy-shell.log")?;
@@ -391,23 +400,6 @@ impl Session {
         self.wait_for(Duration::from_secs(5), || output.is_file())?;
         let display = fs::read_to_string(output)?;
         Ok(display.trim().to_owned())
-    }
-
-    fn prepare_application_launchers(&self) -> Result<()> {
-        let directory = self.runtime.join("bin");
-        fs::create_dir_all(&directory)?;
-        for (name, source) in [
-            ("uwsm-app", include_str!("../scripts/session-uwsm-app.sh")),
-            (
-                "omarchy-launch-browser",
-                include_str!("../scripts/session-browser.sh"),
-            ),
-        ] {
-            let path = directory.join(name);
-            fs::write(&path, source)?;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-        }
-        Ok(())
     }
 
     fn omarchy_environment(&self, command: &mut Command, path: &Path) -> Result<()> {
@@ -1380,6 +1372,8 @@ mod tests {
         let external = Session::start(&config).unwrap();
         assert_eq!(external.socket, path);
         assert!(!external.is_owned());
+        assert!(!directory.path().join("application-environment.sh").exists());
+        assert!(!directory.path().join("bin").exists());
         let persistent = Session::attached(
             directory.path().to_path_buf(),
             path.clone(),

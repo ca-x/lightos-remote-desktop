@@ -1,3 +1,4 @@
+mod applications;
 pub mod audio;
 pub mod audio_channel;
 pub mod backend;
