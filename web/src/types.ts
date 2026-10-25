@@ -60,6 +60,7 @@ export interface Elements {
   "mobile-shortcuts": HTMLElement;
   "mobile-keyboard": HTMLButtonElement;
   "mobile-fullscreen-exit": HTMLButtonElement;
+  "mobile-fullscreen-rotate": HTMLButtonElement;
   viewport: HTMLElement;
   text: HTMLTextAreaElement;
   width: HTMLInputElement;

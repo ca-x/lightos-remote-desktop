@@ -11,15 +11,20 @@ let texts: string[];
 let chords: string[][];
 let ready: boolean;
 let menuOpen: boolean;
+let audioAvailable: boolean;
+let audioToggles: number;
+let fullscreenToggles: number;
+let rotations: number;
 let zoomed: boolean;
 let gestures: { ratio: number; from: {x:number;y:number}; to: {x:number;y:number} }[];
 
 beforeEach(() => {
   vi.useFakeTimers();
-  document.body.innerHTML = `<main id="viewport"><canvas></canvas><textarea></textarea><button id="fullscreen-exit" hidden></button><nav><button id="keyboard"></button><button data-mobile-key="ControlLeft"></button><button data-mobile-key="ArrowUp"></button><button data-mobile-text="/"></button><button data-mobile-action="menu"></button></nav></main>`;
+  document.body.innerHTML = `<main id="viewport"><canvas></canvas><textarea></textarea><button id="fullscreen-exit" hidden></button><button id="fullscreen-rotate" hidden></button><nav><button id="keyboard"></button><button data-mobile-key="ControlLeft"></button><button data-mobile-key="ArrowUp"></button><button data-mobile-text="/"></button><button data-mobile-action="audio"></button><button data-mobile-action="fullscreen"></button><button data-mobile-action="menu"></button></nav></main>`;
   viewport = document.querySelector("main")!;
   input = document.querySelector("textarea")!;
   toggle = document.querySelector("#keyboard")!;
+  audioAvailable = true; audioToggles = fullscreenToggles = rotations = 0;
   commands = []; texts = []; chords = []; zoomed = false; gestures = []; ready = true; menuOpen = false;
   visual = Object.assign(new EventTarget(), { width: 390, height: 844, offsetTop: 0, offsetLeft: 0 });
   vi.stubGlobal("visualViewport", visual);
@@ -28,6 +33,8 @@ beforeEach(() => {
   controls = createMobileControls({
     canvas: document.querySelector("canvas")!, viewport, input, bar: document.querySelector("nav")!, toggle,
     fullscreenExit: document.querySelector('#fullscreen-exit')!, exitFullscreen: () => controls.setFullscreen(false),
+    fullscreenRotate: document.querySelector('#fullscreen-rotate')!, rotateScreen: () => { rotations++; },
+    audioAvailable: () => audioAvailable, toggleAudio: () => { audioToggles++; }, toggleFullscreen: () => { fullscreenToggles++; },
     zoom: { active: () => zoomed, gesture: (from, to, ratio) => { gestures.push({from, to, ratio}); zoomed = true; } },
     ready: () => ready, send: command => { commands.push(command); return true; },
     text: value => texts.push(value), chord: value => chords.push(value), move: () => {}, tools: (open) => { menuOpen = open; }, layout: () => {}, translate: value => value,
@@ -274,4 +281,18 @@ it("samples both fingers together so horizontal fullscreen panning does not pinc
   expect(gestures).toHaveLength(1);expect(gestures[0].ratio).toBe(1);
   expect(gestures[0].to.x-gestures[0].from.x).toBe(30);
   expect(commands.filter(c=>c.type==='scroll'||c.type==='button')).toEqual([]);
+});
+
+
+it("keeps rotation beside the exit lifecycle and offers direct audio/fullscreen actions",()=>{
+  const rotate=document.querySelector<HTMLButtonElement>('#fullscreen-rotate')!;
+  controls.setFullscreen(true);expect(rotate.hidden).toBe(false);rotate.click();expect(rotations).toBe(1);
+  vi.advanceTimersByTime(2000);expect(rotate.hidden).toBe(true);
+  document.dispatchEvent(new Event('pointerdown'));expect(rotate.hidden).toBe(false);
+  controls.setFullscreen(false);expect(rotate.hidden).toBe(true);
+  const audio=document.querySelector<HTMLButtonElement>('[data-mobile-action=audio]')!;
+  const fullscreen=document.querySelector<HTMLButtonElement>('[data-mobile-action=fullscreen]')!;
+  audio.click();fullscreen.click();expect(audioToggles).toBe(1);expect(fullscreenToggles).toBe(1);expect(menuOpen).toBe(false);
+  audioAvailable=false;controls.update();expect(audio.disabled).toBe(true);
+  ready=false;controls.update();expect(fullscreen.disabled).toBe(false);fullscreen.click();expect(fullscreenToggles).toBe(2);
 });

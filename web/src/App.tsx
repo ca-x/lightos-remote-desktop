@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button, Dialog, DialogBackdrop, DialogPanel, DialogTitle, Field, Input, Label, Select, Tab, TabGroup, TabList, TabPanel, TabPanels, Textarea } from "@headlessui/react";
-import { Activity, Bot, Cable, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clipboard, Expand, House, Info, Keyboard, Menu, Monitor, Palette, Settings2, Shrink, SlidersHorizontal, Volume2, VolumeX, X } from "lucide-react";
+import { Activity, Bot, Cable, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clipboard, Expand, House, Info, Keyboard, Menu, Monitor, Palette, Settings2, Shrink, SlidersHorizontal, Volume2, VolumeX, RotateCw, X } from "lucide-react";
 import logo from "./assets/logo.webp?inline";
 import * as Menubar from "@radix-ui/react-menubar";
 import { useTranslation } from "react-i18next";
@@ -182,6 +182,7 @@ function Workspace() {
     <textarea id="mobile-input" className="mobile-input" tabIndex={-1} aria-label={t("mobileInput")}
       autoCapitalize="off" autoCorrect="off" autoComplete="off" spellCheck={false} inputMode="text" enterKeyHint="enter" />
     <button id="mobile-fullscreen-exit" className="mobile-fullscreen-exit" type="button" hidden aria-label={t("exitFullscreen")} title={t("exitFullscreen")}><Shrink size={22} aria-hidden="true"/></button>
+    <button id="mobile-fullscreen-rotate" className="mobile-fullscreen-exit mobile-fullscreen-rotate" type="button" hidden aria-label={t("rotateScreen")} title={t("rotateScreen")}><RotateCw size={22} aria-hidden="true"/></button>
     <nav id="mobile-shortcuts" className="mobile-shortcuts" aria-label={t("mobileShortcuts")}>
       <div className="mobile-shortcut-row lightbook-regular" role="toolbar" aria-label={t("mobileRow1")}>
         <button id="mobile-keyboard" className="mobile-key mobile-keyboard" type="button" disabled={!controls.ready} aria-label={t("showKeyboard")} title={t("showKeyboard")} aria-pressed="false"><Keyboard size={18} aria-hidden="true" /></button>
@@ -192,7 +193,7 @@ function Workspace() {
         <a id="mobile-home" className="mobile-key mobile-home" href="/" aria-label={t("mobileHome")} title={t("mobileHome")}><House size={18} aria-hidden="true" /></a>
         <div className="mobile-key-scroll">{MOBILE_ROWS[1].map(shortcut)}</div>
       </div>
-      <LightBook active={lightBookActive} ready={controls.ready} />
+      <LightBook active={lightBookActive} ready={controls.ready} audioAvailable={controls.audioAvailable} audioEnabled={controls.audioEnabled} fullscreen={view.fullscreen} />
     </nav>
     <aside id="tools" aria-label={t("title")}>
       <button type="button" id="tools-toggle" className="tool-handle" title={t("drag")} aria-label={t(open ? "close" : "open")} aria-expanded={open} aria-controls="tool-panel" onClick={() => { setOpen(!open); setMenu(""); }}><ToggleChevron size={22} strokeWidth={2.25} aria-hidden="true" /></button>

@@ -1,10 +1,12 @@
+import { pictureClientPoint, pictureNormalizedPoint, pictureClip } from "./picture-geometry";
+
 interface CursorState {
   type: "cursor"; visible: boolean; id: string; x: number; y: number;
   width: number; height: number; display_width: number; display_height: number;
   hotspot_x: number; hotspot_y: number; units_width: number; units_height: number;
   png?: string;
 }
-export function createCursorLayer(canvas: HTMLCanvasElement, overlay: HTMLImageElement, rtt: () => number = () => 0, clipBounds?: () => { left: number; top: number; right: number; bottom: number }) {
+export function createCursorLayer(canvas: HTMLCanvasElement, overlay: HTMLImageElement, rtt: () => number = () => 0, clipBounds?: () => { left: number; top: number; right: number; bottom: number }, rotated: () => boolean = () => false) {
   let socket: WebSocket | null = null, generation = 0, imageRevision = 0;
   let embedded = true, shape: CursorState | null = null, latest: CursorState | null = null;
   let url: string | null = null, inside = false, touch = false, corrected = false;
@@ -16,12 +18,13 @@ export function createCursorLayer(canvas: HTMLCanvasElement, overlay: HTMLImageE
     if (embedded) { canvas.style.setProperty("cursor", "none"); return; }
     if (!latest || !shape || !url) { canvas.style.setProperty("cursor", latest?.visible === false ? "none" : "default"); return; }
     if (!latest.visible) { canvas.style.setProperty("cursor", "none"); return; }
-    const sx = bounds.width / shape.units_width, sy = bounds.height / shape.units_height;
+    const rotation = rotated();
+    const sx = (rotation ? bounds.height : bounds.width) / shape.units_width, sy = (rotation ? bounds.width : bounds.height) / shape.units_height;
     const width = shape.display_width * sx, height = shape.display_height * sy;
     const hx = shape.hotspot_x * sx, hy = shape.hotspot_y * sy;
     const density = shape.width / width;
     const cursor = `image-set(url("${url}") ${density.toFixed(5)}x) ${hx.toFixed(2)} ${hy.toFixed(2)}, default`;
-    const native = !touch && !corrected && width > 0 && height > 0 && width <= 128 && height <= 128
+    const native = !rotation && !touch && !corrected && width > 0 && height > 0 && width <= 128 && height <= 128
       && shape.width <= 128 && shape.height <= 128 && hx >= 0 && hy >= 0 && hx < width && hy < height
       && Math.abs(density - shape.height / height) < 0.01 && window.CSS?.supports("cursor", cursor);
     canvas.style.setProperty("cursor", native ? cursor : "none");
@@ -29,17 +32,19 @@ export function createCursorLayer(canvas: HTMLCanvasElement, overlay: HTMLImageE
     const position = point && (touch ? performance.now() - localAt < Math.max(150, rtt() * 2) : inside && !corrected) ? point : latest;
     overlay.src = url;
     overlay.style.width = `${width}px`; overlay.style.height = `${height}px`;
-    const left = bounds.left + position.x * bounds.width - hx, top = bounds.top + position.y * bounds.height - hy;
-    overlay.style.transform = `translate3d(${left}px, ${top}px, 0)`;
+    const client = pictureClientPoint(bounds, position, rotation);
+    const left = client.x + (rotation ? hy-height : -hx), top = client.y - (rotation ? hx : hy);
+    overlay.style.transform = rotation ? `translate3d(${client.x+hy}px, ${top}px, 0) rotate(90deg)` : `translate3d(${left}px, ${top}px, 0)`;
     const clip = clipBounds?.();
-    overlay.style.clipPath = clip ? `inset(${Math.max(0, clip.top - top)}px ${Math.max(0, left + width - clip.right)}px ${Math.max(0, top + height - clip.bottom)}px ${Math.max(0, clip.left - left)}px)` : "";
+    overlay.style.clipPath = clip ? pictureClip(clip.top-top, left+(rotation ? height : width)-clip.right, top+(rotation ? width : height)-clip.bottom, clip.left-left, rotation) : "";
     overlay.hidden = false;
   }
   function layout() { bounds = canvas.getBoundingClientRect(); render(); }
   function move(x: number, y: number, pointerType = "mouse") {
     localAt = performance.now(); touch = pointerType === "touch"; corrected = false;
     inside = x >= bounds.left && y >= bounds.top && x <= bounds.right && y <= bounds.bottom;
-    point = { x: Math.max(0, Math.min(1, (x - bounds.left) / bounds.width)), y: Math.max(0, Math.min(1, (y - bounds.top) / bounds.height)) };
+    const normalized = pictureNormalizedPoint(bounds, { x, y }, rotated());
+    point = { x: Math.max(0, Math.min(1, normalized.x)), y: Math.max(0, Math.min(1, normalized.y)) };
     render();
   }
   function valid(value: CursorState) {
@@ -54,7 +59,7 @@ export function createCursorLayer(canvas: HTMLCanvasElement, overlay: HTMLImageE
     if (session !== generation || !valid(value)) return;
     latest = value;
     if (point && !touch && performance.now() - localAt > Math.max(150, Math.min(1500, rtt() * 2))) {
-      corrected = Math.abs((value.x - point.x) * bounds.width) > 3 || Math.abs((value.y - point.y) * bounds.height) > 3;
+      corrected = Math.abs((value.x - point.x) * (rotated() ? bounds.height : bounds.width)) > 3 || Math.abs((value.y - point.y) * (rotated() ? bounds.width : bounds.height)) > 3;
     }
     if (value.png !== undefined) {
       if (typeof value.png !== "string" || value.png.length > 1500000 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value.png) || !value.width || !value.height) return;
@@ -107,7 +112,7 @@ export function createCursorLayer(canvas: HTMLCanvasElement, overlay: HTMLImageE
       const current = recent ? point : latest ?? point;
       return { x: Math.max(0, Math.min(1, current?.x ?? .5)), y: Math.max(0, Math.min(1, current?.y ?? .5)) };
     },
-    moveNormalized: (x: number, y: number) => move(bounds.left + x * bounds.width, bounds.top + y * bounds.height, "touch"),
+    moveNormalized: (x: number, y: number) => { const client = pictureClientPoint(bounds, { x, y }, rotated()); move(client.x, client.y, "touch"); },
     present: (value: boolean) => { embedded = value; if (!embedded && !touch) inside = canvas.matches?.(":hover") ?? inside; render(); },
     dispose: () => { reset(); listeners.abort(); observer?.disconnect(); },
   };

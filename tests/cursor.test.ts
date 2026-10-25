@@ -32,12 +32,13 @@ describe("independent cursor", () => {
   });
   afterEach(() => { cleanup?.(); cleanup = undefined; vi.unstubAllGlobals(); });
   const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
-  function setup() {
+  function setup(rotated = false) {
     const canvas = document.querySelector("canvas")!;
     const image = document.querySelector("img")!;
     canvas.getBoundingClientRect = () => ({ left:10,top:20,width:640,height:400,right:650,bottom:420 } as DOMRect);
     vi.spyOn(canvas, "matches").mockReturnValue(true);
-    const layer = createCursorLayer(canvas,image);
+    if (rotated) canvas.getBoundingClientRect = () => ({left:10,top:20,width:400,height:640,right:410,bottom:660} as DOMRect);
+    const layer = createCursorLayer(canvas,image,undefined,undefined,()=>rotated);
     cleanup = layer.dispose;
     layer.connect("a".repeat(32));
     return { canvas,image,layer,socket:sockets[0] };
@@ -66,6 +67,15 @@ describe("independent cursor", () => {
     app.layer.present(true);
     expect(app.canvas.style.cursor).toBe("none");
     expect(app.image.hidden).toBe(true);
+  });
+  it("rotates cursor shape and hotspot with the picture while keeping pointer coordinates exact", async () => {
+    const app = setup(true);app.socket.message(packet());await flush();app.layer.present(false);
+    app.layer.move(110,180,"touch");
+    expect(app.layer.position()).toEqual({x:.25,y:.75});
+    expect(app.image.style.transform).toBe("translate3d(119px, 173px, 0) rotate(90deg)");
+    app.layer.moveNormalized(.75,.25);
+    expect(app.layer.position()).toEqual({x:.75,y:.25});
+    expect(app.image.style.transform).toBe("translate3d(319px, 493px, 0) rotate(90deg)");
   });
   it("discards a late cursor image after switching sessions", async () => {
     const app = setup(); let finish!: () => void;

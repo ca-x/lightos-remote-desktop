@@ -1,3 +1,5 @@
+import { pictureNormalizedPoint, pictureScrollDelta } from "./picture-geometry";
+import { createScreenRotation } from "./screen-rotation";
 import { createLightBookInput, supportsLightBook } from "./lightbook-input";
 import { createPictureZoom } from "./picture-zoom";
 import { encoderBackendKey, encoderBackends, readPreference, savePreference, videoCodecKey, videoCodecs, streamStrategyKey, streamStrategies } from "./preferences";
@@ -129,6 +131,7 @@ export function createClient(options: ClientOptions = {}) {
   let fullscreenAutoResolution: boolean | null = null;
   let desktopFullscreen = false;
   let fullscreenFallback = false;
+  let pictureRotated = false;
   let videoDecoder: VideoDecoder | null = null;
   let videoToken = 0;
   let configuringVideo = false;
@@ -367,10 +370,24 @@ export function createClient(options: ClientOptions = {}) {
     const rect = viewport.getBoundingClientRect();
     return { left: rect.left, top: rect.top, right: rect.left + (viewport.clientWidth || rect.width), bottom: rect.top + (viewport.clientHeight || rect.height) };
   }
-  const cursor = createCursorLayer(canvas, element("remote-cursor"), () => latestRtt ?? 0, pictureBounds);
+  const cursor = createCursorLayer(canvas, element("remote-cursor"), () => latestRtt ?? 0, pictureBounds, () => pictureRotated);
   const pictureZoom = createPictureZoom({ canvas, viewport, bounds: pictureBounds,
     enabled: () => ready && !desktopPaused && desktopMode === "physical",
     touching: () => mobile?.touching() ?? false, changed: () => { cursor.layout(); scheduleVideoScale(); } });
+  const screenRotation = createScreenRotation({
+    active: () => !!mobile?.isFullscreen() && !destroyed,
+    landscape: () => (window.visualViewport?.width ?? window.innerWidth) > (window.visualViewport?.height ?? window.innerHeight),
+    orientation: () => window.screen?.orientation,
+    pending: (value) => { element("mobile-fullscreen-rotate").disabled = value; },
+    release,
+    rotated(value) {
+      if (pictureRotated === value) return;
+      pictureRotated = value; pictureZoom.setRotated(value);
+      lastAutoResolution = null; mobile?.refreshLayout(); scheduleAutoResize();
+    },
+  });
+  listen(window, "orientationchange", () => screenRotation.deviceChanged());
+  if (window.screen?.orientation) listen(window.screen.orientation, "change", () => screenRotation.deviceChanged());
   const frameCursorModes = new Map<number, boolean>();
   const rttSamples: number[] = [];
   const renderSamples: number[] = [];
@@ -1395,7 +1412,7 @@ export function createClient(options: ClientOptions = {}) {
     });
   }
   function resumeAudioOnGesture(event: Event) {
-    if (event.target === element("audio") || element("audio").contains?.(event.target as Node)) return;
+    if (event.target === element("audio") || element("audio").contains?.(event.target as Node) || (event.target as Element)?.closest?.('[data-mobile-action="audio"]')) return;
     resumeInterruptedAudio();
   }
   listen(document, "pointerdown", resumeAudioOnGesture, { capture: true, passive: true });
@@ -1442,8 +1459,8 @@ export function createClient(options: ClientOptions = {}) {
     cursor.move(event.clientX, event.clientY, mobile?.bounds() ? "touch" : "mouse");
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
-    send({ type: "move", x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
-      y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)) });
+    const point = pictureNormalizedPoint(rect, { x: event.clientX, y: event.clientY }, pictureRotated);
+    send({ type: "move", x: Math.max(0, Math.min(1, point.x)), y: Math.max(0, Math.min(1, point.y)) });
   }
 
   function flushMove() {
@@ -1560,7 +1577,8 @@ export function createClient(options: ClientOptions = {}) {
     event.preventDefault();
     const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? canvas.clientHeight : 1;
     const bounded = (value: number) => Number.isFinite(value) ? Math.max(-1000, Math.min(1000, value * scale)) : 0;
-    send({ type: "scroll", x: bounded(event.deltaX), y: bounded(event.deltaY) });
+    const delta = pictureScrollDelta(event.deltaX, event.deltaY, pictureRotated);
+    send({ type: "scroll", x: bounded(delta.x), y: bounded(delta.y) });
   }, { passive: false });
   function hardwareKey(event: KeyboardEvent, editable = false) {
     pendingHardwareKey = null;
@@ -1707,6 +1725,9 @@ export function createClient(options: ClientOptions = {}) {
       autoResizeTimer = null;
       if (!ready || !resizeAvailable || mobile?.keyboardActive() || !element("auto-resolution").checked || document.hidden || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return;
       const bounds = mobile?.bounds();
+      if (bounds && pictureRotated) {
+        const width = bounds.width; bounds.width = bounds.height-bounds.bar; bounds.height = width; bounds.bar = 0;
+      }
       const scaled = resizeScaleAvailable;
       const target = scaled ? (bounds
         ? mobileResolution(bounds.width, bounds.height - bounds.bar, window.devicePixelRatio || 1)
@@ -1755,7 +1776,7 @@ export function createClient(options: ClientOptions = {}) {
       element("auto-resolution").checked = fullscreenAutoResolution;
       fullscreenAutoResolution = null;
     }
-    if (!fullscreen) { release(); unlockKeyboard(); }
+    if (!fullscreen) { screenRotation.reset(); release(); unlockKeyboard(); }
     updateDisplayMode();
     viewport.classList.toggle("fit", fullscreen ? true : windowMode === "fit");
     scheduleAutoResize();
@@ -1847,6 +1868,7 @@ export function createClient(options: ClientOptions = {}) {
 
   function destroy() {
     if (destroyed) return;
+    screenRotation.dispose();
     disconnect();
     destroyed = true;
     lightBook?.dispose();
@@ -1914,6 +1936,9 @@ export function createClient(options: ClientOptions = {}) {
   mobile = createMobileControls({
     canvas, viewport, input: element("mobile-input"), bar: element("mobile-shortcuts"), toggle: element("mobile-keyboard"),
     fullscreenExit: element("mobile-fullscreen-exit"), exitFullscreen: () => { void displayMode(windowMode); },
+    fullscreenRotate: element("mobile-fullscreen-rotate"), rotateScreen: screenRotation.toggle,
+    toggleFullscreen: () => { void displayMode(isDesktopFullscreen() ? windowMode : "fullscreen"); },
+    toggleAudio: () => { void toggleAudio(); }, audioAvailable: () => audioAvailable, rotated: () => pictureRotated,
     ready: () => ready && !desktopPaused, lightBook: () => lightBookEnabled, zoom: pictureZoom, send, text: typeText, move, tools: (open) => setToolsOpen(open), translate,
     hardwareKey: (event) => hardwareKey(event, true), composition: release,
     hardwareInput: (event) => {

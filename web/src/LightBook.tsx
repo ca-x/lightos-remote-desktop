@@ -1,4 +1,4 @@
-import { Ampersand, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Asterisk, AtSign, ChevronUp, Delete, DollarSign, Equal, Globe2, Hash, House, Menu, Minus, Percent, Plus } from "lucide-react";
+import { Ampersand, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Asterisk, AtSign, ChevronUp, Delete, DollarSign, Equal, Globe2, Hash, House, Menu, Minus, Percent, Plus, Expand, Shrink, Volume2, VolumeX } from "lucide-react";
 import { useLayoutEffect, useRef, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { createLightBookLegendLayout } from "./lightbook-legend-layout";
@@ -49,7 +49,7 @@ const rows: Key[][] = [
   [key("ShiftLeft", "Shift", 2.25), ...letters("ZXCVBNM"), key("Comma", ",", 1, "<"), key("Period", ".", 1, ">"), key("Slash", "/", 1, "?"), key("ShiftRight", "Shift", 2.75)],
 ];
 
-export function LightBook({ active, ready }: { active: boolean; ready: boolean }) {
+export function LightBook({ active, ready, audioAvailable, audioEnabled, fullscreen }: { active: boolean; ready: boolean; audioAvailable: boolean; audioEnabled: boolean; fullscreen: boolean }) {
   const {t} = useTranslation();
   const deck = useRef<HTMLElement>(null);
   useLayoutEffect(() => {
@@ -65,6 +65,8 @@ export function LightBook({ active, ready }: { active: boolean; ready: boolean }
     <div className="lightbook-controls">
       <span className="lightbook-brand">LightOS</span>
       <div>
+        <button type="button" className="lightbook-tool" data-mobile-action="audio" disabled={!ready || !audioAvailable} aria-label={t(audioEnabled ? "audioOff" : "audioOn")} title={t(audioEnabled ? "audioOff" : "audioOn")} aria-pressed={audioEnabled}>{audioEnabled ? <Volume2 size={17}/> : <VolumeX size={17}/>}</button>
+        <button type="button" className="lightbook-tool" data-mobile-action="fullscreen" aria-label={t(fullscreen ? "exitFullscreen" : "fullscreen")} title={t(fullscreen ? "exitFullscreen" : "fullscreen")} aria-pressed={fullscreen}>{fullscreen ? <Shrink size={17}/> : <Expand size={17}/>}</button>
         <button type="button" className="lightbook-tool" data-mobile-action="keyboard" disabled={!ready} aria-label={t("showKeyboard")} title={t("showKeyboard")} aria-pressed={false}><Globe2 size={17}/></button>
         <button type="button" className="lightbook-tool" data-mobile-action="menu" aria-label={t("mobileMenu")} title={t("mobileMenu")}><Menu size={17}/></button>
         <a className="lightbook-tool" href="/" aria-label={t("mobileHome")} title={t("mobileHome")}><House size={17}/></a>

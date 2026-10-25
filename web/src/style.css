@@ -99,6 +99,7 @@ footer { font-size: 10px; color: var(--muted); padding-top: 12px; }
 .mobile-key:active:not(:disabled) { transform: translateY(1px); opacity: .72; }
 .mobile-key[aria-pressed="true"] { background: var(--selected); color: var(--accent); border-color: var(--accent); }
 .mobile-fullscreen-exit { display: none; position: fixed; z-index: 13; top: calc(var(--mobile-top, 0px) + max(8px, var(--lzc-safe-area-inset-top))); left: calc(var(--mobile-left, 0px) + var(--mobile-width, 100vw) - max(8px, var(--lzc-safe-area-inset-right)) - 44px); width: 44px; height: 40px; min-height: 40px; padding: 0; border: 0; border-radius: 10px; background: #24272bd9; color: #fff; touch-action: manipulation; }
+.mobile-fullscreen-rotate { margin-top: 48px; }
 .mobile-fullscreen .mobile-fullscreen-exit { display: inline-flex; }
 #viewport.touch-desktop.mobile-fullscreen { padding: 0; --desktop-area-width: var(--mobile-width, 100vw); --desktop-area-height: calc(var(--mobile-height, 100dvh) - var(--mobile-bar-height, 0px)); }
 #viewport.touch-desktop.mobile-fullscreen.fit:not(.physical-desktop) #desktop { width: var(--desktop-area-width); height: var(--desktop-area-height); max-width: none; max-height: none; object-fit: fill; }
@@ -246,7 +247,7 @@ button:active:not(:disabled) { transform: scale(.97); }
 @media (prefers-contrast: more) { .session-menu { border-color: var(--text); } }
 
 .about-brand > img { width: 48px; height: 48px; object-fit: contain; flex-shrink: 0; }
-.remote-cursor { position: fixed; top: 0; left: 0; z-index: 5; pointer-events: none; user-select: none; max-width: none; object-fit: fill; will-change: transform; }
+.remote-cursor { transform-origin: 0 0; position: fixed; top: 0; left: 0; z-index: 5; pointer-events: none; user-select: none; max-width: none; object-fit: fill; will-change: transform; }
 .remote-cursor[hidden] { display: none; }
 
 /* Avoid focus-triggered page magnification in touch webviews. */
@@ -269,6 +270,7 @@ button:active:not(:disabled) { transform: scale(.97); }
 .touch-desktop.lightbook-mode .mobile-shortcuts { height: var(--lightbook-panel-height); padding: 0; gap: 0; border: 0; background: #000; color: #eee; color-scheme: dark; }
 .lightbook-mode .lightbook-regular { display: none; }
 .lightbook-deck {
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
   --surface: #000; --control: #303032; --field: #1c1c1e; --text: #eee; --border: transparent; --accent: #eee; --selected: #d6d6d8;
   --lightbook-gap: clamp(2px, .6vw, 4px); --lightbook-inset: clamp(3px, .8vw, 6px); --lightbook-controls-height: 28px;
   --lightbook-left: max(var(--lightbook-inset), var(--lzc-safe-area-inset-left)); --lightbook-right: max(var(--lightbook-inset), var(--lzc-safe-area-inset-right));
@@ -329,3 +331,12 @@ button:active:not(:disabled) { transform: scale(.97); }
   .lightbook-legend small { display: none; }
 }
 @media (max-width: 340px) { .lightbook-deck { --lightbook-legend-ratio: 1.15; } .lightbook-legend small { display: none; } }
+
+/* Swap only the picture's layout axes. Fullscreen controls keep their screen position. */
+#viewport.touch-desktop.mobile-fullscreen.picture-rotated.fit #desktop {
+  width: min(var(--desktop-area-height), calc(var(--desktop-area-width) * var(--desktop-aspect, 1.777778)));
+  height: auto; max-width: none; max-height: var(--desktop-area-width); flex-shrink: 0;
+}
+#viewport.touch-desktop.mobile-fullscreen.picture-rotated.fit:not(.physical-desktop) #desktop {
+  width: var(--desktop-area-height); height: var(--desktop-area-width); max-height: none;
+}

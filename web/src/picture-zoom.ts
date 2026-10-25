@@ -1,3 +1,5 @@
+import { pictureClientPoint, pictureClip } from "./picture-geometry";
+
 export interface PicturePoint { x: number; y: number }
 export interface PictureBounds { left: number; top: number; right: number; bottom: number }
 
@@ -14,6 +16,7 @@ export function createPictureZoom(options: {
   const lifecycle = new AbortController();
   let scale = 1, x = 0, y = 0;
   let cover = false, automaticCover = false;
+  let rotated = false;
   let safari: { scale: number; point: PicturePoint } | null = null;
   const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
   const listen = (target: EventTarget, name: string, handler: (event: any) => void) => {
@@ -23,15 +26,28 @@ export function createPictureZoom(options: {
     const rect = canvas.getBoundingClientRect();
     return { left: rect.left - x, top: rect.top - y, width: rect.width / scale, height: rect.height / scale };
   }
+  function transform() {
+    if (rotated) {
+      const style = window.getComputedStyle(canvas);
+      const width = parseFloat(style.width) || canvas.offsetWidth || 0;
+      const height = parseFloat(style.height) || canvas.offsetHeight || 0;
+      // Rotate about the picture's center, then zoom from its visual top left.
+      // Translation remains in screen axes, so pinch/pan math stays unchanged.
+      canvas.style.transform = `translate(${x + (width-height)/2 + height*scale}px, ${y + (height-width)/2}px) rotate(90deg) scale(${scale})`;
+    } else if (scale === 1 && x === 0 && y === 0) canvas.style.removeProperty("transform");
+    else canvas.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+  }
   function reset() {
     scale = 1; x = y = 0; safari = null;
     automaticCover = cover;
-    canvas.style.removeProperty("transform");
+    transform();
     canvas.style.removeProperty("clip-path");
     options.changed();
   }
-  function render(rect = base()) {
+  function render(rect?: ReturnType<typeof base>) {
     if (!options.enabled()) { reset(); return; }
+    if (rotated) transform(); // Refresh rotation offsets after responsive layout changes.
+    rect ??= base();
     const area = options.bounds();
     if (cover && automaticCover && rect.width > 0 && rect.height > 0) {
       scale = Math.max(1, (area.right-area.left)/rect.width, (area.bottom-area.top)/rect.height);
@@ -45,10 +61,10 @@ export function createPictureZoom(options: {
     const left = position(rect.left + x, width, area.left, area.right);
     const top = position(rect.top + y, height, area.top, area.bottom);
     x = left - rect.left; y = top - rect.top;
-    canvas.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+    transform();
     // clip-path uses untransformed element coordinates. Limit the picture to
     // the safe desktop area, including the space reserved above the dock.
-    canvas.style.clipPath = `inset(${Math.max(0, area.top - top) / scale}px ${Math.max(0, left + width - area.right) / scale}px ${Math.max(0, top + height - area.bottom) / scale}px ${Math.max(0, area.left - left) / scale}px)`;
+    canvas.style.clipPath = pictureClip((area.top-top)/scale, (left+width-area.right)/scale, (top+height-area.bottom)/scale, (area.left-left)/scale, rotated);
     options.changed();
   }
   function gesture(from: PicturePoint, to: PicturePoint, ratio: number) {
@@ -110,6 +126,12 @@ export function createPictureZoom(options: {
   observer?.observe(canvas); observer?.observe(viewport);
   return {
     gesture, reset,
+    setRotated(value: boolean) {
+      if (rotated === value) return;
+      rotated = value;
+      viewport.classList.toggle("picture-rotated", value);
+      reset(); render();
+    },
     setCover(value: boolean) {
       if (cover !== value) { cover = value; reset(); }
       if (cover) render();
@@ -117,12 +139,12 @@ export function createPictureZoom(options: {
     reveal: (point: PicturePoint) => {
       if (!options.enabled() || scale <= 1) return;
       const rect = canvas.getBoundingClientRect(), area = options.bounds();
-      const from = { x: rect.left + point.x * rect.width, y: rect.top + point.y * rect.height };
+      const from = pictureClientPoint(rect, point, rotated);
       const margin = Math.min(12, (area.right-area.left)/4, (area.bottom-area.top)/4);
       const to = { x: clamp(from.x, area.left+margin, area.right-margin), y: clamp(from.y, area.top+margin, area.bottom-margin) };
       if (from.x !== to.x || from.y !== to.y) gesture(from,to,1);
     },
     layout: () => render(), active: () => options.enabled() && scale > 1,
-    dispose() { lifecycle.abort(); observer?.disconnect(); reset(); },
+    dispose() { lifecycle.abort(); observer?.disconnect(); rotated = false; viewport.classList.toggle("picture-rotated", false); reset(); },
   };
 }

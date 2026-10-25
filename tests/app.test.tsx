@@ -207,3 +207,16 @@ it("places full keyboard mode below theme, off by default, and only enables it f
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Settings" })).toBeNull());
   expect(within(document.querySelector(".lightbook-deck") as HTMLElement).getAllByRole("button",{name:"Super"})).toHaveLength(2);
 });
+
+
+it("places synchronized audio and fullscreen shortcuts before the full keyboard IME entry", async () => {
+  vi.stubGlobal("navigator", { maxTouchPoints:5,userAgent:"Android",platform:"Linux",languages:["en-US"],language:"en-US" });
+  localStorage.setItem("lightos-desktop-lightbook","on");
+  render(<App/>);await waitFor(()=>expect(createClient).toHaveBeenCalledTimes(1));
+  const actions=Array.from(document.querySelectorAll<HTMLButtonElement>('.lightbook-controls [data-mobile-action]'));
+  expect(actions.map(button=>button.dataset.mobileAction)).toEqual(["audio","fullscreen","keyboard","menu"]);
+  expect(actions[0].disabled).toBe(true);expect(actions[1].disabled).toBe(false);
+  const callbacks=vi.mocked(createClient).mock.calls[0][0]!;
+  await act(async()=>callbacks.onControls?.({ready:true,wanted:true,audioAvailable:true,audioEnabled:true,resizeAvailable:true,desktopMode:"virtual",switchingDesktop:false,refreshingDesktops:false,choices:[],outputs:[]}));
+  expect(actions[0].disabled).toBe(false);expect(actions[0].getAttribute('aria-pressed')).toBe('true');expect(actions[0].getAttribute('aria-label')).toBe('Mute audio');
+});

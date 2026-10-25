@@ -1,3 +1,4 @@
+import { pictureScrollDelta } from "./picture-geometry";
 import { captureResolution, LEGACY_SCALES } from "./resolution";
 
 export interface MobileShortcut {
@@ -45,6 +46,12 @@ interface MobileOptions {
   bar: HTMLElement;
   toggle: HTMLButtonElement;
   fullscreenExit?: HTMLButtonElement;
+  fullscreenRotate?: HTMLButtonElement;
+  rotateScreen?: () => void;
+  toggleFullscreen?: () => void;
+  toggleAudio?: () => void;
+  audioAvailable?: () => boolean;
+  rotated?: () => boolean;
   exitFullscreen?: () => void;
   ready: () => boolean;
   lightBook?: () => boolean;
@@ -125,11 +132,13 @@ export function createMobileControls(options: MobileOptions) {
     if (fullscreenTimer !== null) clearTimeout(fullscreenTimer);
     fullscreenTimer = null;
     if (options.fullscreenExit) options.fullscreenExit.hidden = true;
+    if (options.fullscreenRotate) options.fullscreenRotate.hidden = true;
   }
   function revealFullscreenExit() {
     if (!touch || !fullscreen || disposed || !options.fullscreenExit) return;
     hideFullscreenExit();
     options.fullscreenExit.hidden = false;
+    if (options.fullscreenRotate) options.fullscreenRotate.hidden = false;
     fullscreenTimer = setTimeout(hideFullscreenExit, 2000);
   }
   function setFullscreen(value: boolean) {
@@ -157,7 +166,10 @@ export function createMobileControls(options: MobileOptions) {
       floating.tabIndex = touch ? -1 : 0;
       floating.setAttribute("aria-hidden", String(touch));
     }
-    for (const button of buttons) button.disabled = button.dataset.mobileAction !== "menu" && !options.ready();
+    for (const button of buttons) {
+      const action = button.dataset.mobileAction;
+      button.disabled = !["menu", "fullscreen"].includes(action ?? "") && (!options.ready() || (action === "audio" && !options.audioAvailable?.()));
+    }
     input.disabled = !options.ready();
     toggle.disabled = !options.ready();
     for (const button of keyboardButtons) {
@@ -273,7 +285,9 @@ export function createMobileControls(options: MobileOptions) {
       options.tools(true);
       return;
     }
+    if (button.dataset.mobileAction === "fullscreen") { hideKeyboard(); options.toggleFullscreen?.(); return; }
     if (!options.ready()) return;
+    if (button.dataset.mobileAction === "audio") { options.toggleAudio?.(); return; }
     if (button === toggle || button.dataset.mobileAction === "keyboard") { if (focused()) hideKeyboard(); else showKeyboard(); return; }
     const code = button.dataset.mobileKey;
     if (code && MODIFIERS.has(code)) {
@@ -292,6 +306,9 @@ export function createMobileControls(options: MobileOptions) {
   listen(options.fullscreenExit, "click", () => {
     options.exitFullscreen?.();
   });
+
+  listen(options.fullscreenRotate, "pointerdown", (event: PointerEvent) => event.preventDefault());
+  listen(options.fullscreenRotate, "click", () => { options.rotateScreen?.(); revealFullscreenExit(); });
 
   listen(bar, "pointerdown", (event: PointerEvent) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
@@ -430,7 +447,8 @@ export function createMobileControls(options: MobileOptions) {
     if (gestureMode === "zoom" || gestureMode === "pan") {
       options.zoom?.gesture(from, next, gestureMode === "zoom" && from.distance > 0 ? next.distance / from.distance : 1);
     } else if (gestureMode === "scroll") {
-      options.send({ type: "scroll", x: Math.max(-1000, Math.min(1000, from.x - next.x)), y: Math.max(-1000, Math.min(1000, from.y - next.y)) });
+      const delta = pictureScrollDelta(from.x-next.x, from.y-next.y, options.rotated?.());
+      options.send({ type: "scroll", x: Math.max(-1000, Math.min(1000, delta.x)), y: Math.max(-1000, Math.min(1000, delta.y)) });
     }
     centroid = next;
   }

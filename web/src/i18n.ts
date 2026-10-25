@@ -28,7 +28,7 @@ const en = {
   rdpSaving: "Loading or applying RDP settings…",
 
   pictureSize: "Picture scale", customResolution: "Custom resolution…", moreDisplaySettings: "Display settings…",
-  keyboardMenu: "Keyboard", clipboardMenu: "Clipboard", releaseCapture: "Release keyboard capture", keyboardHelpTitle: "Keyboard help…", exitFullscreen: "Exit fullscreen",
+  keyboardMenu: "Keyboard", clipboardMenu: "Clipboard", releaseCapture: "Release keyboard capture", keyboardHelpTitle: "Keyboard help…", exitFullscreen: "Exit fullscreen", rotateScreen: "Rotate screen",
   about: "About", aboutDescription: "Your desktop, in the browser.", developmentBuild: "Development build", license: "License", projectRepository: "Source code", releaseNotes: "Release notes", reportIssue: "Report an issue",
   toolbar: "Session toolbar", displayMenu: "Display", connectionInfo: "Connection information", dismissMenu: "Close menu", closeSettings: "Close settings", settingsSaved: "Preferences save automatically; apply resolution separately", done: "Done",
   encoderBackend: "H.264 encoder", softwareEncoding: "Software (OpenH264)",
@@ -79,7 +79,7 @@ const zh: Record<keyof typeof en, string> = {
   rdpSaving: "正在加载或应用 RDP 设置…",
 
   pictureSize: "画面缩放", customResolution: "自定义分辨率…", moreDisplaySettings: "显示设置…",
-  keyboardMenu: "键盘", clipboardMenu: "剪贴板", releaseCapture: "释放键盘捕获", keyboardHelpTitle: "键盘使用帮助…", exitFullscreen: "退出全屏",
+  keyboardMenu: "键盘", clipboardMenu: "剪贴板", releaseCapture: "释放键盘捕获", keyboardHelpTitle: "键盘使用帮助…", exitFullscreen: "退出全屏", rotateScreen: "旋转屏幕",
   about: "关于", aboutDescription: "在浏览器中，使用你的桌面。", developmentBuild: "开发版本", license: "许可证", projectRepository: "源代码", releaseNotes: "版本记录", reportIssue: "反馈问题",
   toolbar: "会话工具栏", displayMenu: "显示", connectionInfo: "连接信息", dismissMenu: "关闭菜单", closeSettings: "关闭设置", settingsSaved: "偏好自动保存，分辨率需点击应用", done: "完成",
   encoderBackend: "H.264 编码后端", softwareEncoding: "软件编码（OpenH264）",
