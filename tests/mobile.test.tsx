@@ -9,16 +9,18 @@ let visual: EventTarget & { width: number; height: number; offsetTop: number; of
 let commands: Record<string, unknown>[];
 let texts: string[];
 let chords: string[][];
+let ready: boolean;
+let menuOpen: boolean;
 let zoomed: boolean;
 let gestures: { ratio: number; from: {x:number;y:number}; to: {x:number;y:number} }[];
 
 beforeEach(() => {
   vi.useFakeTimers();
-  document.body.innerHTML = `<main id="viewport"><canvas></canvas><textarea></textarea><nav><button id="keyboard"></button><button data-mobile-key="ControlLeft"></button><button data-mobile-key="ArrowUp"></button><button data-mobile-text="/"></button></nav></main>`;
+  document.body.innerHTML = `<main id="viewport"><canvas></canvas><textarea></textarea><nav><button id="keyboard"></button><button data-mobile-key="ControlLeft"></button><button data-mobile-key="ArrowUp"></button><button data-mobile-text="/"></button><button data-mobile-action="menu"></button></nav></main>`;
   viewport = document.querySelector("main")!;
   input = document.querySelector("textarea")!;
   toggle = document.querySelector("#keyboard")!;
-  commands = []; texts = []; chords = []; zoomed = false; gestures = [];
+  commands = []; texts = []; chords = []; zoomed = false; gestures = []; ready = true; menuOpen = false;
   visual = Object.assign(new EventTarget(), { width: 390, height: 844, offsetTop: 0, offsetLeft: 0 });
   vi.stubGlobal("visualViewport", visual);
   vi.stubGlobal("innerHeight", 844);
@@ -26,8 +28,8 @@ beforeEach(() => {
   controls = createMobileControls({
     canvas: document.querySelector("canvas")!, viewport, input, bar: document.querySelector("nav")!, toggle,
     zoom: { active: () => zoomed, gesture: (from, to, ratio) => { gestures.push({from, to, ratio}); zoomed = true; } },
-    ready: () => true, send: command => { commands.push(command); return true; },
-    text: value => texts.push(value), chord: value => chords.push(value), move: () => {}, tools: () => {}, layout: () => {}, translate: value => value,
+    ready: () => ready, send: command => { commands.push(command); return true; },
+    text: value => texts.push(value), chord: value => chords.push(value), move: () => {}, tools: (open) => { menuOpen = open; }, layout: () => {}, translate: value => value,
   });
 });
 
@@ -217,4 +219,17 @@ it("pinches and pans only the local picture without scrolling or changing keyboa
   controls.handlePointer(pointer(4,200,110),"up");
   expect(gestures.every(g=>g.ratio===1)).toBe(true);
   expect(commands.filter(c=>c.type==="scroll"||c.type==="button")).toEqual([]);
+});
+
+it("keeps the menu usable when a desktop has not become ready", () => {
+  const menu = document.querySelector<HTMLButtonElement>('[data-mobile-action="menu"]')!;
+  ready = false;
+  controls.update();
+  menu.click();
+  expect(menuOpen).toBe(true);
+  expect(menu.disabled).toBe(false);
+  expect(toggle.disabled).toBe(true);
+  document.querySelector<HTMLButtonElement>('[data-mobile-key="ArrowUp"]')!.click();
+  expect(commands).toEqual([]);
+  expect(chords).toEqual([]);
 });

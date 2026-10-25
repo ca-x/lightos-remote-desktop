@@ -40,6 +40,17 @@ runs outside the async socket executor. Connection IDs and elapsed stage timings
 are logged for accepted connections, physical discovery/readiness, the first sent
 frame, closing and controller release; credentials and pixel contents are omitted.
 
+When a selected native Wayland monitor stalls during initialization, the service
+can rebuild the same capture/input connections up to twice within the original
+ten-second budget. The first two waits are bounded to one and two seconds;
+the last attempt uses the remaining time. Each attempt closes and joins its
+workers before retrying. Explicit errors, permission denial and cancellation
+are not retried or redirected to another backend. Timeout diagnostics record
+whether a captured frame existed and how many workers had not become ready.
+The mobile tools menu remains available before readiness and after failure,
+so the user can reconnect or return to the retained virtual desktop. Remote
+input keys stay disabled until readiness; a disconnected view shows a recovery hint.
+
 Physical mode attaches to an existing same-user Wayland or X11 session. The
 resolver honors a validated `XDG_RUNTIME_DIR` and exact `WAYLAND_DISPLAY`, and
 requires an explicit target when ambient protocols or multiple sockets are

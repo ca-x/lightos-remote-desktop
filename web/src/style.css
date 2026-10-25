@@ -247,3 +247,5 @@ button:active:not(:disabled) { transform: scale(.97); }
 
 /* Avoid focus-triggered page magnification in touch webviews. */
 @media (any-pointer: coarse) { :root input, :root textarea, :root select { font-size: 16px; } }
+
+.desktop-recovery { position: absolute; z-index: 6; left: 50%; top: 50%; transform: translate(-50%, -50%); width: max-content; max-width: calc(100% - 32px); padding: 16px 20px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); text-align: center; pointer-events: none; font-size: 14px; }
