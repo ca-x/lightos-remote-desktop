@@ -31,9 +31,9 @@ export function createLightBookInput(options: Options) {
   if (!keyboard || !pad) return null;
   const lifecycle = new AbortController();
   const keyButtons = Array.from(keyboard.querySelectorAll<HTMLButtonElement>("button"));
-  const keyTouches = new Map<number, { button: HTMLButtonElement; code: string; modifier: boolean; fn: boolean; used: boolean; latched: boolean }>();
+  const keyTouches = new Map<number, { button: HTMLButtonElement; code: string; modifier: boolean; used: boolean; latched: boolean }>();
   const down = new Set<string>(), latched = new Set<string>();
-  let fnLatched = false, caps = false;
+  let caps = false;
   const contacts = new Map<number, Point & { start: Point }>();
   let position = {x:.5,y:.5}, last: (Point & {distance:number}) | null = null;
   let origin: (Point & {distance:number}) | null = null;
@@ -42,17 +42,14 @@ export function createLightBookInput(options: Options) {
   let hold: ReturnType<typeof setTimeout> | null = null;
   const live = () => options.active() && options.ready();
   const listen = (target: EventTarget, name: string, callback: (event: any) => void) => target.addEventListener(name, callback, {signal:lifecycle.signal,passive:false});
-  const fnActive = () => fnLatched || [...keyTouches.values()].some(key=>key.fn);
-  const held = (code:string) => [...keyTouches.values()].some(key=>key.code===code && !key.fn);
+  const held = (code:string) => [...keyTouches.values()].some(key=>key.code===code);
   function visual() {
     for (const button of keyButtons) {
       const code = button.dataset.lightbookKey;
-      const contact = [...keyTouches.values()].some(key => key.button === button && down.has(key.code));
-      const pressed = button.dataset.lightbookAction === "fn" ? fnActive() : code === "CapsLock" ? caps : !!code && (down.has(code) || contact);
+      const pressed = code === "CapsLock" ? caps : !!code && down.has(code);
       button.classList.toggle("is-pressed", pressed);
       if (button.hasAttribute("aria-pressed")) button.setAttribute("aria-pressed",String(pressed));
     }
-    keyboard!.classList.toggle("lightbook-fn-on",fnActive());
     pad!.classList.toggle("is-dragging",dragging);
   }
   function press(code:string) {
@@ -64,18 +61,17 @@ export function createLightBookInput(options: Options) {
   function releaseKey(code:string) {
     if (!held(code) && !latched.has(code) && down.delete(code)) options.key(code,false);
   }
-  function usedModifiers() { for(const key of keyTouches.values()) if(key.modifier || key.fn) key.used=true; }
+  function usedModifiers() { for(const key of keyTouches.values()) if(key.modifier) key.used=true; }
   function consumeLatches() {
-    if ([...keyTouches.values()].some(key=>!key.modifier&&!key.fn)) return;
-    const old=[...latched]; latched.clear(); fnLatched=false;
+    if ([...keyTouches.values()].some(key=>!key.modifier)) return;
+    const old=[...latched]; latched.clear();
     for(const code of old) releaseKey(code);
     visual();
   }
   function finishKey(id:number) {
     const key=keyTouches.get(id); if(!key)return;
     keyTouches.delete(id);
-    if(key.fn) { if(!key.used)fnLatched=!key.latched; }
-    else if(key.modifier) {
+    if(key.modifier) {
       if(!key.used && !key.latched)latched.add(key.code);
       else if(!key.used)latched.delete(key.code);
       releaseKey(key.code);
@@ -84,16 +80,15 @@ export function createLightBookInput(options: Options) {
     visual();
   }
   listen(keyboard,"pointerdown",(event:PointerEvent)=>{
-    const button=(event.target as HTMLElement).closest<HTMLButtonElement>("[data-lightbook-key], [data-lightbook-action]");
+    const button=(event.target as HTMLElement).closest<HTMLButtonElement>("[data-lightbook-key]");
     if(!button)return;event.preventDefault();event.stopPropagation();
     if(!live()||button.disabled||event.button!==0||keyTouches.has(event.pointerId))return;
     options.engage?.();
-    const fn=button.dataset.lightbookAction==="fn";
-    const code=fn?"Fn":(fnActive()&&button.dataset.lightbookFn)||button.dataset.lightbookKey!;
+    const code=button.dataset.lightbookKey!;
     const modifier=isModifier(code);
-    if(!modifier&&!fn)usedModifiers();
-    keyTouches.set(event.pointerId,{button,code,modifier,fn,used:false,latched:fn?fnLatched:latched.has(code)});
-    if(!fn)press(code);
+    if(!modifier)usedModifiers();
+    keyTouches.set(event.pointerId,{button,code,modifier,used:false,latched:latched.has(code)});
+    press(code);
     button.setPointerCapture?.(event.pointerId);visual();
   });
   listen(keyboard,"pointerup",(event:PointerEvent)=>{event.preventDefault();event.stopPropagation();finishKey(event.pointerId);});
@@ -102,14 +97,11 @@ export function createLightBookInput(options: Options) {
   listen(keyboard,"click",(event:MouseEvent)=>{
     event.preventDefault();event.stopPropagation();
     if(event.detail || !live())return;
-    const button=(event.target as HTMLElement).closest<HTMLButtonElement>("[data-lightbook-key], [data-lightbook-action]");
+    const button=(event.target as HTMLElement).closest<HTMLButtonElement>("[data-lightbook-key]");
     if(!button||button.disabled)return;
-    if(button.dataset.lightbookAction==="fn")fnLatched=!fnLatched;
-    else {
-      const code=(fnActive()&&button.dataset.lightbookFn)||button.dataset.lightbookKey!;
-      if(isModifier(code)){if(latched.delete(code))releaseKey(code);else{latched.add(code);press(code);}}
-      else{usedModifiers();press(code);releaseKey(code);consumeLatches();}
-    }
+    const code=button.dataset.lightbookKey!;
+    if(isModifier(code)){if(latched.delete(code))releaseKey(code);else{latched.add(code);press(code);}}
+    else{usedModifiers();press(code);releaseKey(code);consumeLatches();}
     visual();
   });
   const cancelHold=()=>{if(hold!==null)clearTimeout(hold);hold=null;};
@@ -173,9 +165,9 @@ export function createLightBookInput(options: Options) {
   listen(pad,"lostpointercapture",(event:PointerEvent)=>{if(contacts.has(event.pointerId))cancel();});
   listen(pad,"wheel",(event:WheelEvent)=>{if(!live())return;event.preventDefault();if(!event.ctrlKey&&!event.metaKey)options.scroll(event.deltaX,event.deltaY);});
   function reset(){
-    if(!keyTouches.size&&!contacts.size&&!down.size&&!latched.size&&!fnLatched&&!caps&&!dragging&&lastTap===-Infinity)return;
+    if(!keyTouches.size&&!contacts.size&&!down.size&&!latched.size&&!caps&&!dragging&&lastTap===-Infinity)return;
     cancelHold();const oldKeys=[...keyTouches],oldContacts=[...contacts.keys()];
-    keyTouches.clear();contacts.clear();down.clear();latched.clear();fnLatched=false;caps=false;dragging=false;gesture="single";last=origin=null;lastTap=-Infinity;
+    keyTouches.clear();contacts.clear();down.clear();latched.clear();caps=false;dragging=false;gesture="single";last=origin=null;lastTap=-Infinity;
     for(const[id,key]of oldKeys)if(key.button.hasPointerCapture?.(id))key.button.releasePointerCapture(id);
     for(const id of oldContacts)if(pad!.hasPointerCapture?.(id))pad!.releasePointerCapture(id);
     visual();

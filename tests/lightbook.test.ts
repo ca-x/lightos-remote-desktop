@@ -12,7 +12,7 @@ function pointer(target:Element,type:string,id:number,x=0,y=0){
 const key=(name:string)=>document.querySelector(`[data-lightbook-key="${name}"]`)!;
 beforeEach(()=>{
  vi.useFakeTimers();
- document.body.innerHTML=`<nav><div id="lightbook-keys"><button data-lightbook-key="MetaLeft" aria-pressed="false">Super</button><button data-lightbook-key="ShiftLeft">Shift</button><button data-lightbook-key="CapsLock" aria-pressed="false">Caps</button><button data-lightbook-key="KeyA">A</button><button data-lightbook-key="Space">Space</button><button data-lightbook-key="ArrowLeft" data-lightbook-fn="Home">←</button><button data-lightbook-action="fn" aria-pressed="false">fn</button></div><div id="lightbook-trackpad"></div></nav>`;
+ document.body.innerHTML=`<nav><div id="lightbook-keys"><button data-lightbook-key="MetaLeft" aria-pressed="false">Super</button><button data-lightbook-key="ShiftLeft">Shift</button><button data-lightbook-key="CapsLock" aria-pressed="false">Caps</button><button data-lightbook-key="KeyA">A</button><button data-lightbook-key="Space">Space</button><button data-lightbook-key="ArrowLeft">←</button></div><div id="lightbook-trackpad"></div></nav>`;
  keys=[];buttons=[];moves=[];scrolls=[];releases=0;active=ready=true;pad=document.querySelector('#lightbook-trackpad')!;
  input=createLightBookInput({root:document.querySelector('nav')!,active:()=>active,ready:()=>ready,
   key:(code,pressed)=>{keys.push([code,pressed]);return true;},button:(b,p)=>{buttons.push([b,p]);return true;},move:p=>moves.push(p),position:()=>({x:.5,y:.5}),dimensions:()=>({width:400,height:200}),scroll:(x,y)=>scrolls.push([x,y]),zoom:()=>{},release:()=>{releases++;},})!;
@@ -35,10 +35,9 @@ it('supports held Super+Space and one-shot tapped modifiers without stuck keys',
  expect(keys).toEqual([['MetaLeft',true],['KeyA',true],['KeyA',false],['MetaLeft',false]]);
  expect(key('MetaLeft').getAttribute('aria-pressed')).toBe('false');
 });
-it('pairs Fn navigation key releases with the actual resolved key',()=>{
- const fn=document.querySelector('[data-lightbook-action=fn]')!;
- pointer(fn,'pointerdown',1);pointer(key('ArrowLeft'),'pointerdown',2);pointer(fn,'pointerup',1);pointer(key('ArrowLeft'),'pointerup',2);
- expect(keys).toEqual([['Home',true],['Home',false]]);
+it('releases a held arrow independently when its modifier is released first',()=>{
+ pointer(key('ShiftLeft'),'pointerdown',1);pointer(key('ArrowLeft'),'pointerdown',2);pointer(key('ShiftLeft'),'pointerup',1);pointer(key('ArrowLeft'),'pointerup',2);
+ expect(keys).toEqual([['ShiftLeft',true],['ArrowLeft',true],['ShiftLeft',false],['ArrowLeft',false]]);
 });
 it('moves relative to the current pointer without dragging, taps left, and taps with two fingers right',()=>{
  pointer(pad,'pointerdown',1,10,10);pointer(pad,'pointermove',1,50,30);pointer(pad,'pointerup',1,50,30);
