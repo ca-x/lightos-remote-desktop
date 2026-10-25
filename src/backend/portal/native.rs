@@ -884,7 +884,76 @@ impl PixelFormat {
     }
 }
 
-/// Only validate mapped, packed 32-bit buffers; reject unknown formats and strides.
+/// Keep two reusable slots: the published frame may still be held by a viewer.
+/// Arc copy-on-write protects any slower consumer before pixels are overwritten.
+#[derive(Default)]
+struct FrameConverter {
+    buffers: [Arc<[u8]>; 2],
+    next: usize,
+}
+impl FrameConverter {
+    fn convert(
+        &mut self,
+        bytes: &[u8],
+        region: (usize, usize, usize),
+        dimensions: (u32, u32),
+        format: PixelFormat,
+    ) -> Result<Frame> {
+        let (offset, size, stride) = region;
+        let (width, height) = dimensions;
+        let row = usize::try_from(width)?
+            .checked_mul(4)
+            .context("video row overflows")?;
+        let length = row
+            .checked_mul(usize::try_from(height)?)
+            .context("video size overflows")?;
+        ensure!(
+            width > 0 && height > 0 && length <= MAX_FRAME_BYTES,
+            "invalid Portal frame dimensions"
+        );
+        ensure!(
+            stride >= row && stride <= MAX_FRAME_BYTES,
+            "invalid Portal video stride"
+        );
+        let needed = stride
+            .checked_mul(height as usize - 1)
+            .and_then(|n| n.checked_add(row))
+            .context("video stride overflows")?;
+        ensure!(
+            needed <= size
+                && offset
+                    .checked_add(size)
+                    .is_some_and(|end| end <= bytes.len()),
+            "truncated Portal video frame"
+        );
+        let storage = &mut self.buffers[self.next];
+        if storage.len() != length {
+            *storage = vec![0; length].into();
+        }
+        let pixels = Arc::make_mut(storage);
+        for (row_index, destination) in pixels.chunks_exact_mut(row).enumerate() {
+            let start = offset + row_index * stride;
+            let source = &bytes[start..start + row];
+            destination.copy_from_slice(&source[..row]);
+            for pixel in destination.as_chunks_mut::<4>().0 {
+                match format {
+                    PixelFormat::Rgba => {}
+                    PixelFormat::Rgbx => pixel[3] = 255,
+                    PixelFormat::Bgra => pixel.swap(0, 2),
+                    PixelFormat::Bgrx => {
+                        pixel.swap(0, 2);
+                        pixel[3] = 255;
+                    }
+                }
+            }
+        }
+        let frame = Frame::new(width, height, storage.clone());
+        self.next = (self.next + 1) % self.buffers.len();
+        Ok(frame)
+    }
+}
+
+#[cfg(test)]
 fn rgba_frame(
     bytes: &[u8],
     offset: usize,
@@ -894,49 +963,16 @@ fn rgba_frame(
     height: u32,
     format: PixelFormat,
 ) -> Result<Frame> {
-    let row = usize::try_from(width)?
-        .checked_mul(4)
-        .context("video row overflows")?;
-    let length = row
-        .checked_mul(usize::try_from(height)?)
-        .context("video size overflows")?;
-    ensure!(
-        width > 0 && height > 0 && length <= MAX_FRAME_BYTES,
-        "invalid Portal frame dimensions"
-    );
-    ensure!(
-        stride >= row && stride <= MAX_FRAME_BYTES,
-        "invalid Portal video stride"
-    );
-    let needed = stride
-        .checked_mul(height as usize - 1)
-        .and_then(|n| n.checked_add(row))
-        .context("video stride overflows")?;
-    ensure!(
-        needed <= size
-            && offset
-                .checked_add(size)
-                .is_some_and(|end| end <= bytes.len()),
-        "truncated Portal video frame"
-    );
-    let mut pixels = vec![0; length];
-    for (row_index, destination) in pixels.chunks_exact_mut(row).enumerate() {
-        let start = offset + row_index * stride;
-        let source = &bytes[start..start + row];
-        destination.copy_from_slice(&source[..row]);
-        for pixel in destination.as_chunks_mut::<4>().0 {
-            match format {
-                PixelFormat::Rgba => {}
-                PixelFormat::Rgbx => pixel[3] = 255,
-                PixelFormat::Bgra => pixel.swap(0, 2),
-                PixelFormat::Bgrx => {
-                    pixel.swap(0, 2);
-                    pixel[3] = 255;
-                }
-            }
-        }
+    FrameConverter::default().convert(bytes, (offset, size, stride), (width, height), format)
+}
+
+/// Return old PipeWire buffers before spending CPU converting the newest one.
+fn newest_buffer<T>(mut dequeue: impl FnMut() -> Option<T>) -> Option<T> {
+    let mut newest = dequeue()?;
+    while let Some(next) = dequeue() {
+        newest = next;
     }
-    Ok(Frame::new(width, height, pixels.into()))
+    Some(newest)
 }
 
 fn capture_pipewire(
@@ -963,6 +999,7 @@ fn capture_pipewire(
     let video_format = state.clone();
     let video_frames = frames.clone();
     let video_failed = failed.clone();
+    let mut converter = FrameConverter::default();
     let _listener = stream
         .add_local_listener::<()>()
         .state_changed(move |_, _, _, new| {
@@ -987,7 +1024,7 @@ fn capture_pipewire(
             }
         })
         .process(move |stream, _| {
-            let Some(mut buffer) = stream.dequeue_buffer() else {
+            let Some(mut buffer) = newest_buffer(|| stream.dequeue_buffer()) else {
                 return;
             };
             let Some(data) = buffer.datas_mut().first_mut() else {
@@ -1016,13 +1053,10 @@ fn capture_pipewire(
             let Ok(stride) = usize::try_from(stride) else {
                 return;
             };
-            if let Ok(frame) = rgba_frame(
+            if let Ok(frame) = converter.convert(
                 bytes,
-                offset,
-                length,
-                stride,
-                size.width,
-                size.height,
+                (offset, length, stride),
+                (size.width, size.height),
                 pixel_format,
             ) {
                 video_frames.send_replace(Some(Arc::new(frame)));
@@ -1283,5 +1317,49 @@ mod tests {
         assert!(stopped.load(Ordering::Acquire));
         assert!(capture.is_none());
         assert!(current.borrow().is_none());
+    }
+}
+
+#[cfg(test)]
+mod performance_tests {
+    use super::*;
+    #[test]
+    fn conversion_reuses_free_slots_and_keeps_retained_pixels_immutable() {
+        let mut converter = FrameConverter::default();
+        let a = converter
+            .convert(&[1, 2, 3, 255], (0, 4, 4), (1, 1), PixelFormat::Rgba)
+            .unwrap();
+        let address = a.pixels.as_ptr();
+        drop(a);
+        let retained = converter
+            .convert(&[4, 5, 6, 255], (0, 4, 4), (1, 1), PixelFormat::Rgba)
+            .unwrap();
+        let reused = converter
+            .convert(&[7, 8, 9, 255], (0, 4, 4), (1, 1), PixelFormat::Rgba)
+            .unwrap();
+        assert_eq!(address, reused.pixels.as_ptr());
+        let _next = converter
+            .convert(&[10, 11, 12, 255], (0, 4, 4), (1, 1), PixelFormat::Rgba)
+            .unwrap();
+        assert_eq!(&*retained.pixels, &[4, 5, 6, 255]);
+        assert_eq!(&*reused.pixels, &[7, 8, 9, 255]);
+    }
+    #[test]
+    fn backlog_is_discarded_before_conversion_and_all_buffers_are_returned() {
+        use std::{cell::RefCell, rc::Rc};
+        struct Buffer(usize, Rc<RefCell<Vec<usize>>>);
+        impl Drop for Buffer {
+            fn drop(&mut self) {
+                self.1.borrow_mut().push(self.0);
+            }
+        }
+        let returned = Rc::new(RefCell::new(Vec::new()));
+        let mut buffers = (0..5).map(|n| Buffer(n, returned.clone()));
+        let newest = newest_buffer(|| buffers.next()).unwrap();
+        assert_eq!(newest.0, 4);
+        assert_eq!(&*returned.borrow(), &[0, 1, 2, 3]);
+        drop(newest);
+        assert_eq!(&*returned.borrow(), &[0, 1, 2, 3, 4]);
+        assert!(newest_buffer::<u8>(|| None).is_none());
     }
 }

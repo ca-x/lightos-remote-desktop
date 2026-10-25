@@ -26,7 +26,7 @@ use display_control::{
 };
 use futures_util::{SinkExt, Stream, StreamExt, stream::SplitSink};
 use media_codec::{
-    BackendPreference, CodecCapability, EncoderBackend, EncoderFactory, EncoderRate,
+    BackendPreference, CapabilityCache, EncoderBackend, EncoderFactory, EncoderRate,
     EncoderSettings, HardwareEncoders, RgbaScaler, SoftwareEncoders, VideoCodec, VideoEncoder,
     choose_h264_backend, fit_dimensions,
 };
@@ -87,7 +87,7 @@ pub struct AppState {
     outputs: Vec<DisplayOutput>,
     transient_backend: bool,
     displays: Arc<dyn DisplayController>,
-    codec_capabilities: Arc<tokio::sync::OnceCell<Vec<CodecCapability>>>,
+    codec_capabilities: Arc<CapabilityCache>,
     physical_capabilities: Arc<Mutex<Option<PhysicalCapabilities>>>,
     #[cfg(test)]
     encode_pause: Option<Arc<EncodePause>>,
@@ -185,7 +185,7 @@ impl AppState {
         Self {
             rdp,
             mcp,
-            codec_capabilities: Arc::new(tokio::sync::OnceCell::new()),
+            codec_capabilities: Arc::new(CapabilityCache::default()),
             physical_capabilities: Arc::new(Mutex::new(None)),
             displays,
             config: Arc::new(config),
@@ -593,7 +593,7 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
             StatusCode::SERVICE_UNAVAILABLE
         },
         axum::Json(
-            json!({"native":true,"ready":ready,"requires_consent":state.backend.is_deferred(),"desktop_backend":state.backend.kind(),"pid":std::process::id(),"transport":"websocket","video_codecs":state.codec_capabilities.get().map(|caps| caps.iter().filter(|c| c.available).map(|c| c.codec).collect::<Vec<_>>()).unwrap_or_default(),"codec_probe_complete":state.codec_capabilities.initialized()}),
+            json!({"native":true,"ready":ready,"requires_consent":state.backend.is_deferred(),"desktop_backend":state.backend.kind(),"pid":std::process::id(),"transport":"websocket","video_codecs":state.codec_capabilities.snapshot().iter().filter(|c| c.available).map(|c| c.codec).collect::<Vec<_>>(),"codec_probe_complete":state.codec_capabilities.initialized()}),
         ),
     )
 }
@@ -869,14 +869,10 @@ async fn connection(
     let audio_session = audio_available.then(|| state.audio_hub.start());
     let display_capabilities = state.displays.capabilities().await;
     let cursor_scope = state.cursor_hub.start(state.backend.clone());
-    let codec_capabilities = state
+    let mut capability_updates = state.codec_capabilities.subscribe();
+    let mut codec_capabilities = state
         .codec_capabilities
-        .get_or_init(|| async {
-            let hardware = HardwareEncoders::discover();
-            let (mut caps, native) = tokio::join!(SoftwareEncoders.probe(), hardware.probe());
-            caps.extend(native);
-            caps
-        })
+        .capabilities(HardwareEncoders::discover())
         .await;
     let video_codecs: Vec<_> = codec_capabilities
         .iter()
@@ -1061,7 +1057,7 @@ async fn connection(
                                 tracing::warn!(%error, ?selected_backend, "H264 backend failed; selecting fallback");
                                 if let Some(backend) = selected_backend.take() { excluded_backends.push(backend); }
                                 fallback_reason = Some(format!("{error:#}"));
-                                selected_backend = choose_h264_backend(backend_preference, codec_capabilities, &excluded_backends);
+                                selected_backend = choose_h264_backend(backend_preference, &codec_capabilities, &excluded_backends);
                                 h264 = selected_backend.is_some();
                                 h264_dynamic_rate = selected_backend.is_some_and(|backend| codec_capabilities.iter().any(|cap| cap.backend == backend.id() && cap.available && cap.dynamic_bitrate));
                                 pacing_tx.send_modify(|flow| { flow.reset(); flow.set_quality_scalable(if h264 { h264_dynamic_rate } else { state.config.quality > 20 }); });
@@ -1120,6 +1116,25 @@ async fn connection(
                     encode_samples.record(encode_started.elapsed());
                     outgoing_epoch = Some(frame_epoch);
                     Some(Message::Binary(packet.into()))
+                }
+                changed = capability_updates.changed() => {
+                    if changed.is_err() { break; }
+                    codec_capabilities = state.codec_capabilities.snapshot();
+                    if h264 {
+                        let next = choose_h264_backend(backend_preference, &codec_capabilities, &excluded_backends);
+                        if next != selected_backend {
+                            selected_backend = next;
+                            encoder.take(); codec = None; applied_rate = None;
+                            pacing_tx.send_modify(FrameScheduler::reset);
+                        }
+                        h264_dynamic_rate = selected_backend.is_some_and(|backend| codec_capabilities.iter().any(|cap| cap.backend == backend.id() && cap.available && cap.dynamic_bitrate));
+                        pacing_tx.send_modify(|flow| flow.set_quality_scalable(h264_dynamic_rate));
+                        if backend_preference.requested_backend().is_some_and(|backend| Some(backend) == selected_backend) {
+                            fallback_reason = None;
+                        }
+                    }
+                    let codecs: Vec<_> = codec_capabilities.iter().filter(|cap| cap.available).map(|cap| cap.codec).collect();
+                    Some(Message::Text(json!({"type":"codec_capabilities","video_codecs":codecs,"codec_capabilities":codec_capabilities}).to_string().into()))
                 }
                 _ = qos_ticks.tick() => {
                     pacing_tx.send_if_modified(|flow| {
@@ -1190,7 +1205,7 @@ async fn connection(
                                         if !excluded_backends.contains(&active) { excluded_backends.push(active); }
                                         fallback_reason = Some(format!("Browser rejected {rejected} H264 profile"));
                                 }
-                                selected_backend = choose_h264_backend(backend_preference, codec_capabilities, &excluded_backends);
+                                selected_backend = choose_h264_backend(backend_preference, &codec_capabilities, &excluded_backends);
                                 if let Some(requested) = backend_preference.requested_backend()
                                     && selected_backend != Some(requested) {
                                         fallback_reason = Some(codec_capabilities.iter().find(|cap| cap.backend == requested.id()).and_then(|cap| cap.reason.clone()).unwrap_or_else(|| format!("{} unavailable for this connection", requested.id())));
@@ -1787,7 +1802,6 @@ mod tests {
         state.displays = Arc::new(MissingOutputMetadata(std::sync::atomic::AtomicUsize::new(
             0,
         )));
-        state.codec_capabilities.set(Vec::new()).unwrap();
         let (resume_encode, release) = std::sync::mpsc::sync_channel(1);
         let pause = Arc::new(EncodePause {
             entered: tokio::sync::Notify::new(),
@@ -1939,7 +1953,6 @@ mod tests {
             session,
         );
         state.displays = Arc::new(TestDisplays);
-        state.codec_capabilities.set(Vec::new()).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async { axum::serve(listener, router(state)).await.unwrap() });

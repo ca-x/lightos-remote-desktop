@@ -92,7 +92,9 @@ with tempfile.TemporaryDirectory(prefix='lrd-x11-backend-') as temporary:
             with log.open('wb') as output:
                 process = subprocess.Popen(
                     [xvfb, '-displayfd', str(write_fd), '-auth', str(authority),
-                     '-screen', '0', size, '-nolisten', 'tcp', '-noreset'],
+                     '-screen', '0', size, '-nolisten', 'tcp', '-noreset',
+                     *(['-extension', 'MIT-SHM', '-extension', 'DAMAGE']
+                       if os.environ.get('LRD_TEST_X11_DISABLE_ACCELERATION') else [])],
                     pass_fds=(write_fd,), stdout=output, stderr=subprocess.STDOUT)
             children.append((process, log))
             os.close(write_fd)
@@ -115,7 +117,8 @@ with tempfile.TemporaryDirectory(prefix='lrd-x11-backend-') as temporary:
         result = subprocess.run(
             [executable(shutil.which('cargo'), 'cargo'), 'test', '--lib', *cargo_options,
              'backend::x11::tests',
-             '--', '--ignored', '--nocapture'], cwd=repo, env=env)
+             # The live cases share these two displays and authority files.
+             '--', '--ignored', '--nocapture', '--test-threads=1'], cwd=repo, env=env)
         if result.returncode:
             for _, log in children:
                 print(f'{log.name}:\n{log.read_text(errors="replace")}', file=sys.stderr)

@@ -77,6 +77,38 @@ impl Bitstream {
         Ok(result)
     }
 }
+/// Reuse CPU storage while respecting references retained by FFmpeg/drivers.
+struct CpuFrames {
+    rgba: frame::Video,
+    converted: frame::Video,
+}
+impl CpuFrames {
+    fn new(width: u32, height: u32) -> Self {
+        Self {
+            rgba: frame::Video::new(Pixel::RGBA, width, height),
+            converted: frame::Video::new(Pixel::NV12, width, height),
+        }
+    }
+    fn convert(&mut self, pixels: &[u8], scaler: &mut scaling::Context) -> Result<()> {
+        unsafe {
+            check(
+                ffi::av_frame_make_writable(self.rgba.as_mut_ptr()),
+                "make RGBA frame writable",
+            )?;
+            check(
+                ffi::av_frame_make_writable(self.converted.as_mut_ptr()),
+                "make NV12 frame writable",
+            )?;
+        }
+        let row = self.rgba.width() as usize * 4;
+        let stride = self.rgba.stride(0);
+        for (y, source) in pixels.chunks_exact(row).enumerate() {
+            self.rgba.data_mut(0)[y * stride..y * stride + row].copy_from_slice(source);
+        }
+        scaler.run(&self.rgba, &mut self.converted)?;
+        Ok(())
+    }
+}
 pub struct NativeEncoder {
     name: &'static str,
     backend: EncoderBackend,
@@ -86,6 +118,7 @@ pub struct NativeEncoder {
     filter: Bitstream,
     upload: Option<Buffer>,
     scaler: scaling::Context,
+    frames: CpuFrames,
     pts: i64,
     vaapi_device: Option<PathBuf>,
 }
@@ -247,6 +280,7 @@ impl NativeEncoder {
             filter,
             upload,
             scaler,
+            frames: CpuFrames::new(settings.width, settings.height),
             pts: 0,
             vaapi_device: device.map(Path::to_owned),
         })
@@ -265,14 +299,7 @@ impl NativeEncoder {
                 self.vaapi_device.as_deref(),
             )?;
         }
-        let mut rgba = frame::Video::new(Pixel::RGBA, self.settings.width, self.settings.height);
-        let row = self.settings.width as usize * 4;
-        let stride = rgba.stride(0);
-        for (y, source) in pixels.chunks_exact(row).enumerate() {
-            rgba.data_mut(0)[y * stride..y * stride + row].copy_from_slice(source);
-        }
-        let mut converted = frame::Video::empty();
-        self.scaler.run(&rgba, &mut converted)?;
+        self.frames.convert(pixels, &mut self.scaler)?;
         let mut native = frame::Video::empty();
         let frame = if let Some(upload) = &self.upload {
             unsafe {
@@ -281,13 +308,17 @@ impl NativeEncoder {
                     "allocate VA-API frame",
                 )?;
                 check(
-                    ffi::av_hwframe_transfer_data(native.as_mut_ptr(), converted.as_ptr(), 0),
+                    ffi::av_hwframe_transfer_data(
+                        native.as_mut_ptr(),
+                        self.frames.converted.as_ptr(),
+                        0,
+                    ),
                     "upload VA-API frame",
                 )?;
             }
             &mut native
         } else {
-            &mut converted
+            &mut self.frames.converted
         };
         frame.set_pts(Some(self.pts));
         self.pts += 1;
@@ -666,5 +697,40 @@ mod tests {
                 .unwrap()
                 .starts_with("avc1.")
         );
+    }
+}
+
+#[cfg(test)]
+mod reuse_tests {
+    use super::*;
+    #[test]
+    fn cpu_frames_reuse_allocations_without_mutating_referenced_output() {
+        ffmpeg::init().unwrap();
+        let mut frames = CpuFrames::new(640, 360);
+        let mut scaler = scaling::Context::get(
+            Pixel::RGBA,
+            640,
+            360,
+            Pixel::NV12,
+            640,
+            360,
+            scaling::flag::Flags::BILINEAR,
+        )
+        .unwrap();
+        let pixels = vec![80; 640 * 360 * 4];
+        frames.convert(&pixels, &mut scaler).unwrap();
+        let rgba = frames.rgba.data(0).as_ptr();
+        let output = frames.converted.data(0).as_ptr();
+        frames.convert(&pixels, &mut scaler).unwrap();
+        assert_eq!(rgba, frames.rgba.data(0).as_ptr());
+        assert_eq!(output, frames.converted.data(0).as_ptr());
+        let retained = frames.converted.clone();
+        let saved = retained.data(0).to_vec();
+        frames
+            .convert(&vec![200; pixels.len()], &mut scaler)
+            .unwrap();
+        assert_eq!(saved, retained.data(0));
+        assert_ne!(saved, frames.converted.data(0));
+        assert_ne!(retained.data(0).as_ptr(), frames.converted.data(0).as_ptr());
     }
 }

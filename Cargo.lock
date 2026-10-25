@@ -2507,7 +2507,7 @@ dependencies = [
 
 [[package]]
 name = "lightos-remote-desktop"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2529,6 +2529,7 @@ dependencies = [
  "libpulse-binding",
  "libwayshot",
  "media-codec",
+ "memmap2",
  "openh264",
  "opus",
  "pipewire",
@@ -2651,6 +2652,7 @@ dependencies = [
  "openh264",
  "openh264-sys2",
  "serde",
+ "serde_bytes",
  "tempfile",
  "tokio",
  "tokio-util",

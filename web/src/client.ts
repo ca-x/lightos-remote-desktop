@@ -903,6 +903,12 @@ export function createClient(options: ClientOptions = {}) {
       if (document.activeElement === canvas) mobile?.focusDesktop();
       scheduleAutoResize();
       void captureKeyboard();
+    } else if (value.type === "codec_capabilities") {
+      const hadH264 = serverVideoCodecs.includes("h264");
+      serverVideoCodecs = Array.isArray(value.video_codecs) ? value.video_codecs.filter((codec: unknown) => typeof codec === "string") : [];
+      // A background probe may enable H.264 after ready. Honor the saved codec
+      // and backend choices through the normal negotiation path.
+      if (ready && !hadH264 && serverVideoCodecs.includes("h264") && videoPreference !== "jpeg") requestPreferredVideo();
     } else if (value.type === "desktop_state" && typeof value.available === "boolean") {
       desktopPaused = !value.available;
       if (desktopPaused) {

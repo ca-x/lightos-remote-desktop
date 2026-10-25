@@ -1,4 +1,6 @@
 //! Encoder implementations and runtime availability, independent of capture and network policy.
+mod capabilities;
+pub use capabilities::CapabilityCache;
 mod hardware;
 mod jpeg;
 mod openh264;

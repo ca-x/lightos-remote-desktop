@@ -71,3 +71,45 @@ async fn invalid_and_hanging_workers_are_bounded_and_reaped() {
         }
     }
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_probe_cannot_hold_up_software_readiness() {
+    use media_codec::{CapabilityCache, VideoCodec};
+    use std::{os::unix::fs::PermissionsExt, sync::Arc};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("worker");
+    std::fs::write(&path, "#!/bin/sh\nexec sleep 60\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let worker = HardwareEncoders::at(path).with_deadlines(WorkerDeadlines {
+        init: Duration::from_secs(2),
+        probe: Duration::from_secs(2),
+        encode: Duration::from_secs(2),
+    });
+    let cache = Arc::new(CapabilityCache::default());
+    let mut updates = cache.subscribe();
+    let capabilities = tokio::time::timeout(Duration::from_secs(1), cache.capabilities(worker))
+        .await
+        .expect("a native probe blocked software readiness");
+    assert!(
+        capabilities
+            .iter()
+            .any(|cap| cap.codec == VideoCodec::H264 && !cap.hardware && cap.available)
+    );
+    assert!(
+        !cache.initialized(),
+        "the hanging worker must still be probing"
+    );
+    tokio::time::timeout(Duration::from_secs(4), updates.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(cache.initialized());
+    assert!(
+        cache
+            .snapshot()
+            .iter()
+            .filter(|cap| cap.hardware)
+            .all(|cap| !cap.available)
+    );
+}

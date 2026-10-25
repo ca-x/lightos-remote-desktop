@@ -120,8 +120,8 @@ impl Connection {
         state.displays = Arc::new(ReadOnlyDisplay);
         state
             .codec_capabilities
-            .set(SoftwareEncoders.probe().await)
-            .unwrap();
+            .capabilities(HardwareEncoders::discover())
+            .await;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async { axum::serve(listener, router(state)).await.unwrap() });

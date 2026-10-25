@@ -2,7 +2,7 @@ use crate::{
     CodecCapability, EncodedFrame, EncoderBackend, EncoderRate, EncoderSettings, VideoCodec,
     VideoEncoder, default_bitrate,
     selection::valid_avc_codec,
-    worker_protocol::{self as wire, Reply, Request},
+    worker_protocol::{self as wire, Reply, RequestRef as Request},
 };
 use anyhow::{Context, Result, bail, ensure};
 use bytes::Bytes;
@@ -101,6 +101,50 @@ impl HardwareEncoders {
         }))
         .await
     }
+    pub(crate) fn identity(&self) -> Vec<(PathBuf, Option<String>)> {
+        let mut paths = vec![self.path.clone()];
+        #[cfg(target_os = "linux")]
+        {
+            paths.extend([
+                PathBuf::from("/dev/nvidia0"),
+                PathBuf::from("/proc/driver/nvidia/version"),
+            ]);
+            if let Ok(entries) = std::fs::read_dir("/dev/dri") {
+                paths.extend(
+                    entries
+                        .filter_map(Result::ok)
+                        .filter(|entry| entry.file_name().to_string_lossy().starts_with("renderD"))
+                        .map(|entry| entry.path()),
+                );
+            }
+        }
+        paths.sort();
+        paths
+            .into_iter()
+            .map(|path| {
+                let signature = std::fs::metadata(&path).ok().map(|metadata| {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::MetadataExt;
+                        format!(
+                            "{}:{}:{}:{}:{}:{:?}",
+                            metadata.dev(),
+                            metadata.ino(),
+                            metadata.rdev(),
+                            metadata.mode(),
+                            metadata.len(),
+                            metadata.modified().ok()
+                        )
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        format!("{}:{:?}", metadata.len(), metadata.modified().ok())
+                    }
+                });
+                (path, signature)
+            })
+            .collect()
+    }
     pub fn create(
         &self,
         backend: EncoderBackend,
@@ -163,7 +207,7 @@ impl Worker {
         let _ = self.child.start_kill();
         let _ = timeout(Duration::from_secs(1), self.child.wait()).await;
     }
-    async fn exchange(&mut self, request: Request, deadline: Duration) -> Result<Reply> {
+    async fn exchange(&mut self, request: Request<'_>, deadline: Duration) -> Result<Reply> {
         if self.poisoned {
             self.stop().await;
             bail!("codec worker previous request was interrupted");
@@ -238,7 +282,7 @@ impl VideoEncoder for HardwareEncoder {
             match worker
                 .exchange(
                     Request::Frame {
-                        pixels: pixels.to_vec(),
+                        pixels: &pixels,
                         rate: self.rate,
                     },
                     self.factory.deadlines.encode,

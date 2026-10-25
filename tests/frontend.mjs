@@ -2127,3 +2127,25 @@ test("physical picture zoom requests native video and survives encoding-size cha
   assert.deepEqual(socket.sent.filter(p => p.type === "video_scale").at(-1).max_size, { width: 640, height: 400 });
   assert.equal(socket.sent.some(p => p.type === "resize"), false);
 });
+
+for (const [codec, backend] of [["auto", "auto"], ["h264", "software"], ["h264", "nvenc"], ["jpeg", "auto"]]) {
+  test(`background encoder discovery preserves ${codec}/${backend} preference`, () => {
+    const storage = new Map([["lightos-desktop-video-codec", codec], ["lightos-desktop-encoder-backend", backend]]);
+    const app = harness("/", storage);
+    app.window.VideoDecoder = class {};
+    app.window.EncodedVideoChunk = class {};
+    const socket = app.sockets.at(-1);
+    socket.open();
+    socket.json({ type: "ready", width: 1280, height: 720, frame_ack: true, frame_ids: true, video_codecs: ["jpeg"], backend_selection: true });
+    socket.sent.length = 0;
+    socket.json({ type: "codec_capabilities", video_codecs: ["jpeg", "h264"] });
+    const requests = socket.sent.filter(packet => packet.type === "video");
+    if (codec === "jpeg") assert.equal(requests.length, 0);
+    else assert.ok(requests.some(packet => packet.codec === "h264" && packet.backend === backend));
+    socket.sent.length = 0;
+    socket.json({ type: "codec_capabilities", video_codecs: ["jpeg", "h264"] });
+    assert.equal(socket.sent.filter(packet => packet.type === "video").length, 0, "a repeated capability notification must not reset the decoder");
+    assert.equal(storage.get("lightos-desktop-video-codec"), codec);
+    assert.equal(storage.get("lightos-desktop-encoder-backend"), backend);
+  });
+}

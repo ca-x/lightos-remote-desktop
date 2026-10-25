@@ -101,3 +101,16 @@ Unicode、剪贴板、多会话隔离、排队写入取消和停止清理，没�
 当前路径使用 core GetImage，尚未加入 SHM/Damage 优化；本机 Xvfb 不提供测试所需的
 RandR resize，不能将相应跳过项记作真机调整通过。Portal 已有编译和单元测试，
 GNOME/KDE 真机、分数缩放与性能比较仍未验收。没有从 GPL 参考项目复制源码。
+
+
+## 编码与采集优化更新（2026-10-25）
+
+参考仓库主分支 `bf7bd50` 的近期优化后，本项目独立实现后台硬件探测与过期缓存、
+worker 借用输入和字节序列化、FFmpeg CPU 帧复用、PipeWire 队列取最新帧，以及
+X11 的 SHM/Damage 能力加速。上文“尚未加入 SHM/Damage”是原调研时的状态。
+实现与实测范围见 [性能记录](../capture-encode-performance.md)。
+
+参考项目的原生 NVENC XShm 注册和 VA-API DRI3/VPP 依赖 X11 与专用驱动路径，
+当前保持独立 worker 和可移植 CPU 帧接口，GPU 句柄传递留待单独设计及设备验收。
+原有 NVENC 码率缓冲与 VA-API 参数没有相同缺陷，因此没有机械套用其参数修改。
+未复制 GPL 源码，未用参考项目的设备数据声称本项目提速。

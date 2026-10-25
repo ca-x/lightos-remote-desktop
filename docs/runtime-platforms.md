@@ -41,7 +41,7 @@ capabilities; users normally do not select a capture backend.
 | --- | --- | --- |
 | Native Wayland | Supported libwayshot capture globals and virtual keyboard/pointer with the required versions | Preferred on a usable selected Wayland socket; a bounded registry probe is followed by real first-frame initialization |
 | Portal (`portal` build feature) | One verifiable GNOME/KDE RemoteDesktop + ScreenCast provider, matching compositor/session identities, keyboard/pointer devices, monitor source, embedded cursor, PipeWire | Used when native Wayland protocols are unavailable and the exact target can be proved. Discovery only reads capabilities; an explicit connection opens one shared authorization session and the local chooser selects the monitor |
-| Native X11 | Local display, valid authority when configured, XTest, readable root window | `x11rb` core GetImage with a real pixel probe. Input/text and `arboard` clipboard run in an isolated child with explicit display/authority; the parent environment is untouched |
+| Native X11 | Local display, valid authority when configured, XTest, readable root window | `x11rb` core GetImage with a real pixel probe; optional negotiated MIT-SHM and XDamage acceleration. Input/text and `arboard` clipboard run in an isolated child with explicit display/authority; the parent environment is untouched |
 
 A selected Wayland session never falls back to its XWayland `DISPLAY`. Explicit
 Wayland/X11 targets fail visibly if invalid; ambient protocol ambiguity also
@@ -72,9 +72,20 @@ Native X11 has isolated authenticated Xvfb acceptance coverage for capture, inpu
 Unicode, clipboard and two-display isolation. The Portal path has compile/unit
 validation, not GNOME/KDE hardware or fractional-scaling acceptance. Neither
 backend adds Windows/macOS sessions, KMS capture, image clipboard or DMA-BUF
-zero-copy capture. X11 currently uses core image reads with a local browser
-pointer and without SHM/Damage optimizations; no performance improvement over
-the Wayland path is claimed.
+zero-copy capture. X11 negotiates XDamage to skip unchanged pixel reads and
+MIT-SHM 1.2 FD-backed segments to avoid transferring full images through the X11
+socket. Missing extensions and SHM setup/read failures independently fall back to
+core GetImage. Geometry changes recreate the mapping; static frames refresh
+health after a successful geometry query without waking encoders. The browser
+still renders the local pointer. Private Xvfb tests cover acceleration and a
+server with both extensions disabled; they do not measure real desktop speed.
+
+Portal capture drains queued PipeWire buffers before converting the newest raw
+frame and reuses two conversion slots when no viewer retains them. Arc
+copy-on-write preserves frames held by slow consumers. All dequeued buffers are
+returned, including discarded older captures. Encoded predictive packets retain
+their existing order. See [capture/encode performance](capture-encode-performance.md)
+for measurements and validation limits.
 
 Official Linux binaries keep the Ubuntu 22.04 glibc and PipeWire library
 baseline. Their Rust SPA bindings compile against a checksum-pinned, private

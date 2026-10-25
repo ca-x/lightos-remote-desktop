@@ -7,7 +7,11 @@ pub const VERSION: u16 = 1;
 pub const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum Request {
+#[serde(bound(
+    serialize = "P: serde_bytes::Serialize",
+    deserialize = "P: serde_bytes::Deserialize<'de>"
+))]
+pub enum RequestPayload<P> {
     Probe {
         backend: EncoderBackend,
     },
@@ -16,10 +20,14 @@ pub enum Request {
         settings: EncoderSettings,
     },
     Frame {
-        pixels: Vec<u8>,
+        #[serde(with = "serde_bytes")]
+        pixels: P,
         rate: EncoderRate,
     },
 }
+pub type Request = RequestPayload<Vec<u8>>;
+pub type RequestRef<'a> = RequestPayload<&'a [u8]>;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Reply {
     Probe {
@@ -27,6 +35,7 @@ pub enum Reply {
     },
     Ready,
     Frame {
+        #[serde(with = "serde_bytes")]
         data: Vec<u8>,
         key: bool,
         codec: Option<String>,
@@ -69,4 +78,109 @@ pub fn validate_pixels(settings: EncoderSettings, pixels: &[u8]) -> Result<()> {
         "invalid hardware pixel buffer"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn byte_reply_is_compatible_with_legacy_worker_in_both_directions() {
+        #[derive(Debug, Serialize, Deserialize)]
+        enum LegacyReply {
+            Probe {
+                codec: String,
+            },
+            Ready,
+            Frame {
+                data: Vec<u8>,
+                key: bool,
+                codec: Option<String>,
+            },
+            Error(String),
+        }
+        let data: Vec<u8> = (0..=255).collect();
+        let codec = Some("avc1.42E01E".to_owned());
+        let legacy = pack(&LegacyReply::Frame {
+            data: data.clone(),
+            key: true,
+            codec: codec.clone(),
+        })
+        .unwrap();
+        let current = pack(&Reply::Frame {
+            data: data.clone(),
+            key: true,
+            codec: codec.clone(),
+        })
+        .unwrap();
+        assert_eq!(legacy, current);
+        assert!(matches!(unpack::<Reply>(&legacy).unwrap(),
+            Reply::Frame { data: decoded, key: true, codec: profile }
+                if decoded == data && profile == codec));
+        assert!(matches!(unpack::<LegacyReply>(&current).unwrap(),
+            LegacyReply::Frame { data: decoded, key: true, codec: profile }
+                if decoded == data && profile == codec));
+    }
+
+    #[test]
+    fn borrowed_frame_preserves_v1_wire_format_and_input() {
+        let pixels = vec![37; 640 * 360 * 4];
+        let rate = EncoderRate {
+            bitrate_bps: 1_000_000,
+            fps: 30,
+        };
+        let borrowed = pack(&RequestRef::Frame {
+            pixels: &pixels,
+            rate,
+        })
+        .unwrap();
+        #[derive(Serialize, Deserialize)]
+        enum LegacyRequest {
+            Probe {
+                backend: EncoderBackend,
+            },
+            Init {
+                backend: EncoderBackend,
+                settings: EncoderSettings,
+            },
+            Frame {
+                pixels: Vec<u8>,
+                rate: EncoderRate,
+            },
+        }
+        let owned = pack(&LegacyRequest::Frame {
+            pixels: pixels.clone(),
+            rate,
+        })
+        .unwrap();
+        assert_eq!(borrowed, owned);
+        let old: LegacyRequest = unpack(&borrowed).unwrap();
+        assert!(matches!(old, LegacyRequest::Frame { pixels: old, .. } if old == pixels));
+        let Request::Frame {
+            pixels: decoded,
+            rate: actual,
+        } = unpack(&borrowed).unwrap()
+        else {
+            panic!("expected frame")
+        };
+        assert_eq!(decoded, pixels);
+        assert_eq!(actual, rate);
+        assert!(pixels.iter().all(|&p| p == 37));
+        for request in [
+            RequestRef::Probe {
+                backend: EncoderBackend::Vaapi,
+            },
+            RequestRef::Init {
+                backend: EncoderBackend::Nvenc,
+                settings: EncoderSettings {
+                    width: 640,
+                    height: 360,
+                    fps: 30,
+                    quality: 75,
+                },
+            },
+        ] {
+            let decoded: Request = unpack(&pack(&request).unwrap()).unwrap();
+            assert_eq!(pack(&request).unwrap(), pack(&decoded).unwrap());
+        }
+    }
 }

@@ -5,7 +5,7 @@ resolver = "3"
 [package]
 name = "lightos-remote-desktop"
 license = "MIT"
-version = "0.1.17"
+version = "0.1.18"
 edition = "2024"
 rust-version = "1.88"
 description = "A native Rust browser remote desktop for LightOS"
@@ -38,6 +38,7 @@ clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 libc = "0.2"
+memmap2 = "0.9"
 libwayshot = { version = "0.9", default-features = false }
 libpulse-binding = "2.30.1"
 opus = "0.4"

@@ -5,7 +5,7 @@ optional sibling executable `lightos-codec-ffmpeg` supplies VA-API, NVENC, AMF a
 VideoToolbox through native `ffmpeg-next` bindings. No FFmpeg command-line codec
 pipeline is launched. Browser hardware decoding is independent of server encoding.
 
-The current capture/input service remains Linux Wayland. Encoder adapters for
+The current capture/input service supports Linux Wayland and X11. Encoder adapters for
 other operating systems do not implement Windows or macOS remote desktop sessions.
 
 ## Arch Linux / Omarchy optional package
@@ -74,9 +74,18 @@ probe; an unusable earlier node does not hide a later working GPU. The validated
 node is retained for that worker and its rate restarts. A new worker revalidates
 devices rather than trusting a previous process's device state.
 
-Native probes run in separate bounded processes and are cached for the service
-lifetime. Restart the transport to reprobe after changing drivers or permissions;
-the persistent desktop owner does not need a restart. Missing helpers, loader
+Native probes run in separate bounded processes in the background, so their
+deadlines do not delay the initial software-ready connection. Existing viewers
+receive capability updates; Auto and an explicitly requested hardware backend
+can switch after validation, while Software and JPEG choices remain unchanged.
+Only one hardware probe batch runs at a time. Results expire after ten minutes
+when any platform-supported backend failed, otherwise after one hour; a later
+connection triggers a refresh. Replacing the helper or changing detected GPU
+device identities invalidates the cache on the next connection. These identities
+only invalidate results; they never prove encoder availability. A permission or
+driver change without a detectable identity change becomes eligible for the TTL
+refresh, or an explicit transport restart; the persistent desktop owner does not
+need a restart. Missing helpers, loader
 failures, device errors and timeouts are reported as unavailable. The browser
 also checks the actual H.264 profile. A failed or rejected backend is excluded
 for that connection, with a fresh IDR on the next backend; software H.264 is
@@ -103,3 +112,13 @@ honestly. GPU-free CI does not prove working VA-API/NVENC/AMF/VideoToolbox devic
 No hardware FPS, CPU, network or perceptual-quality improvement is claimed without
 positive device measurements. FFmpeg runtime licensing depends on the actual
 system build; see `licenses/ffmpeg-runtime.txt` in the optional artifact.
+
+## Capture and worker performance
+
+Worker frame requests borrow the RGBA input and serialize it as bytes instead of
+cloning it and encoding a general sequence. Version 1 bytes stay compatible with
+older helpers in both directions. FFmpeg CPU conversion frames are reused when
+writable; retained driver references cause copy-on-write before the next update.
+These changes still use CPU conversion and pipe IPC. They do not introduce GPU
+handle transfer or change browser video bytes. Reproducible measurements and
+capture optimizations are documented in [capture/encode performance](capture-encode-performance.md).

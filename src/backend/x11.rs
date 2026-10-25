@@ -1,4 +1,5 @@
 //! Native X11 capture with input and clipboard isolated in one session-bound child.
+mod capture;
 use std::{
     collections::BTreeSet,
     io::{self, Read, Write},
@@ -375,6 +376,17 @@ fn image_rgba(
         reply.depth == format.depth && reply.visual == visual.visual_id,
         "X11 image format changed unexpectedly"
     );
+    image_rgba_data(&reply.data, width, height, order, format, visual)
+}
+
+fn image_rgba_data(
+    data: &[u8],
+    width: u16,
+    height: u16,
+    order: ImageOrder,
+    format: xproto::Format,
+    visual: &xproto::Visualtype,
+) -> Result<Arc<[u8]>> {
     let bits = usize::from(width)
         .checked_mul(usize::from(format.bits_per_pixel))
         .context("X11 row overflow")?;
@@ -385,7 +397,7 @@ fn image_rgba(
         .context("X11 image overflow")?;
     let wire_size = expected.checked_add(3).context("X11 image overflow")? & !3;
     ensure!(
-        expected <= MAX_IMAGE_BYTES && reply.data.len() == wire_size,
+        expected <= MAX_IMAGE_BYTES && data.len() == wire_size,
         "invalid X11 image size"
     );
     let len = usize::from(width)
@@ -395,7 +407,40 @@ fn image_rgba(
     ensure!(len <= MAX_IMAGE_BYTES, "X11 image exceeds capture limit");
     let bytes_per_pixel = usize::from(format.bits_per_pixel / 8);
     let mut rgba = vec![0; len];
-    for (y, line) in reply.data[..expected].chunks_exact(row).enumerate() {
+    let byte_channel = |mask: u32| {
+        let shift = mask.trailing_zeros();
+        if mask.checked_shr(shift) != Some(255) || !shift.is_multiple_of(8) {
+            return None;
+        }
+        match order {
+            ImageOrder::LSB_FIRST => Some(shift as usize / 8),
+            ImageOrder::MSB_FIRST => Some(3 - shift as usize / 8),
+            _ => None,
+        }
+    };
+    if format.bits_per_pixel == 32
+        && let (Some(red), Some(green), Some(blue)) = (
+            byte_channel(visual.red_mask),
+            byte_channel(visual.green_mask),
+            byte_channel(visual.blue_mask),
+        )
+    {
+        for (source, destination) in data[..expected]
+            .chunks_exact(row)
+            .zip(rgba.chunks_exact_mut(usize::from(width) * 4))
+        {
+            for (pixel, rgba) in source[..usize::from(width) * 4]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(destination.as_chunks_mut::<4>().0)
+            {
+                rgba.copy_from_slice(&[pixel[red], pixel[green], pixel[blue], 255]);
+            }
+        }
+        return Ok(rgba.into());
+    }
+    for (y, line) in data[..expected].chunks_exact(row).enumerate() {
         for (x, bytes) in line[..usize::from(width) * bytes_per_pixel]
             .chunks_exact(bytes_per_pixel)
             .enumerate()
@@ -748,6 +793,24 @@ impl Shared {
         }
     }
 
+    fn refresh(&self, rect: Rect, pixels: Arc<[u8]>) -> bool {
+        let mut current_rect = self.rect.lock().unwrap_or_else(|e| e.into_inner());
+        if self.stopped.load(Ordering::Acquire) {
+            return false;
+        }
+        *current_rect = Some(rect);
+        // Geometry was read successfully: static pixels are healthy, without
+        // a full-screen comparison or a new encode notification.
+        self.frames.send_if_modified(|slot| {
+            *slot = Some(Arc::new(Frame::new(
+                u32::from(rect.width),
+                u32::from(rect.height),
+                pixels,
+            )));
+            false
+        });
+        true
+    }
     fn publish(&self, rect: Rect, pixels: Arc<[u8]>) -> bool {
         let mut current_rect = self.rect.lock().unwrap_or_else(|e| e.into_inner());
         if self.stopped.load(Ordering::Acquire) {
@@ -1021,10 +1084,15 @@ fn run_capture(
     let connection = connect(target, &shared.capture_socket)?;
     let period = Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut first = true;
+    let mut capture = capture::Capture::new(&connection, target, output);
     while !shared.stopped.load(Ordering::Acquire) {
         let started = Instant::now();
-        let (rect, pixels) = capture_image(&connection, target, output)?;
-        if !shared.publish(rect, pixels) {
+        let (rect, pixels, acquired) = capture.next()?;
+        if !if acquired {
+            shared.publish(rect, pixels)
+        } else {
+            shared.refresh(rect, pixels)
+        } {
             break;
         }
         if first {
@@ -1759,6 +1827,13 @@ mod tests {
         receiver.mark_unchanged();
         assert!(shared.publish(small, vec![255u8; 8].into()));
         assert!(!receiver.has_changed().unwrap());
+        let current = receiver.borrow().as_ref().unwrap().pixels.clone();
+        assert!(shared.refresh(small, current.clone()));
+        assert!(!receiver.has_changed().unwrap());
+        assert!(Arc::ptr_eq(
+            &current,
+            &receiver.borrow().as_ref().unwrap().pixels
+        ));
         let large = Rect {
             x: 0,
             y: 0,
@@ -1770,6 +1845,7 @@ mod tests {
         assert_eq!(receiver.borrow().as_ref().unwrap().width, 3);
         shared.finish();
         assert!(!shared.publish(small, vec![0u8; 8].into()));
+        assert!(!shared.refresh(small, current));
         assert!(receiver.borrow().is_none());
     }
 
@@ -1836,6 +1912,44 @@ mod tests {
             .clear_area(false, root, 0, 0, geometry.width, geometry.height)?
             .check()?;
         connection.flush()?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a private authenticated Xvfb display"]
+    fn live_private_xvfb_acceleration_and_core_fallback() -> Result<()> {
+        let session = SessionTarget {
+            x11_display: Some(std::env::var("LRD_X11_TEST_DISPLAY")?),
+            xauthority: Some(std::env::var("LRD_X11_TEST_AUTH")?.into()),
+            ..SessionTarget::default()
+        };
+        let target = XTarget::from_session(&session)?;
+        let connection = connect(&target, &Mutex::new(None))?;
+        let (visual, _) = visual_and_format(&connection, target.screen)?;
+        paint_root(&connection, target.screen, visual.red_mask)?;
+        let mut capture = capture::Capture::new(&connection, &target, None);
+        let (rect, red, acquired) = capture.next()?;
+        assert!(acquired);
+        assert_eq!(&red[..4], &[255, 0, 0, 255]);
+        let accelerated = std::env::var_os("LRD_TEST_X11_DISABLE_ACCELERATION").is_none();
+        assert_eq!(capture.modes(), (accelerated, accelerated));
+        let (_, same, acquired) = capture.next()?;
+        assert_eq!(acquired, !accelerated);
+        if accelerated {
+            assert!(Arc::ptr_eq(&red, &same));
+        }
+        paint_root(&connection, target.screen, visual.blue_mask)?;
+        let (next_rect, blue, acquired) = capture.next()?;
+        assert_eq!(rect, next_rect);
+        assert!(acquired);
+        assert_eq!(&blue[..4], &[0, 0, 255, 255]);
+        assert_eq!(
+            &red[..4],
+            &[255, 0, 0, 255],
+            "retained capture was overwritten"
+        );
+        drop(capture);
+        connection.get_input_focus()?.reply()?;
         Ok(())
     }
 

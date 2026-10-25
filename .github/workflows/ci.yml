@@ -49,6 +49,7 @@ jobs:
       - name: X11 capture, input and clipboard on private authenticated displays
         run: |
           LRD_TEST_CARGO_FEATURES=bundled-jpeg,rdp,portal LRD_TEST_XVFB="$(command -v Xvfb)" LRD_TEST_X11_WORKER="$PWD/target/debug/lightos-remoted" bash tests/x11-backend.sh
+          LRD_TEST_X11_DISABLE_ACCELERATION=1 LRD_TEST_CARGO_FEATURES=bundled-jpeg,rdp,portal LRD_TEST_XVFB="$(command -v Xvfb)" LRD_TEST_X11_WORKER="$PWD/target/debug/lightos-remoted" bash tests/x11-backend.sh
       - name: AUR bootstrap, recovery and published-release guards
         run: |
           bash tests/aur-bootstrap.sh
