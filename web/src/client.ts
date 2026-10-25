@@ -1927,6 +1927,12 @@ export function createClient(options: ClientOptions = {}) {
     position: () => cursor.position(), dimensions: () => canvas.getBoundingClientRect(),
     move(point) { pictureZoom.reveal(point); cursor.moveNormalized(point.x,point.y); send({type:"move",...point}); },
     scroll: (x,y) => send({type:"scroll",x:Math.max(-1000,Math.min(1000,x)),y:Math.max(-1000,Math.min(1000,y))}),
+    zoomActive: pictureZoom.active,
+    pan(x,y) {
+      const bounds=pictureBounds();
+      const anchor={x:(bounds.left+bounds.right)/2,y:(bounds.top+bounds.bottom)/2};
+      pictureZoom.gesture(anchor,{x:anchor.x+x,y:anchor.y+y},1);
+    },
     zoom(ratio) {
       const point = cursor.position(), rect = canvas.getBoundingClientRect();
       const anchor = {x:rect.left+point.x*rect.width,y:rect.top+point.y*rect.height};

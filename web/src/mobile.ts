@@ -1,4 +1,5 @@
 import { pictureScrollDelta } from "./picture-geometry";
+import { createTouchPair, type TouchPairSample } from "./touch-pair";
 import { captureResolution, LEGACY_SCALES } from "./resolution";
 
 export interface MobileShortcut {
@@ -420,6 +421,7 @@ export function createMobileControls(options: MobileOptions) {
   });
 
   function cancelTouches() {
+    nativePair.reset();
     if (gestureFrame !== null) cancelAnimationFrame(gestureFrame);
     gestureFrame = null;
     cancelHold();
@@ -435,10 +437,10 @@ export function createMobileControls(options: MobileOptions) {
     for (const id of ids) if (canvas.hasPointerCapture?.(id)) canvas.releasePointerCapture(id);
   }
 
-  function applyGesture() {
-    if (!options.ready() || activeTouches.size !== 2 || !centroid) return;
+  function applyGesture(snapshot?: TouchPairSample) {
+    if (!options.ready() || !centroid || (!snapshot && activeTouches.size !== 2)) return;
     const [a, b] = [...activeTouches.values()];
-    const next = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, distance: Math.hypot(a.x - b.x, a.y - b.y) };
+    const next = snapshot ?? { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, distance: Math.hypot(a.x - b.x, a.y - b.y) };
     const origin = gestureOrigin ?? centroid;
     const distanceChanged = Math.abs(next.distance - origin.distance) > Math.max(8, origin.distance * .06);
     const from = gestureMode === "pending" ? origin : centroid;
@@ -453,17 +455,37 @@ export function createMobileControls(options: MobileOptions) {
     centroid = next;
   }
 
+  const nativePair = createTouchPair(canvas, {
+    enabled: options.ready,
+    start(sample) {
+      cancelHold();
+      if (gestureFrame !== null) cancelAnimationFrame(gestureFrame);
+      gestureFrame = null;
+      if (dragging) options.send({ type: "button", button: 0, pressed: false });
+      dragging = false; multiTouch = true;
+      centroid = gestureOrigin = sample;
+      gestureMode = options.zoom?.active() ? "pan" : "pending";
+    },
+    move: applyGesture,
+    end() { cancelTouches(); },
+  });
+
   function handlePointer(event: PointerEvent, phase: "down" | "move" | "up" | "cancel") {
     if (event.pointerType !== "touch") return false;
     event.preventDefault();
     if (!options.ready()) { cancelTouches(); return true; }
     touch = true;
     update();
-    if (phase === "cancel") { cancelTouches(); return true; }
+    if (phase === "cancel") {
+      if (nativePair.active()) activeTouches.delete(event.pointerId);
+      else cancelTouches();
+      return true;
+    }
     if (phase === "down") {
       options.tools(false);
       activeTouches.set(event.pointerId, { x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY });
       canvas.setPointerCapture?.(event.pointerId);
+      if (nativePair.active()) return true;
       if (activeTouches.size === 1 && !multiTouch) {
         rightClicked = false;
         options.move(event);
@@ -493,6 +515,13 @@ export function createMobileControls(options: MobileOptions) {
     if (!current) return true;
     current.x = event.clientX;
     current.y = event.clientY;
+    if (nativePair.active()) {
+      if (phase === "up") {
+        activeTouches.delete(event.pointerId);
+        if (canvas.hasPointerCapture?.(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+      }
+      return true;
+    }
     if (phase === "move") {
       if (multiTouch) {
         if (activeTouches.size !== 2 || !centroid) return true;
@@ -563,11 +592,12 @@ export function createMobileControls(options: MobileOptions) {
       return true;
     },
     keyboardActive: () => touch && (focused() || closingTimer !== null),
-    touching: () => activeTouches.size > 0,
-    lostPointer: (id: number) => { if (activeTouches.has(id)) cancelTouches(); },
+    touching: () => activeTouches.size > 0 || nativePair.active(),
+    lostPointer: (id: number) => { if (nativePair.active()) activeTouches.delete(id); else if (activeTouches.has(id)) cancelTouches(); },
     bounds: () => touch ? contentBounds() : null,
     dispose() {
       reset();
+      nativePair.dispose();
       disposed = true;
       hideFullscreenExit();
       if (closingTimer !== null) clearTimeout(closingTimer);

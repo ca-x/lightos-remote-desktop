@@ -296,3 +296,19 @@ it("keeps rotation beside the exit lifecycle and offers direct audio/fullscreen 
   audioAvailable=false;controls.update();expect(audio.disabled).toBe(true);
   ready=false;controls.update();expect(fullscreen.disabled).toBe(false);fullscreen.click();expect(fullscreenToggles).toBe(2);
 });
+
+
+it("keeps direct picture panning when native touch events continue after pointer cancellation",()=>{
+ zoomed=true;const canvas=document.querySelector('canvas')!;
+ const touch=(type:string,points:{identifier:number;clientX:number;clientY:number}[])=>{
+   const e=new Event(type,{bubbles:true,cancelable:true});Object.assign(e,{targetTouches:points,touches:points});canvas.dispatchEvent(e);
+ };
+ controls.handlePointer(pointer(1,100,100),'down');controls.handlePointer(pointer(2,200,100),'down');
+ touch('touchstart',[{identifier:11,clientX:100,clientY:100},{identifier:22,clientX:200,clientY:100}]);
+ controls.handlePointer(pointer(1,100,100),'cancel');controls.handlePointer(pointer(2,200,100),'cancel');
+ touch('touchmove',[{identifier:11,clientX:130,clientY:115},{identifier:22,clientX:230,clientY:115}]);
+ touch('touchend',[]);
+ expect(gestures).toHaveLength(1);expect(gestures[0].ratio).toBe(1);
+ expect(gestures[0].to.x-gestures[0].from.x).toBe(30);expect(gestures[0].to.y-gestures[0].from.y).toBe(15);
+ expect(commands.filter(c=>c.type==='scroll'||c.type==='button')).toEqual([]);expect(controls.touching()).toBe(false);
+});

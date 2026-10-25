@@ -4,7 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
 
-const lightBookSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/lightbook-input.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
+const lightBookSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/lightbook-input.ts", import.meta.url), "utf8")).replace(/^export /gm, "").replace(/^import .* from .*;$/gm, "");
 const zoomSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/picture-zoom.ts", import.meta.url), "utf8")).replace(/^export /gm, "").replace(/^import .* from .*;$/gm, "");
 const cursorSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/cursor.ts", import.meta.url), "utf8")).replace(/^export /gm, "").replace(/^import .* from .*;$/gm, "");
 const updatesSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/desktop-updates.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
@@ -15,7 +15,8 @@ const codecSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/video-
 const preferenceSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/preferences.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const geometrySource = stripTypeScriptTypes(readFileSync(new URL("../web/src/picture-geometry.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const rotationSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/screen-rotation.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
-const source = geometrySource + "\n" + rotationSource + "\n" + lightBookSource + "\n" + zoomSource + "\n" + cursorSource + "\n" + updatesSource + "\n" + resolutionSource + "\n" + mobileSource + "\n" + clipboardSource + "\n" + preferenceSource + "\n" + codecSource + "\n" + stripTypeScriptTypes(readFileSync(new URL("../web/src/client.ts", import.meta.url), "utf8"))
+const touchPairSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/touch-pair.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
+const source = touchPairSource + "\n" + geometrySource + "\n" + rotationSource + "\n" + lightBookSource + "\n" + zoomSource + "\n" + cursorSource + "\n" + updatesSource + "\n" + resolutionSource + "\n" + mobileSource + "\n" + clipboardSource + "\n" + preferenceSource + "\n" + codecSource + "\n" + stripTypeScriptTypes(readFileSync(new URL("../web/src/client.ts", import.meta.url), "utf8"))
 
   .replace(/^import .* from .*;$/gm, "")
   .replace(/^export /gm, "") + '\nconst audioWorkerUrl = "./audio-worker.js"; const audioWorkletUrl = "./audio-worklet.js"; const client = createClient(clientOptions);';
