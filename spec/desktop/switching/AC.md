@@ -33,3 +33,22 @@ Given 用户发起了尚未就绪的物理桌面连接
 When 用户关闭该连接
 Then 服务取消该次初始化并允许后续控制端连接
 And 两个控制端不能同时向桌面发送输入
+
+
+# 场景 5：声音跟随当前桌面
+ID: SC-AUDIO-FOLLOWS-DESKTOP
+Profile: draft
+Gate: required
+Given 虚拟桌面与物理桌面均有可用音源且播放不同音频
+When 用户分别连接这两个桌面并开启声音
+Then 每次只播放当前桌面的声音
+And 切换桌面、锁屏或关闭连接后停止旧音频，缺失的音源不会使用麦克风或另一桌面的音源替代
+
+# 场景 6：手机恢复被中断的播放
+ID: SC-MOBILE-AUDIO-RECOVERY
+Profile: draft
+Gate: required
+Given 用户已开启桌面声音，手机浏览器暂时中断了音频播放
+When 用户再次触摸页面或点击声音按钮
+Then 浏览器尝试恢复媒体播放并据实际播放状态显示声音开关
+And 恢复失败时提示用户重试，画面连接不受影响

@@ -12,7 +12,7 @@ function worker(supported = true) {
     decodeQueueSize = 0;
     packets = [];
     constructor(callbacks) { this.callbacks = callbacks; decoders.push(this); }
-    static async isConfigSupported() { return { supported }; }
+    static async isConfigSupported() { if (supported === "throws") throw new Error("unsupported codec"); return { supported }; }
     configure(config) { this.config = config; this.state = "configured"; }
     decode(packet) { this.packets.push(packet); }
     reset() { this.resets = (this.resets ?? 0) + 1; this.decodeQueueSize = 0; }
@@ -50,7 +50,7 @@ test("worker negotiates Opus and transfers decoded stereo out of the UI thread",
 });
 
 test("worker supports PCM when the server or browser lacks Opus", async () => {
-  for (const [supported, allowOpus] of [[false, true], [true, false]]) {
+  for (const [supported, allowOpus] of [[false, true], [true, false], ["throws", true]]) {
     const app = worker(supported);
     await app.init(allowOpus);
     assert.equal(app.messages[0].codec, "pcm");

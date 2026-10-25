@@ -773,14 +773,14 @@ async fn upgrade_audio(
         )
             .into_response();
     };
-    if !state.config.audio || !state.audio.available() {
+    if !state.config.audio || !lease.available() {
         return (StatusCode::CONFLICT, "Audio unavailable").into_response();
     }
     upgrade
         .max_message_size(1024)
         .max_frame_size(1024)
         .on_upgrade(move |socket| {
-            audio_channel::connection(socket, lease, state.audio, state.backend, request.codec)
+            audio_channel::connection(socket, lease, request.codec)
         })
 }
 
@@ -808,7 +808,12 @@ async fn connection(
     let (width, height) = dimensions?;
     let audio_available = state.config.audio && state.audio.available();
     let audio_source = audio_available.then_some("available");
-    let audio_session = audio_available.then(|| state.audio_hub.start());
+    let audio_session = audio_available.then(|| {
+        let backend = state.backend.clone();
+        state.audio_hub.start(state.audio.clone(), Arc::new(move || {
+            (!backend.paused() && !backend.is_stopped()).then(|| backend.privacy_epoch())
+        }))
+    });
     let display_capabilities = state.displays.capabilities().await;
     let cursor_scope = state.cursor_hub.start(state.backend.clone());
     let mut capability_updates = state.codec_capabilities.subscribe();
@@ -1519,7 +1524,7 @@ async fn handle_command(
             if value.get("enabled").and_then(|value| value.as_bool()) == Some(true) {
                 anyhow::ensure!(state.config.audio, "audio disabled");
                 anyhow::ensure!(
-                    source.is_some() && state.audio.available(),
+                    source.is_some() && state.audio.available() && !state.backend.paused() && !state.backend.is_stopped(),
                     "audio unavailable"
                 );
                 *audio = Some(state.audio.start(AudioFormat::Pcm)?);

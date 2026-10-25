@@ -74,3 +74,28 @@ Browser decode/draw starts when decoding is submitted, not at remote capture.
 With worklet audio enabled, the tooltip also shows codec, ring-buffer duration,
 underrun events and discarded source samples. Diagnostics do not enter React's
 frame hot path. No clock subtraction between different machines is used.
+
+
+## Selected desktop and mobile playback
+
+The audio lease stores the selected desktop's server and monitor, rather than
+looking them up on the HTTP router's default virtual session. Owned virtual
+sessions retain their private sink. Attached Wayland and X11 sessions use an
+owned `pulse/native` socket in the selected session runtime and
+`@DEFAULT_MONITOR@` (the default output's monitor, never the default microphone).
+Missing sockets leave audio unavailable; no fallback to another desktop or
+changes to host routing/device settings are made. Physical capture stops on
+privacy pause or epoch change. After a desktop switch or lock, audio must be
+explicitly enabled again. Applications routed to a non-default physical output
+are outside the default-monitor capture scope.
+
+On browsers supporting Audio Session, enabling sound requests `playback` before
+creating the AudioContext, restoring the previous category on stop. This avoids
+iOS Web Audio's ambient/ringer category for user-requested media playback.
+Suspended/interrupted contexts are resumed synchronously on the next touch/key
+or audio-button activation. The enabled indicator reflects a running context;
+blocked resume is bounded to five seconds and fails without restarting video.
+Opus capability-probe exceptions negotiate PCM instead of disabling sound.
+Phone speaker output, silent-switch behavior and interruptions require real-device
+verification; browser automation only verifies decoded audio reaching its output
+graph. See [Audio Session types](https://developer.mozilla.org/en-US/docs/Web/API/Audio_Session_API).

@@ -16,7 +16,7 @@ let gestures: { ratio: number; from: {x:number;y:number}; to: {x:number;y:number
 
 beforeEach(() => {
   vi.useFakeTimers();
-  document.body.innerHTML = `<main id="viewport"><canvas></canvas><textarea></textarea><button id="fullscreen-keyboard" hidden></button><nav><button id="keyboard"></button><button data-mobile-key="ControlLeft"></button><button data-mobile-key="ArrowUp"></button><button data-mobile-text="/"></button><button data-mobile-action="menu"></button></nav></main>`;
+  document.body.innerHTML = `<main id="viewport"><canvas></canvas><textarea></textarea><button id="fullscreen-exit" hidden></button><nav><button id="keyboard"></button><button data-mobile-key="ControlLeft"></button><button data-mobile-key="ArrowUp"></button><button data-mobile-text="/"></button><button data-mobile-action="menu"></button></nav></main>`;
   viewport = document.querySelector("main")!;
   input = document.querySelector("textarea")!;
   toggle = document.querySelector("#keyboard")!;
@@ -27,7 +27,7 @@ beforeEach(() => {
   vi.stubGlobal("matchMedia", () => Object.assign(new EventTarget(), { matches: true }));
   controls = createMobileControls({
     canvas: document.querySelector("canvas")!, viewport, input, bar: document.querySelector("nav")!, toggle,
-    fullscreenToggle: document.querySelector('#fullscreen-keyboard')!,
+    fullscreenExit: document.querySelector('#fullscreen-exit')!, exitFullscreen: () => controls.setFullscreen(false),
     zoom: { active: () => zoomed, gesture: (from, to, ratio) => { gestures.push({from, to, ratio}); zoomed = true; } },
     ready: () => ready, send: command => { commands.push(command); return true; },
     text: value => texts.push(value), chord: value => chords.push(value), move: () => {}, tools: (open) => { menuOpen = open; }, layout: () => {}, translate: value => value,
@@ -37,7 +37,7 @@ beforeEach(() => {
 it("fullscreen closes the keyboard and reveals its floating toggle for two seconds per tap",()=>{
   toggle.click();expect(document.activeElement).toBe(input);
   controls.setFullscreen(true);
-  const button=document.querySelector<HTMLButtonElement>('#fullscreen-keyboard')!;
+  const button=document.querySelector<HTMLButtonElement>('#fullscreen-exit')!;
   expect(document.activeElement).not.toBe(input);expect(controls.keyboardActive()).toBe(false);
   expect(document.querySelector('nav')!.hidden).toBe(true);expect(controls.bounds()!.bar).toBe(0);
   expect(button.hidden).toBe(false);
@@ -51,14 +51,18 @@ it("fullscreen closes the keyboard and reveals its floating toggle for two secon
   vi.advanceTimersByTime(2500);expect(button.hidden).toBe(true);
 });
 
-it("fullscreen toggle opens and closes the IME while retaining menu recovery when disconnected",()=>{
-  controls.setFullscreen(true);
-  const button=document.querySelector<HTMLButtonElement>('#fullscreen-keyboard')!;
-  button.click();expect(document.activeElement).toBe(input);expect(document.querySelector('nav')!.hidden).toBe(false);
-  button.click();expect(document.activeElement).not.toBe(input);expect(document.querySelector('nav')!.hidden).toBe(true);
-  ready=false;controls.update();expect(document.querySelector('nav')!.hidden).toBe(false);
-  const menu=document.querySelector<HTMLButtonElement>('[data-mobile-action=menu]')!;
-  expect(menu.disabled).toBe(false);menu.click();expect(menuOpen).toBe(true);
+it("fullscreen exit restores controls without opening the IME, even when disconnected",()=>{
+  for (const connected of [true, false]) {
+    ready=connected; controls.setFullscreen(true); controls.update();
+    const button=document.querySelector<HTMLButtonElement>('#fullscreen-exit')!;
+    expect(button.disabled).toBe(false);
+    button.click();
+    expect(controls.isFullscreen()).toBe(false);
+    expect(document.activeElement).not.toBe(input);
+    expect(document.querySelector('nav')!.hidden).toBe(false);
+    const menu=document.querySelector<HTMLButtonElement>('[data-mobile-action=menu]')!;
+    expect(menu.disabled).toBe(false);menu.click();expect(menuOpen).toBe(true);
+  }
 });
 
 afterEach(() => { controls.dispose(); vi.useRealTimers(); vi.unstubAllGlobals(); document.body.innerHTML = ""; });

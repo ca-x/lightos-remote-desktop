@@ -44,7 +44,8 @@ interface MobileOptions {
   input: HTMLTextAreaElement;
   bar: HTMLElement;
   toggle: HTMLButtonElement;
-  fullscreenToggle?: HTMLButtonElement;
+  fullscreenExit?: HTMLButtonElement;
+  exitFullscreen?: () => void;
   ready: () => boolean;
   lightBook?: () => boolean;
   send: (command: Record<string, unknown>) => boolean;
@@ -98,7 +99,7 @@ export function createMobileControls(options: MobileOptions) {
   const sticky = new Set<string>();
   const keyButtons = Array.from(bar.querySelectorAll?.<HTMLButtonElement>("[data-mobile-key]") ?? []);
   const buttons = Array.from(bar.querySelectorAll?.<HTMLButtonElement>("button") ?? []);
-  const keyboardButtons = [toggle, ...(options.fullscreenToggle ? [options.fullscreenToggle] : []), ...Array.from(bar.querySelectorAll?.<HTMLButtonElement>('[data-mobile-action="keyboard"]') ?? [])];
+  const keyboardButtons = [toggle, ...Array.from(bar.querySelectorAll?.<HTMLButtonElement>('[data-mobile-action="keyboard"]') ?? [])];
   const activeTouches = new Map<number, { x: number; y: number; startX: number; startY: number }>();
   let holdTimer: ReturnType<typeof setTimeout> | null = null;
   let dragging = false;
@@ -120,16 +121,16 @@ export function createMobileControls(options: MobileOptions) {
   const focused = () => document.activeElement === input;
   const resetField = () => { input.value = SENTINEL; input.setSelectionRange?.(1, 1); };
 
-  function hideFullscreenToggle() {
+  function hideFullscreenExit() {
     if (fullscreenTimer !== null) clearTimeout(fullscreenTimer);
     fullscreenTimer = null;
-    if (options.fullscreenToggle) options.fullscreenToggle.hidden = true;
+    if (options.fullscreenExit) options.fullscreenExit.hidden = true;
   }
-  function revealFullscreenToggle() {
-    if (!touch || !fullscreen || disposed || !options.fullscreenToggle) return;
-    hideFullscreenToggle();
-    options.fullscreenToggle.hidden = false;
-    fullscreenTimer = setTimeout(hideFullscreenToggle, 2000);
+  function revealFullscreenExit() {
+    if (!touch || !fullscreen || disposed || !options.fullscreenExit) return;
+    hideFullscreenExit();
+    options.fullscreenExit.hidden = false;
+    fullscreenTimer = setTimeout(hideFullscreenExit, 2000);
   }
   function setFullscreen(value: boolean) {
     if (fullscreen === value) return;
@@ -138,8 +139,8 @@ export function createMobileControls(options: MobileOptions) {
       reset();
       if (closingTimer !== null) clearTimeout(closingTimer);
       closingTimer = null; keyboardWasVisible = false;
-      revealFullscreenToggle();
-    } else hideFullscreenToggle();
+      revealFullscreenExit();
+    } else hideFullscreenExit();
     update();
     if (frame !== null) cancelAnimationFrame(frame);
     frame = null; layout();
@@ -286,12 +287,10 @@ export function createMobileControls(options: MobileOptions) {
   }
 
   // Reveal controls without consuming the click meant for the remote desktop.
-  listen(document, "pointerdown", revealFullscreenToggle, { capture: true, passive: true });
-  listen(options.fullscreenToggle, "pointerdown", (event: PointerEvent) => event.preventDefault());
-  listen(options.fullscreenToggle, "click", () => {
-    if (!options.ready()) return;
-    if (focused()) hideKeyboard(); else showKeyboard();
-    revealFullscreenToggle();
+  listen(document, "pointerdown", revealFullscreenExit, { capture: true, passive: true });
+  listen(options.fullscreenExit, "pointerdown", (event: PointerEvent) => event.preventDefault());
+  listen(options.fullscreenExit, "click", () => {
+    options.exitFullscreen?.();
   });
 
   listen(bar, "pointerdown", (event: PointerEvent) => {
@@ -524,7 +523,7 @@ export function createMobileControls(options: MobileOptions) {
   listen(window, "resize", requestLayout);
   listen(window, "orientationchange", requestLayout);
   listen(window, "blur", () => { cancelTouches(); cancelRepeat(); sticky.clear(); update(); });
-  listen(document, "visibilitychange", () => { if (document.hidden) { reset(); hideFullscreenToggle(); } });
+  listen(document, "visibilitychange", () => { if (document.hidden) { reset(); hideFullscreenExit(); } });
   listen(coarse, "change", () => { touch = !!coarse?.matches || (navigator.maxTouchPoints ?? 0) > 0; update(); requestLayout(); });
   const observer = window.ResizeObserver ? new window.ResizeObserver(requestLayout) : null;
   observer?.observe(bar);
@@ -532,7 +531,7 @@ export function createMobileControls(options: MobileOptions) {
   // the content box also catches top/side padding and orientation changes.
   observer?.observe(viewport);
   observer?.observe(canvas);
-  hideFullscreenToggle();
+  hideFullscreenExit();
   update();
   requestLayout();
   return {
@@ -552,7 +551,7 @@ export function createMobileControls(options: MobileOptions) {
     dispose() {
       reset();
       disposed = true;
-      hideFullscreenToggle();
+      hideFullscreenExit();
       if (closingTimer !== null) clearTimeout(closingTimer);
       lifecycle.abort();
       observer?.disconnect();

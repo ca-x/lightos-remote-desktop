@@ -59,7 +59,7 @@ export interface Elements {
   "mobile-input": HTMLTextAreaElement;
   "mobile-shortcuts": HTMLElement;
   "mobile-keyboard": HTMLButtonElement;
-  "mobile-fullscreen-keyboard": HTMLButtonElement;
+  "mobile-fullscreen-exit": HTMLButtonElement;
   viewport: HTMLElement;
   text: HTMLTextAreaElement;
   width: HTMLInputElement;
@@ -113,6 +113,7 @@ export interface Elements {
 
 declare global {
   interface Navigator {
+    audioSession?: { type: string };
     keyboard?: { lock: () => Promise<void>; unlock: () => void };
   }
   interface Window {

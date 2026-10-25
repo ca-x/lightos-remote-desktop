@@ -98,8 +98,8 @@ footer { font-size: 10px; color: var(--muted); padding-top: 12px; }
 .mobile-key svg { width: 18px; height: 18px; }
 .mobile-key:active:not(:disabled) { transform: translateY(1px); opacity: .72; }
 .mobile-key[aria-pressed="true"] { background: var(--selected); color: var(--accent); border-color: var(--accent); }
-.mobile-fullscreen-keyboard { display: none; position: fixed; z-index: 13; top: calc(var(--mobile-top, 0px) + max(8px, var(--lzc-safe-area-inset-top))); left: calc(var(--mobile-left, 0px) + var(--mobile-width, 100vw) - max(8px, var(--lzc-safe-area-inset-right)) - 44px); width: 44px; height: 40px; min-height: 40px; padding: 0; border: 0; border-radius: 10px; background: #24272bd9; color: #fff; touch-action: manipulation; }
-.mobile-fullscreen .mobile-fullscreen-keyboard { display: inline-flex; }
+.mobile-fullscreen-exit { display: none; position: fixed; z-index: 13; top: calc(var(--mobile-top, 0px) + max(8px, var(--lzc-safe-area-inset-top))); left: calc(var(--mobile-left, 0px) + var(--mobile-width, 100vw) - max(8px, var(--lzc-safe-area-inset-right)) - 44px); width: 44px; height: 40px; min-height: 40px; padding: 0; border: 0; border-radius: 10px; background: #24272bd9; color: #fff; touch-action: manipulation; }
+.mobile-fullscreen .mobile-fullscreen-exit { display: inline-flex; }
 #viewport.touch-desktop.mobile-fullscreen { padding: 0; --desktop-area-width: var(--mobile-width, 100vw); --desktop-area-height: calc(var(--mobile-height, 100dvh) - var(--mobile-bar-height, 0px)); }
 #viewport.touch-desktop.mobile-fullscreen.fit:not(.physical-desktop) #desktop { width: var(--desktop-area-width); height: var(--desktop-area-height); max-width: none; max-height: none; object-fit: fill; }
 .touch-desktop input, .touch-desktop textarea, .touch-desktop select { font-size: 16px; }

@@ -13,6 +13,11 @@ class RemoteAudioProcessor extends AudioWorkletProcessor {
     this.underruns = 0;
     this.reportFrames = 0;
     this.port.onmessage = ({ data }) => {
+      if (data?.type === "reset") {
+        this.readIndex = this.writeIndex = this.available = this.phase = 0;
+        this.playing = false;
+        return;
+      }
       if (!data?.port) return;
       data.port.onmessage = ({ data: packet }) => {
         this.receive(packet);

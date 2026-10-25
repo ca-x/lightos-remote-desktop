@@ -2150,3 +2150,40 @@ for (const [codec, backend] of [["auto", "auto"], ["h264", "software"], ["h264",
     assert.equal(storage.get("lightos-desktop-encoder-backend"), backend);
   });
 }
+
+
+test("explicit audio uses media playback category and restores it on stop", async () => {
+  const app = harness(); app.ready();
+  app.navigator.audioSession = { type: "auto" };
+  app.nodes.audio.fire("click"); await flush();
+  assert.equal(app.navigator.audioSession.type, "playback");
+  app.nodes.audio.fire("click");
+  assert.equal(app.navigator.audioSession.type, "auto");
+  app.run("client.destroy()");
+});
+
+test("interrupted audio resumes on the next gesture without reconnecting video", async () => {
+  const app = harness(); const video = app.ready();
+  app.nodes.audio.fire("click"); await flush();
+  const context = app.contexts[0];
+  context.state = "interrupted"; context.onstatechange();
+  assert.equal(app.nodes.audio.attributes["aria-pressed"], "false");
+  context.resume = () => { context.state = "running"; return Promise.resolve(); };
+  app.document.fire("pointerdown"); await flush();
+  assert.equal(app.nodes.audio.attributes["aria-pressed"], "true");
+  video.binary(pcm()); assert.equal(context.buffers.length, 1);
+  assert.equal(app.sockets.length, 1);
+  app.run("client.destroy()");
+});
+
+test("a blocked audio resume times out, releases playback category and leaves video intact", async () => {
+  const app = harness(); const video = app.ready();
+  app.navigator.audioSession = { type: "auto" };
+  app.AudioContext.prototype.resume = () => new Promise(() => {});
+  app.nodes.audio.fire("click"); await flush(); app.tick(); await flush();
+  assert.equal(app.contexts[0].state, "closed");
+  assert.equal(app.navigator.audioSession.type, "auto");
+  assert.equal(app.nodes.audio.attributes["aria-pressed"], "false");
+  assert.equal(video.readyState, 1);
+  app.run("client.destroy()");
+});

@@ -138,13 +138,14 @@ impl Session {
         );
         if config.x11_display.is_some() {
             let target = Self::physical_target(config)?;
+            let (pulse_server, audio_source) = physical_audio(&target.runtime, config.audio);
             return Ok(Self {
                 socket: PathBuf::new(),
                 runtime: target.runtime.clone(),
                 signature: None,
-                pulse_server: std::env::var("PULSE_SERVER").ok(),
-                pulse_client_config: std::env::var_os("PULSE_CLIENTCONFIG").map(PathBuf::from),
-                audio_source: None,
+                pulse_server,
+                pulse_client_config: None,
+                audio_source,
                 target: Some(target),
                 owned: false,
                 children: Vec::new(),
@@ -186,13 +187,14 @@ impl Session {
                 .to_path_buf();
             validate_wayland_socket(socket)?;
             let target = SessionTarget::wayland(socket.clone(), runtime.clone());
+            let (pulse_server, audio_source) = physical_audio(&runtime, config.audio);
             return Ok(Self {
                 socket: socket.clone(),
                 runtime,
                 signature: None,
-                pulse_server: std::env::var("PULSE_SERVER").ok(),
-                pulse_client_config: std::env::var_os("PULSE_CLIENTCONFIG").map(PathBuf::from),
-                audio_source: None,
+                pulse_server,
+                pulse_client_config: None,
+                audio_source,
                 target: Some(target),
                 owned: false,
                 children: Vec::new(),
@@ -575,6 +577,21 @@ impl Session {
     }
 }
 
+fn physical_audio(runtime: &Path, enabled: bool) -> (Option<String>, Option<String>) {
+    // Never inherit the transport's private Pulse server or default microphone.
+    // PulseAudio and PipeWire-Pulse both expose the selected session's output
+    // through this monitor alias. No host device/routing settings are changed.
+    let socket = runtime.join("pulse/native");
+    if enabled && is_owned_socket(&socket, unsafe { libc::geteuid() }) {
+        (
+            Some(format!("unix:{}", socket.display())),
+            Some("@DEFAULT_MONITOR@".into()),
+        )
+    } else {
+        (None, None)
+    }
+}
+
 fn physical_socket_from_environment(
     config: &Config,
     owner: u32,
@@ -900,6 +917,31 @@ mod tests {
             .permissions(fs::Permissions::from_mode(0o700))
             .tempdir()
             .unwrap()
+    }
+
+    #[test]
+    fn physical_audio_requires_its_own_pulse_socket_and_never_defaults_to_a_microphone() {
+        let directory = private_runtime();
+        let pulse = directory.path().join("pulse");
+        fs::create_dir(&pulse).unwrap();
+        let socket = pulse.join("native");
+        assert_eq!(physical_audio(directory.path(), true), (None, None));
+        fs::write(&socket, "not a socket").unwrap();
+        assert_eq!(physical_audio(directory.path(), true), (None, None));
+        fs::remove_file(&socket).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        assert_eq!(
+            physical_audio(directory.path(), true),
+            (
+                Some(format!("unix:{}", socket.display())),
+                Some("@DEFAULT_MONITOR@".into())
+            )
+        );
+        assert_eq!(physical_audio(directory.path(), false), (None, None));
+        drop(listener);
+        fs::rename(&socket, pulse.join("other")).unwrap();
+        symlink(pulse.join("other"), &socket).unwrap();
+        assert_eq!(physical_audio(directory.path(), true), (None, None));
     }
 
     #[test]

@@ -39,12 +39,19 @@ self.onmessage = async ({ data }) => {
       output.onmessage = () => { inFlight = Math.max(0, inFlight - 1); };
       output.start?.();
       if (data.allowOpus && typeof AudioDecoder !== "undefined" && typeof EncodedAudioChunk !== "undefined") {
-        const support = await AudioDecoder.isConfigSupported(configuration);
-        if (stopped) return;
-        if (support.supported) {
-          decoder = new AudioDecoder({ output: decoded, error: fail });
-          decoder.configure(configuration);
-          codec = "opus";
+        try {
+          const support = await AudioDecoder.isConfigSupported(configuration);
+          if (stopped) return;
+          if (support.supported) {
+            decoder = new AudioDecoder({ output: decoded, error: fail });
+            decoder.configure(configuration);
+            codec = "opus";
+          }
+        } catch {
+          // Partial WebCodecs implementations may throw for an unsupported
+          // configuration. Negotiate PCM before opening the audio transport.
+          if (decoder && decoder.state !== "closed") decoder.close();
+          decoder = undefined;
         }
       }
       self.postMessage({ type: "ready", codec });

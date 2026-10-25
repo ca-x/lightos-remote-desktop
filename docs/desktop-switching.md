@@ -85,7 +85,9 @@ after a ready session retains the normal reconnect policy. Portal does not use
 unrelated compositor output names to identify a granted PipeWire stream.
 
 Physical mode cannot change monitor resolution, from either UI or server
-protocol, and physical audio is unavailable. Clipboard/input target the exact
+protocol. Physical audio uses the selected session’s PulseAudio/PipeWire-Pulse
+output monitor when available; it never falls back to a microphone or the
+virtual desktop’s private sink. Clipboard/input target the exact
 selected session. No host desktop is started, stopped, unlocked or reconfigured.
 Where logind identifies the exact target, physical locks clear video and release
 input; the connection remains open for unlock and cannot return cached frames

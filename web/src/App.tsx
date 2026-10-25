@@ -181,7 +181,7 @@ function Workspace() {
     </div>
     <textarea id="mobile-input" className="mobile-input" tabIndex={-1} aria-label={t("mobileInput")}
       autoCapitalize="off" autoCorrect="off" autoComplete="off" spellCheck={false} inputMode="text" enterKeyHint="enter" />
-    <button id="mobile-fullscreen-keyboard" className="mobile-fullscreen-keyboard" type="button" hidden disabled={!controls.ready} aria-label={t("showKeyboard")} title={t("showKeyboard")} aria-pressed="false"><Keyboard size={22} aria-hidden="true"/></button>
+    <button id="mobile-fullscreen-exit" className="mobile-fullscreen-exit" type="button" hidden aria-label={t("exitFullscreen")} title={t("exitFullscreen")}><Shrink size={22} aria-hidden="true"/></button>
     <nav id="mobile-shortcuts" className="mobile-shortcuts" aria-label={t("mobileShortcuts")}>
       <div className="mobile-shortcut-row lightbook-regular" role="toolbar" aria-label={t("mobileRow1")}>
         <button id="mobile-keyboard" className="mobile-key mobile-keyboard" type="button" disabled={!controls.ready} aria-label={t("showKeyboard")} title={t("showKeyboard")} aria-pressed="false"><Keyboard size={18} aria-hidden="true" /></button>

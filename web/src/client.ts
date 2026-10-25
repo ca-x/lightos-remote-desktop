@@ -84,6 +84,8 @@ export function createClient(options: ClientOptions = {}) {
   let decoding = false;
   let audioAvailable = false;
   let audioContext: AudioContext | null = null;
+  let releaseAudioSession: (() => void) | null = null;
+  let cancelAudioResume: (() => void) | null = null;
   let audioEnabled = false;
   let audioSession: number | null = null;
   let audioSocket: WebSocket | null = null;
@@ -515,7 +517,7 @@ export function createClient(options: ClientOptions = {}) {
     viewport.classList.toggle("physical-desktop", desktopMode === "physical");
     mobile?.update();
     pictureZoom.setCover(!!mobile?.isFullscreen() && desktopMode === "physical");
-    options.onControls?.({ ready: ready && !desktopPaused, wanted, audioAvailable, audioEnabled, resizeAvailable, desktopMode,
+    options.onControls?.({ ready: ready && !desktopPaused, wanted, audioAvailable, audioEnabled: audioEnabled && audioContext?.state === "running", resizeAvailable, desktopMode,
       switchingDesktop, refreshingDesktops, choices: desktopChoices, outputs: desktopOutputs });
     for (const id of controls) element(id).disabled = !ready || desktopPaused;
     for (const id of ["width", "height", "apply-size", "auto-resolution"] as const) element(id).disabled = !ready || desktopPaused || !resizeAvailable;
@@ -527,10 +529,10 @@ export function createClient(options: ClientOptions = {}) {
     element("monitor-controls").hidden = desktopMode !== "physical" || desktopChoices.length === 0;
     element("monitor-source").disabled = !ready || switchingDesktop || desktopOutputs.length === 0;
     element("refresh-desktops").disabled = refreshingDesktops || switchingDesktop;
-    element("audio").disabled = !ready || !audioAvailable;
-    const audioLabel = audioContext ? "关闭声音" : "开启声音";
+    element("audio").disabled = !ready || desktopPaused || !audioAvailable;
+    const audioLabel = audioContext && (!audioEnabled || audioContext.state === "running") ? "关闭声音" : "开启声音";
     for (const attribute of ["aria-label", "title", "data-tip"]) element("audio").setAttribute(attribute, translate(audioLabel));
-    element("audio").setAttribute("aria-pressed", String(audioEnabled));
+    element("audio").setAttribute("aria-pressed", String(audioEnabled && audioContext?.state === "running"));
     for (const attribute of ["aria-label", "title", "data-tip"]) element("connection").setAttribute(attribute, translate(wanted ? "断开连接" : "重新连接"));
   }
 
@@ -577,6 +579,7 @@ export function createClient(options: ClientOptions = {}) {
     audioSocket = null;
     if (previousSocket) previousSocket.close(1000, "Audio stopped");
     audioEnabled = false;
+    cancelAudioResume?.();
     cancelAudioPreparation?.();
     cancelAudioPreparation = null;
     audioWorker?.terminate();
@@ -600,7 +603,9 @@ export function createClient(options: ClientOptions = {}) {
     const previous = audioContext;
     audioContext = null;
     nextAudioTime = 0;
-    if (previous) previous.close().catch(() => {});
+    if (previous) { previous.onstatechange = null; previous.close().catch(() => {}); }
+    releaseAudioSession?.();
+    releaseAudioSession = null;
     updateControls();
   }
 
@@ -1276,16 +1281,39 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   async function toggleAudio() {
-    if (audioContext) { stopAudio(); return; }
+    if (audioContext) {
+      if (audioEnabled && audioContext.state !== "running") resumeInterruptedAudio();
+      else stopAudio();
+      return;
+    }
     if (!ready || !audioAvailable) return;
     const session = generation;
     let context: AudioContext | undefined;
     try {
       const Audio = window.AudioContext || window.webkitAudioContext;
+      // Web Audio defaults to ambient on iOS. Remote media is explicit playback,
+      // so it should use the media volume/category rather than the ringer switch.
+      try {
+        const session = navigator.audioSession;
+        if (session) {
+          const previous = session.type;
+          session.type = "playback";
+          releaseAudioSession = () => { try { if (session.type === "playback") session.type = previous; } catch {} };
+        }
+      } catch { /* Optional API; other browsers retain normal Web Audio playback. */ }
       context = new Audio({ sampleRate: 48000 });
       audioContext = context;
+      context.onstatechange = () => {
+        if (!context || audioContext !== context) return;
+        if (context.state !== "running") {
+          audioNode?.port.postMessage({ type: "reset" });
+          for (const source of sources) { try { source.stop(); } catch {} source.disconnect(); }
+          sources.clear(); nextAudioTime = 0;
+        }
+        updateControls();
+      };
       updateControls();
-      await context.resume();
+      await resumeAudioContext(context);
       if (session === generation && audioContext === context && ready && !document.hidden) {
         audioCodec = await prepareAudio(context, session);
       }
@@ -1332,12 +1360,46 @@ export function createClient(options: ClientOptions = {}) {
       }
       updateControls();
     } catch (error) {
-      if (audioContext === context) {
+      if (audioContext === context || (!context && session === generation)) {
         stopAudio(false);
         message(`Audio unavailable: ${errorMessage(error)}`);
       }
     }
   }
+
+  function resumeAudioContext(context: AudioContext): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const finish = (error?: unknown) => {
+        if (cancelAudioResume !== cancel) return;
+        clearTimeout(timer); cancelAudioResume = null;
+        if (error) reject(error); else resolve();
+      };
+      const cancel = () => finish(new Error("Audio initialization cancelled"));
+      const timer = setTimeout(() => finish(new Error("Audio playback did not start; tap audio to retry.")), 5000);
+      cancelAudioResume = cancel;
+      // Invoke synchronously inside the trusted gesture, before any await.
+      try {
+        void context.resume().then(() => finish(context.state === "running" ? undefined : new Error("Audio playback is paused; tap audio to retry.")), finish);
+      } catch (error) { finish(error); }
+    });
+  }
+
+  function resumeInterruptedAudio() {
+    const context = audioContext;
+    if (!context || !audioEnabled || context.state === "running" || cancelAudioResume || document.hidden) return;
+    void resumeAudioContext(context).then(() => {
+      if (audioContext === context) updateControls();
+    }).catch((error) => {
+      if (audioContext !== context) return;
+      stopAudio(); message(`Audio unavailable: ${errorMessage(error)}`);
+    });
+  }
+  function resumeAudioOnGesture(event: Event) {
+    if (event.target === element("audio") || element("audio").contains?.(event.target as Node)) return;
+    resumeInterruptedAudio();
+  }
+  listen(document, "pointerdown", resumeAudioOnGesture, { capture: true, passive: true });
+  listen(document, "keydown", resumeAudioOnGesture, { capture: true });
 
   function validText(text: string, limit = 65536) {
     if (new TextEncoder().encode(text).byteLength <= limit) return true;
@@ -1851,7 +1913,7 @@ export function createClient(options: ClientOptions = {}) {
   });
   mobile = createMobileControls({
     canvas, viewport, input: element("mobile-input"), bar: element("mobile-shortcuts"), toggle: element("mobile-keyboard"),
-    fullscreenToggle: element("mobile-fullscreen-keyboard"),
+    fullscreenExit: element("mobile-fullscreen-exit"), exitFullscreen: () => { void displayMode(windowMode); },
     ready: () => ready && !desktopPaused, lightBook: () => lightBookEnabled, zoom: pictureZoom, send, text: typeText, move, tools: (open) => setToolsOpen(open), translate,
     hardwareKey: (event) => hardwareKey(event, true), composition: release,
     hardwareInput: (event) => {

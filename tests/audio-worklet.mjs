@@ -61,3 +61,13 @@ test("worklet rejects malformed and oversized packets", () => {
   app.push(20000);
   assert.equal(app.processor.available, 0);
 });
+
+
+test("interruption clears queued playback and re-prebuffers fresh samples", () => {
+  const app = player();
+  app.push(1920, 0.4);
+  app.processor.port.onmessage({ data: { type: "reset" } });
+  assert.equal(app.render()[0][0], 0);
+  app.push(1920, 0.25);
+  assert.equal(app.render()[0][0], 0.25);
+});
