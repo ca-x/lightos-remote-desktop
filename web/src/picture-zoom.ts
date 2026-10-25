@@ -98,7 +98,16 @@ export function createPictureZoom(options: {
   const observer = window.ResizeObserver ? new window.ResizeObserver(() => render()) : null;
   observer?.observe(canvas); observer?.observe(viewport);
   return {
-    gesture, reset, layout: () => render(), active: () => options.enabled() && scale > 1,
+    gesture, reset,
+    reveal: (point: PicturePoint) => {
+      if (!options.enabled() || scale <= 1) return;
+      const rect = canvas.getBoundingClientRect(), area = options.bounds();
+      const from = { x: rect.left + point.x * rect.width, y: rect.top + point.y * rect.height };
+      const margin = Math.min(12, (area.right-area.left)/4, (area.bottom-area.top)/4);
+      const to = { x: clamp(from.x, area.left+margin, area.right-margin), y: clamp(from.y, area.top+margin, area.bottom-margin) };
+      if (from.x !== to.x || from.y !== to.y) gesture(from,to,1);
+    },
+    layout: () => render(), active: () => options.enabled() && scale > 1,
     dispose() { lifecycle.abort(); observer?.disconnect(); reset(); },
   };
 }

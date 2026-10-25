@@ -37,3 +37,6 @@ export const streamStrategies = ["auto", "low_latency", "smooth", "quality_first
 
 export const encoderBackendKey = "lightos-desktop-encoder-backend";
 export const encoderBackends = ["auto", "software", "vaapi", "nvenc", "amf", "videotoolbox"] as const;
+
+export const lightBookKey = "lightos-desktop-lightbook";
+export const lightBookModes = ["off", "on"] as const;

@@ -102,6 +102,11 @@ export function createCursorLayer(canvas: HTMLCanvasElement, overlay: HTMLImageE
   const observer = window.ResizeObserver ? new window.ResizeObserver(layout) : null; observer?.observe(canvas);
   return {
     connect, reset, layout, move,
+    position: () => {
+      const recent = point && performance.now() - localAt < Math.max(150, rtt() * 2);
+      const current = recent ? point : latest ?? point;
+      return { x: Math.max(0, Math.min(1, current?.x ?? .5)), y: Math.max(0, Math.min(1, current?.y ?? .5)) };
+    },
     moveNormalized: (x: number, y: number) => move(bounds.left + x * bounds.width, bounds.top + y * bounds.height, "touch"),
     present: (value: boolean) => { embedded = value; if (!embedded && !touch) inside = canvas.matches?.(":hover") ?? inside; render(); },
     dispose: () => { reset(); listeners.abort(); observer?.disconnect(); },

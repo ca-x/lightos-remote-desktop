@@ -18,7 +18,7 @@ beforeEach(async () => {
   vi.mocked(createClient).mockImplementation(() => {
     expect(document.getElementById("tools-toggle")).not.toBeNull();
     expect(document.getElementById("tool-panel")).not.toBeNull();
-    return { destroy, refreshLanguage, layoutTools };
+    return { destroy, refreshLanguage, layoutTools, setLightBook: vi.fn() };
   });
 });
 
@@ -186,4 +186,23 @@ describe("React shell, menus and dialog lifecycle", () => {
     expect(within(settings).getByText("MIT")).toBeTruthy();
   });
 
+});
+
+it("places LightBook below theme, off by default, and only enables it for mobile touch devices", async () => {
+  vi.stubGlobal("navigator", { maxTouchPoints: 5, userAgent: "Android", platform: "Linux", languages: ["en-US"], language: "en-US" });
+  render(<App />);
+  await waitFor(() => expect(createClient).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByRole("button", { name: "Open desktop tools" }));
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  const dialog = await screen.findByRole("dialog", { name: "Settings" });
+  fireEvent.click(within(dialog).getByRole("tab", { name: "Appearance & language" }));
+  const toggle = within(dialog).getByRole("switch", { name: "LightBook" }) as HTMLInputElement;
+  expect(toggle.checked).toBe(false);expect(toggle.disabled).toBe(false);
+  expect(document.getElementById("theme")!.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  fireEvent.click(toggle);
+  expect(localStorage.getItem("lightos-desktop-lightbook")).toBe("on");
+  expect(document.querySelector(".lightbook-deck")!.hasAttribute("hidden")).toBe(false);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Settings" })).toBeNull());
+  expect(within(document.querySelector(".lightbook-deck") as HTMLElement).getAllByRole("button",{name:"Super"})).toHaveLength(2);
 });

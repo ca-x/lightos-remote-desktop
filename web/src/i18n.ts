@@ -3,6 +3,10 @@ import { initReactI18next } from "react-i18next";
 import { languageKey, languages, readPreference, resolveLanguage } from "./preferences";
 
 const en = {
+  lightbookDescription: "Desktop above, a dark laptop keyboard and trackpad below. The globe button opens your system input method.",
+  lightbookUnavailable: "Available on phones, tablets and foldable touch devices.",
+  lightbookKeyboard: "LightBook keyboard", lightbookTrackpad: "LightBook trackpad", lightbookSpace: "Space",
+  lightbookTrackpadHelp: "Move with one finger; tap to click; tap with two fingers for right-click; scroll with two fingers; double-tap and hold or hold still to drag.",
   desktopNotConnected: "Desktop not connected", desktopRecoveryHint: "Open the tools menu to check the status, reconnect, or select another desktop.",
   rdpTitle: "RDP access",
   rdpEnabled: "Enable RDP",
@@ -49,6 +53,10 @@ const en = {
   touchHelp: "Tap to click, drag with one finger, hold to right-click, and scroll with two fingers. Use the leftmost keyboard button to show or hide the keyboard. Highlighted modifiers apply to the next key.",
 };
 const zh: Record<keyof typeof en, string> = {
+  lightbookDescription: "上半屏显示桌面，下半屏使用深色键盘和触控板；地球按钮可打开系统输入法。",
+  lightbookUnavailable: "仅支持手机、平板和折叠屏触摸设备。",
+  lightbookKeyboard: "LightBook 键盘", lightbookTrackpad: "LightBook 触控板", lightbookSpace: "空格",
+  lightbookTrackpadHelp: "单指移动，轻点左键，双指轻点右键，双指滚动；双击后按住或按住不动可拖拽。",
   desktopNotConnected: "桌面尚未连接", desktopRecoveryHint: "打开工具菜单可查看状态、重新连接或切换桌面。",
   rdpTitle: "RDP 接入",
   rdpEnabled: "启用 RDP",

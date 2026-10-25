@@ -1,3 +1,4 @@
+import { createLightBookInput, supportsLightBook } from "./lightbook-input";
 import { createPictureZoom } from "./picture-zoom";
 import { encoderBackendKey, encoderBackends, readPreference, savePreference, videoCodecKey, videoCodecs, streamStrategyKey, streamStrategies } from "./preferences";
 import { supportedVideoConfig } from "./video-codec";
@@ -155,6 +156,8 @@ export function createClient(options: ClientOptions = {}) {
   let discoveryRequest = 0;
   let refreshingDesktops = false;
   let mobile: ReturnType<typeof createMobileControls> | null = null;
+  let lightBook: ReturnType<typeof createLightBookInput> = null;
+  let lightBookEnabled = false;
   let discoveryReason = "";
   let publishedView: SessionView | undefined;
   let keyChords = false;
@@ -449,7 +452,7 @@ export function createClient(options: ClientOptions = {}) {
   function message(value: string) { setText("message", value); }
 
   function setToolsOpen(open: boolean, focus = false) {
-    if (open) unlockKeyboard();
+    if (open) { lightBook?.cancel(); unlockKeyboard(); }
     if (options.onToolsOpen) {
       options.onToolsOpen(open, focus);
       requestAnimationFrame(() => { if (!destroyed) layoutTools(); });
@@ -548,6 +551,7 @@ export function createClient(options: ClientOptions = {}) {
 
   function release() {
     pendingHardwareKey = null;
+    lightBook?.reset();
     if (moveFrame !== null) cancelAnimationFrame(moveFrame);
     moveFrame = null;
     pendingMove = null;
@@ -610,6 +614,7 @@ export function createClient(options: ClientOptions = {}) {
     resizeScaleAvailable = false;
     resizeScales = LEGACY_SCALES;
     lastAutoResolution = null;
+    lightBook?.reset();
     mobile?.reset();
     discoveryRequest += 1;
     refreshingDesktops = false;
@@ -912,6 +917,7 @@ export function createClient(options: ClientOptions = {}) {
     } else if (value.type === "desktop_state" && typeof value.available === "boolean") {
       desktopPaused = !value.available;
       if (desktopPaused) {
+        lightBook?.reset();
         cursor.reset(); frameCursorModes.clear(); frameSourceSizes.clear();
         clipboard.reset();
         closeVideo();
@@ -1758,6 +1764,7 @@ export function createClient(options: ClientOptions = {}) {
     if (destroyed) return;
     disconnect();
     destroyed = true;
+    lightBook?.dispose();
     mobile?.dispose();
     pictureZoom.dispose();
     cursor.dispose();
@@ -1786,9 +1793,42 @@ export function createClient(options: ClientOptions = {}) {
   listen(window, "pageshow", (event) => {
     if (event.persisted && resumeWanted) { wanted = true; updateControls(); connect(); }
   });
+  function setLightBook(enabled: boolean) {
+    const next = enabled && supportsLightBook();
+    if (next === lightBookEnabled) return;
+    release(); mobile?.reset(); pictureZoom.reset();
+    lightBookEnabled = next;
+    viewport.classList.toggle("lightbook-mode", next);
+    mobile?.refreshLayout();
+  }
+  lightBook = createLightBookInput({
+    root: element("mobile-shortcuts"), active: () => lightBookEnabled, ready: () => ready && !desktopPaused,
+    key(code, pressed) {
+      if (!Object.hasOwn(KEY_CODES, code) || !ready || desktopPaused) return false;
+      const value = KEY_CODES[code];
+      if (pressed) { if (keys.has(value)) return true; if (send({type:"key",code:value,pressed:true})) { keys.add(value); return true; } }
+      else if (keys.delete(value)) return send({type:"key",code:value,pressed:false});
+      return false;
+    },
+    button(button, pressed) {
+      if (!ready || desktopPaused) return false;
+      if (pressed) { if (buttons.has(button)) return true; if (send({type:"button",button,pressed:true})) { buttons.add(button); return true; } }
+      else if (buttons.delete(button)) return send({type:"button",button,pressed:false});
+      return false;
+    },
+    engage: () => setToolsOpen(false), release,
+    position: () => cursor.position(), dimensions: () => canvas.getBoundingClientRect(),
+    move(point) { pictureZoom.reveal(point); cursor.moveNormalized(point.x,point.y); send({type:"move",...point}); },
+    scroll: (x,y) => send({type:"scroll",x:Math.max(-1000,Math.min(1000,x)),y:Math.max(-1000,Math.min(1000,y))}),
+    zoom(ratio) {
+      const point = cursor.position(), rect = canvas.getBoundingClientRect();
+      const anchor = {x:rect.left+point.x*rect.width,y:rect.top+point.y*rect.height};
+      pictureZoom.gesture(anchor,anchor,ratio);
+    },
+  });
   mobile = createMobileControls({
     canvas, viewport, input: element("mobile-input"), bar: element("mobile-shortcuts"), toggle: element("mobile-keyboard"),
-    ready: () => ready && !desktopPaused, zoom: pictureZoom, send, text: typeText, move, tools: (open) => setToolsOpen(open), translate,
+    ready: () => ready && !desktopPaused, lightBook: () => lightBookEnabled, zoom: pictureZoom, send, text: typeText, move, tools: (open) => setToolsOpen(open), translate,
     hardwareKey: (event) => hardwareKey(event, true), composition: release,
     hardwareInput: (event) => {
       const pending = pendingHardwareKey;
@@ -1800,13 +1840,14 @@ export function createClient(options: ClientOptions = {}) {
     chord: (codes) => { if (ready && codes.every((code) => Object.hasOwn(KEY_CODES, code))) sendChord(codes.map((code) => KEY_CODES[code])); },
     layout: () => { updateCanvasDensity(); pictureZoom.layout(); layoutTools(); scheduleAutoResize(); scheduleVideoScale(); },
   });
+  setLightBook(options.lightBook === true);
   wanted = true;
   setToolsOpen(false);
   updateDisplayMode();
   updateControls();
   if (drawing) connect();
   else { disconnect(); message("Canvas rendering is unavailable in this browser."); }
-  return { destroy, refreshLanguage() {
+  return { destroy, setLightBook, refreshLanguage() {
     for (const [id, text] of texts) {
       element(id).textContent = translate(text);
       if (id === "state" || id === "performance" || id === "video-details" || id === "message" || id === "desktop-status") options.onStatus?.(id, translate(text));

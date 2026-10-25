@@ -7,10 +7,12 @@ import { useTranslation } from "react-i18next";
 import { createClient } from "./client";
 import { RdpSettings } from "./RdpSettings";
 import { McpSettings } from "./McpSettings";
+import { LightBook } from "./LightBook";
+import { supportsLightBook } from "./lightbook-input";
 import { MOBILE_ROWS, type MobileShortcut } from "./mobile";
 import type { ControlState, SessionView, ToolbarEdge } from "./types";
 import i18n, { translateClient } from "./i18n";
-import { languageKey, languages, readPreference, resolveLanguage, resolveTheme, savePreference, themeKey, themes, type LanguagePreference, type ThemePreference } from "./preferences";
+import { lightBookKey, lightBookModes, languageKey, languages, readPreference, resolveLanguage, resolveTheme, savePreference, themeKey, themes, type LanguagePreference, type ThemePreference } from "./preferences";
 
 const initialControls: ControlState = {
   ready: false, wanted: true, audioAvailable: false, audioEnabled: false,
@@ -64,6 +66,10 @@ function Workspace() {
   const [controls, setControls] = useState(initialControls);
   const [language, setLanguage] = useState<LanguagePreference>(() => readPreference(languageKey, languages, "system"));
   const [theme, setTheme] = useState<ThemePreference>(() => readPreference(themeKey, themes, "system"));
+  const [lightBookPreference, setLightBookPreference] = useState(() => readPreference(lightBookKey, lightBookModes, "off"));
+  const [lightBookAvailable, setLightBookAvailable] = useState(supportsLightBook);
+  const lightBookActive = lightBookAvailable && lightBookPreference === "on";
+  const lightBookState = useRef(lightBookActive);
   const lifecycle = useRef<ReturnType<typeof createClient> | null>(null);
   const popover = useRef({ open, close });
   const version = document.querySelector<HTMLMetaElement>('meta[name="lightos-version"]')?.content ?? "";
@@ -74,6 +80,7 @@ function Workspace() {
     const initialization = requestAnimationFrame(() => {
       client = createClient({
         translate: translateClient,
+        lightBook: lightBookState.current,
         onControls: setControls,
         onSessionView: setView,
         onStatus: (id, text) => setStatus((current) => ({ ...current, [id]: text })),
@@ -94,6 +101,18 @@ function Workspace() {
     });
     return () => { cancelAnimationFrame(initialization); lifecycle.current = null; client?.destroy(); };
   }, []);
+
+  useEffect(() => {
+    const pointer = window.matchMedia("(pointer: coarse)");
+    const update = () => setLightBookAvailable(supportsLightBook());
+    pointer.addEventListener("change", update);
+    window.addEventListener("resize", update);
+    return () => { pointer.removeEventListener("change", update); window.removeEventListener("resize", update); };
+  }, []);
+  useLayoutEffect(() => {
+    lightBookState.current = lightBookActive;
+    lifecycle.current?.setLightBook(lightBookActive);
+  }, [lightBookActive]);
 
   useEffect(() => {
     const apply = () => {
@@ -119,6 +138,7 @@ function Workspace() {
     const sync = (event: StorageEvent) => {
       if (event.key === languageKey || event.key === null) setLanguage(readPreference(languageKey, languages, "system"));
       if (event.key === themeKey || event.key === null) setTheme(readPreference(themeKey, themes, "system"));
+      if (event.key === lightBookKey || event.key === null) setLightBookPreference(readPreference(lightBookKey, lightBookModes, "off"));
     };
     window.addEventListener("storage", sync);
     return () => window.removeEventListener("storage", sync);
@@ -162,15 +182,16 @@ function Workspace() {
     <textarea id="mobile-input" className="mobile-input" tabIndex={-1} aria-label={t("mobileInput")}
       autoCapitalize="off" autoCorrect="off" autoComplete="off" spellCheck={false} inputMode="text" enterKeyHint="enter" />
     <nav id="mobile-shortcuts" className="mobile-shortcuts" aria-label={t("mobileShortcuts")}>
-      <div className="mobile-shortcut-row" role="toolbar" aria-label={t("mobileRow1")}>
+      <div className="mobile-shortcut-row lightbook-regular" role="toolbar" aria-label={t("mobileRow1")}>
         <button id="mobile-keyboard" className="mobile-key mobile-keyboard" type="button" disabled={!controls.ready} aria-label={t("showKeyboard")} title={t("showKeyboard")} aria-pressed="false"><Keyboard size={18} aria-hidden="true" /></button>
         <div className="mobile-key-scroll">{MOBILE_ROWS[0].map(shortcut)}</div>
       </div>
-      <div className="mobile-shortcut-row" role="toolbar" aria-label={t("mobileRow2")}>
+      <div className="mobile-shortcut-row lightbook-regular" role="toolbar" aria-label={t("mobileRow2")}>
         <button id="mobile-menu" className="mobile-key" type="button" data-mobile-action="menu" aria-label={t("mobileMenu")} title={t("mobileMenu")}><Menu size={18} aria-hidden="true" /></button>
         <a id="mobile-home" className="mobile-key mobile-home" href="/" aria-label={t("mobileHome")} title={t("mobileHome")}><House size={18} aria-hidden="true" /></a>
         <div className="mobile-key-scroll">{MOBILE_ROWS[1].map(shortcut)}</div>
       </div>
+      <LightBook active={lightBookActive} ready={controls.ready} />
     </nav>
     <aside id="tools" aria-label={t("title")}>
       <button type="button" id="tools-toggle" className="tool-handle" title={t("drag")} aria-label={t(open ? "close" : "open")} aria-expanded={open} aria-controls="tool-panel" onClick={() => { setOpen(!open); setMenu(""); }}><ToggleChevron size={22} strokeWidth={2.25} aria-hidden="true" /></button>
@@ -306,6 +327,10 @@ function Workspace() {
         <section id="preferences-section" className="settings-section"><h3>{t("preferences")}</h3>
           <Field className="preference-field"><Label htmlFor="language">{t("language")}</Label><Select id="language" value={language} onChange={(event) => { const value = event.target.value as LanguagePreference; savePreference(languageKey, value); setLanguage(value); }}><option value="system">{t("browser")}</option><option value="zh">简体中文</option><option value="en">English</option></Select></Field>
           <Field className="preference-field"><Label htmlFor="theme">{t("theme")}</Label><Select id="theme" value={theme} onChange={(event) => { const value = event.target.value as ThemePreference; savePreference(themeKey, value); setTheme(value); }}><option value="system">{t("system")}</option><option value="light">{t("light")}</option><option value="dark">{t("dark")}</option></Select></Field>
+          <Field className="preference-field lightbook-setting">
+            <Label className="lightbook-setting-label" htmlFor="lightbook-toggle"><span>LightBook</span><input id="lightbook-toggle" type="checkbox" role="switch" className="lightbook-switch" checked={lightBookActive} disabled={!lightBookAvailable} aria-describedby="lightbook-setting-help" onChange={(event) => { const value=event.target.checked ? "on" : "off"; savePreference(lightBookKey,value);setLightBookPreference(value); }}/></Label>
+            <p id="lightbook-setting-help">{t(lightBookAvailable ? "lightbookDescription" : "lightbookUnavailable")}</p>
+          </Field>
         </section>
 
               </TabPanel>

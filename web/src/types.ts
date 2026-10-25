@@ -43,6 +43,7 @@ export interface SessionView {
 }
 
 export interface ClientOptions {
+  lightBook?: boolean;
   onStatus?: (id: "state" | "performance" | "video-details" | "message" | "desktop-status", text: string) => void;
   onSessionView?: (view: SessionView) => void;
   onToolbarDock?: (edge: ToolbarEdge) => void;

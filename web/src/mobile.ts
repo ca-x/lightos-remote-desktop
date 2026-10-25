@@ -45,6 +45,7 @@ interface MobileOptions {
   bar: HTMLElement;
   toggle: HTMLButtonElement;
   ready: () => boolean;
+  lightBook?: () => boolean;
   send: (command: Record<string, unknown>) => boolean;
   chord: (codes: string[]) => void;
   text: (text: string) => void;
@@ -94,6 +95,7 @@ export function createMobileControls(options: MobileOptions) {
   const sticky = new Set<string>();
   const keyButtons = Array.from(bar.querySelectorAll?.<HTMLButtonElement>("[data-mobile-key]") ?? []);
   const buttons = Array.from(bar.querySelectorAll?.<HTMLButtonElement>("button") ?? []);
+  const keyboardButtons = [toggle, ...Array.from(bar.querySelectorAll?.<HTMLButtonElement>('[data-mobile-action="keyboard"]') ?? [])];
   const activeTouches = new Map<number, { x: number; y: number; startX: number; startY: number }>();
   let holdTimer: ReturnType<typeof setTimeout> | null = null;
   let dragging = false;
@@ -126,8 +128,10 @@ export function createMobileControls(options: MobileOptions) {
     for (const button of buttons) button.disabled = button.dataset.mobileAction !== "menu" && !options.ready();
     input.disabled = !options.ready();
     toggle.disabled = !options.ready();
-    toggle.setAttribute("aria-pressed", String(focused()));
-    for (const attribute of ["title", "aria-label"]) toggle.setAttribute(attribute, options.translate(focused() ? "Hide keyboard" : "Show keyboard"));
+    for (const button of keyboardButtons) {
+      button.setAttribute("aria-pressed", String(focused()));
+      for (const attribute of ["title", "aria-label"]) button.setAttribute(attribute, options.translate(focused() ? "Hide keyboard" : "Show keyboard"));
+    }
     for (const button of keyButtons) {
       if (MODIFIERS.has(button.dataset.mobileKey!)) button.setAttribute("aria-pressed", String(sticky.has(button.dataset.mobileKey!)));
     }
@@ -202,6 +206,7 @@ export function createMobileControls(options: MobileOptions) {
     touch = true;
     update();
     options.tools(false);
+    if (options.lightBook?.()) options.composition?.();
     resetField();
     input.focus({ preventScroll: true });
     update();
@@ -236,7 +241,7 @@ export function createMobileControls(options: MobileOptions) {
       return;
     }
     if (!options.ready()) return;
-    if (button === toggle) { if (focused()) hideKeyboard(); else showKeyboard(); return; }
+    if (button === toggle || button.dataset.mobileAction === "keyboard") { if (focused()) hideKeyboard(); else showKeyboard(); return; }
     const code = button.dataset.mobileKey;
     if (code && MODIFIERS.has(code)) {
       if (sticky.has(code)) sticky.delete(code); else sticky.add(code);
@@ -477,6 +482,7 @@ export function createMobileControls(options: MobileOptions) {
   requestLayout();
   return {
     handlePointer, reset, update,
+    refreshLayout: () => { if (frame !== null) cancelAnimationFrame(frame); frame = null; layout(); },
     focusDesktop: () => {
       if (touch || !options.ready()) return false;
       if (!focused()) { resetField(); input.focus({ preventScroll: true }); }

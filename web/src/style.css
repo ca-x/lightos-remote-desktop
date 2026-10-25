@@ -249,3 +249,58 @@ button:active:not(:disabled) { transform: scale(.97); }
 @media (any-pointer: coarse) { :root input, :root textarea, :root select { font-size: 16px; } }
 
 .desktop-recovery { position: absolute; z-index: 6; left: 50%; top: 50%; transform: translate(-50%, -50%); width: max-content; max-width: calc(100% - 32px); padding: 16px 20px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); text-align: center; pointer-events: none; font-size: 14px; }
+
+/* LightBook keeps its own dark hardware palette, independent of page theme. */
+.lightbook-setting-label { display: flex; align-items: center; justify-content: space-between; min-height: 44px; gap: 16px; }
+.lightbook-switch { appearance: none; width: 38px; height: 22px; min-height: 22px; padding: 2px; border-radius: 999px; background: var(--border); cursor: pointer; }
+.lightbook-switch::after { content: ""; display: block; width: 16px; height: 16px; border-radius: 50%; background: var(--field); box-shadow: 0 1px 2px #0004; }
+.lightbook-switch:checked { background: var(--accent); border-color: var(--accent); }
+.lightbook-switch:checked::after { transform: translateX(16px); }
+.lightbook-switch:disabled { cursor: default; opacity: .4; }
+#viewport.touch-desktop.lightbook-mode { --lightbook-bottom-safe: var(--lzc-safe-area-inset-bottom); --lightbook-panel-height: calc((var(--mobile-height, 100dvh) - var(--lzc-safe-area-inset-top) - var(--lightbook-bottom-safe)) / 2 + var(--lightbook-bottom-safe)); }
+#viewport.touch-desktop.lightbook-mode.software-keyboard-visible { --lightbook-bottom-safe: 0px; }
+.touch-desktop.lightbook-mode .mobile-shortcuts { height: var(--lightbook-panel-height); padding: 0; gap: 0; background: #303237; border-color: #4f5259; color: #eff0f3; color-scheme: dark; }
+.lightbook-mode .lightbook-regular { display: none; }
+.lightbook-deck { --surface: #292c31; --control: #17191d; --field: #111317; --text: #eff0f3; --border: #4c5058; --accent: #c7d9ff; --selected: #3c414b; display: grid; grid-template-rows: auto minmax(0, 1.65fr) minmax(0, 1fr); gap: clamp(6px, 1.1vmin, 12px); height: 100%; min-height: 0; padding: clamp(6px, 1.4vmin, 12px) max(8px, var(--lzc-safe-area-inset-right)) calc(clamp(6px, 1.4vmin, 12px) + var(--lightbook-bottom-safe, 0px)) max(8px, var(--lzc-safe-area-inset-left)); color: #eff0f3; background: linear-gradient(135deg, #383b41, #2b2d32); color-scheme: dark; }
+.lightbook-controls { display: flex; align-items: center; justify-content: space-between; min-height: 20px; }
+.lightbook-brand { padding-left: 4px; color: #a9adb6; font-size: 10px; font-weight: 650; letter-spacing: .08em; }
+.lightbook-controls > div { display: flex; align-items: center; gap: 6px; }
+.lightbook-controls .lightbook-tool { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 24px; min-height: 24px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: #d7dbe3; touch-action: manipulation; }
+.lightbook-controls .lightbook-tool[aria-pressed=true] { background: #535a66; color: #fff; }
+.lightbook-keys { display: grid; grid-template-rows: .7fr repeat(5, 1fr); gap: clamp(2px, .6vmin, 5px); min-height: 0; min-width: 0; padding: clamp(3px, .8vmin, 7px); background: #101215; border: 1px solid #15171b; border-radius: clamp(6px, 1.4vmin, 11px); box-shadow: 0 1px 0 #ffffff17, inset 0 1px 4px #000b; touch-action: none; }
+.lightbook-key-row { display: grid; grid-template-columns: repeat(60, minmax(0, 1fr)); gap: clamp(2px, .6vmin, 5px); min-width: 0; min-height: 0; }
+.lightbook-deck .lightbook-key { position: relative; display: flex; align-items: center; justify-content: center; min-width: 0; min-height: 0; width: 100%; height: 100%; gap: 0; padding: 1px; border: 1px solid #3a3d44; border-radius: clamp(3px, .8vmin, 6px); background: linear-gradient(#25272c, #181a1e); color: #f4f5f7; box-shadow: 0 1px 1px #000b, inset 0 1px 0 #ffffff09; font: 500 clamp(9px, 2vw, 15px)/1.05 system-ui, sans-serif; touch-action: none; white-space: normal; transition: none; }
+.lightbook-deck .lightbook-key-wide, .lightbook-function-row .lightbook-key { font-size: clamp(7px, 1.7vw, 12px); }
+.lightbook-legend { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; pointer-events: none; }
+.lightbook-legend small { font: inherit; font-size: .8em; color: #b8bdc7; }
+.lightbook-deck .lightbook-key.is-pressed, .lightbook-deck .lightbook-key:active:not(:disabled) { transform: translateY(1px); background: #474d58; color: #fff; border-color: #717989; box-shadow: inset 0 1px 2px #0007; }
+.lightbook-deck .lightbook-key:disabled { opacity: .42; }
+.lightbook-fn-legend { display: none; font-size: clamp(7px, 1.6vw, 11px); pointer-events: none; }
+.lightbook-fn-on [data-lightbook-fn] .lightbook-legend { display: none; }
+.lightbook-fn-on [data-lightbook-fn] .lightbook-fn-legend { display: block; }
+.lightbook-caps-led { position: absolute; width: 3px; height: 3px; left: 3px; top: 3px; border-radius: 50%; background: #565a63; }
+.lightbook-key[aria-pressed=true] .lightbook-caps-led { background: #b3e8bc; box-shadow: 0 0 3px #b3e8bc80; }
+.lightbook-arrows { display: grid; grid-template: repeat(2, minmax(0, 1fr)) / repeat(3, minmax(0, 1fr)); gap: 2px; min-height: 0; }
+.lightbook-arrow-up { grid-area: 1 / 2; }
+.lightbook-arrow-left { grid-area: 2 / 1; }
+.lightbook-arrow-down { grid-area: 2 / 2; }
+.lightbook-arrow-right { grid-area: 2 / 3; }
+.lightbook-arrows > div { min-width: 0; min-height: 0; }
+.lightbook-palmrest { display: flex; align-items: stretch; justify-content: center; min-height: 0; padding-bottom: 2px; }
+.lightbook-trackpad { width: 64%; max-width: 540px; min-height: 0; border: 1px solid #555a64; border-radius: clamp(7px, 1.8vmin, 14px); background: linear-gradient(145deg, #30333a, #282b31); box-shadow: inset 0 1px 2px #0003, 0 1px 0 #ffffff10; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; outline-offset: 2px; }
+.lightbook-trackpad.is-dragging { border-color: #a6b3ca; box-shadow: inset 0 1px 5px #0006; }
+.lightbook-trackpad[aria-disabled=true] { opacity: .45; }
+.lightbook-mode.software-keyboard-visible .lightbook-deck { grid-template-rows: auto minmax(0, 1fr); }
+.lightbook-mode.software-keyboard-visible .lightbook-keys { display: none; }
+.lightbook-mode .mobile-input { color-scheme: dark; }
+@media (max-height: 500px) { .lightbook-deck { gap: 5px; padding-top: 5px; } .lightbook-function-row { display: none; } .lightbook-keys { grid-template-rows: repeat(5, minmax(0, 1fr)); } .lightbook-controls .lightbook-tool { height: 20px; min-height: 20px; } }
+@media (hover: hover) and (pointer: fine) { .lightbook-key:hover:not(:disabled) { border-color: #737a89; } .lightbook-controls .lightbook-tool:hover { background: #444951; } }
+
+@media (max-height: 500px) {
+  .lightbook-deck .lightbook-key { overflow: hidden; font-size: clamp(7px, 2.2vh, 10px); line-height: 1; }
+  .lightbook-deck .lightbook-key-wide, .lightbook-fn-legend { font-size: clamp(6px, 1.9vh, 8px); }
+  .lightbook-legend small { display: none; }
+  .lightbook-arrows { grid-template: 1fr / repeat(4, minmax(0, 1fr)); }
+  .lightbook-arrow-left { grid-area: 1 / 1; } .lightbook-arrow-down { grid-area: 1 / 2; }
+  .lightbook-arrow-up { grid-area: 1 / 3; } .lightbook-arrow-right { grid-area: 1 / 4; }
+}
