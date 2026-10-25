@@ -126,6 +126,7 @@ export function createClient(options: ClientOptions = {}) {
   let windowMode = "fit";
   let fullscreenAutoResolution: boolean | null = null;
   let desktopFullscreen = false;
+  let fullscreenFallback = false;
   let videoDecoder: VideoDecoder | null = null;
   let videoToken = 0;
   let configuringVideo = false;
@@ -265,10 +266,11 @@ export function createClient(options: ClientOptions = {}) {
     setText("keyboard-capture", keyboardCaptured ? "释放键盘捕获" : "全屏捕获键盘");
   }
 
-  function isDesktopFullscreen() {
+  function nativeDesktopFullscreen() {
     const fullscreen = document.fullscreenElement;
     return fullscreen === viewport || fullscreen === canvas || fullscreen?.contains(canvas) === true;
   }
+  function isDesktopFullscreen() { return fullscreenFallback || nativeDesktopFullscreen(); }
 
   function unlockKeyboard() {
     keyboardToken += 1;
@@ -510,7 +512,9 @@ export function createClient(options: ClientOptions = {}) {
 
   function updateControls() {
     publishSessionView();
+    viewport.classList.toggle("physical-desktop", desktopMode === "physical");
     mobile?.update();
+    pictureZoom.setCover(!!mobile?.isFullscreen() && desktopMode === "physical");
     options.onControls?.({ ready: ready && !desktopPaused, wanted, audioAvailable, audioEnabled, resizeAvailable, desktopMode,
       switchingDesktop, refreshingDesktops, choices: desktopChoices, outputs: desktopOutputs });
     for (const id of controls) element(id).disabled = !ready || desktopPaused;
@@ -1589,11 +1593,21 @@ export function createClient(options: ClientOptions = {}) {
     try {
       if (mode === "fullscreen") {
         // Include portalled menus and dialogs in the browser fullscreen tree.
-        await (document.documentElement ?? viewport).requestFullscreen();
+        mobile?.hideKeyboard();
+        try {
+          await (document.documentElement ?? viewport).requestFullscreen();
+        } catch (error) {
+          if (!mobile?.isTouch()) throw error;
+          fullscreenFallback = true;
+        }
         viewport.classList.toggle("fit", true);
+        synchronizeFullscreen();
       } else {
         windowMode = mode === "actual" ? "actual" : "fit";
+        fullscreenFallback = false;
+        mobile?.setFullscreen(false);
         if (document.fullscreenElement) await document.exitFullscreen();
+        synchronizeFullscreen();
         if (windowMode === "actual") {
           lastAutoResolution = null;
           element("auto-resolution").checked = false;
@@ -1663,10 +1677,13 @@ export function createClient(options: ClientOptions = {}) {
   listen(element("fullscreen"), "click", async () => {
     await displayMode(isDesktopFullscreen() ? windowMode : "fullscreen");
   });
-  listen(document, "fullscreenchange", () => {
+  function synchronizeFullscreen() {
     const fullscreen = isDesktopFullscreen();
     const entering = fullscreen && !desktopFullscreen;
     desktopFullscreen = fullscreen;
+    if (entering && mobile?.isTouch()) release();
+    mobile?.setFullscreen(fullscreen);
+    pictureZoom.setCover(!!mobile?.isFullscreen() && desktopMode === "physical");
     if (fullscreen) {
       if (fullscreenAutoResolution === null) {
         fullscreenAutoResolution = element("auto-resolution").checked;
@@ -1686,6 +1703,12 @@ export function createClient(options: ClientOptions = {}) {
       canvas.focus({ preventScroll: true });
       void captureKeyboard();
     }
+  }
+  listen(document, "fullscreenchange", () => {
+    // Some mobile browsers leave native fullscreen when the IME is focused.
+    // Keep the same viewport layout while that requested keyboard is open.
+    if (!nativeDesktopFullscreen() && desktopFullscreen && mobile?.isFullscreen() && mobile.keyboardActive()) fullscreenFallback = true;
+    synchronizeFullscreen();
   });
   listen(element("keyboard-capture"), "click", async () => {
     if (keyboardCaptured) {
@@ -1828,6 +1851,7 @@ export function createClient(options: ClientOptions = {}) {
   });
   mobile = createMobileControls({
     canvas, viewport, input: element("mobile-input"), bar: element("mobile-shortcuts"), toggle: element("mobile-keyboard"),
+    fullscreenToggle: element("mobile-fullscreen-keyboard"),
     ready: () => ready && !desktopPaused, lightBook: () => lightBookEnabled, zoom: pictureZoom, send, text: typeText, move, tools: (open) => setToolsOpen(open), translate,
     hardwareKey: (event) => hardwareKey(event, true), composition: release,
     hardwareInput: (event) => {
@@ -1838,7 +1862,7 @@ export function createClient(options: ClientOptions = {}) {
     },
     paste: (event) => { void clipboard.paste(event); },
     chord: (codes) => { if (ready && codes.every((code) => Object.hasOwn(KEY_CODES, code))) sendChord(codes.map((code) => KEY_CODES[code])); },
-    layout: () => { updateCanvasDensity(); pictureZoom.layout(); layoutTools(); scheduleAutoResize(); scheduleVideoScale(); },
+    layout: () => { updateCanvasDensity(); pictureZoom.setCover(!!mobile?.isFullscreen() && desktopMode === "physical"); pictureZoom.layout(); layoutTools(); scheduleAutoResize(); scheduleVideoScale(); },
   });
   setLightBook(options.lightBook === true);
   wanted = true;

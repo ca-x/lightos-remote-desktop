@@ -13,6 +13,7 @@ export function createPictureZoom(options: {
   const { canvas, viewport } = options;
   const lifecycle = new AbortController();
   let scale = 1, x = 0, y = 0;
+  let cover = false, automaticCover = false;
   let safari: { scale: number; point: PicturePoint } | null = null;
   const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
   const listen = (target: EventTarget, name: string, handler: (event: any) => void) => {
@@ -24,13 +25,20 @@ export function createPictureZoom(options: {
   }
   function reset() {
     scale = 1; x = y = 0; safari = null;
+    automaticCover = cover;
     canvas.style.removeProperty("transform");
     canvas.style.removeProperty("clip-path");
     options.changed();
   }
   function render(rect = base()) {
-    if (!options.enabled() || scale <= 1) { reset(); return; }
+    if (!options.enabled()) { reset(); return; }
     const area = options.bounds();
+    if (cover && automaticCover && rect.width > 0 && rect.height > 0) {
+      scale = Math.max(1, (area.right-area.left)/rect.width, (area.bottom-area.top)/rect.height);
+      x = area.left + (area.right-area.left-rect.width*scale)/2 - rect.left;
+      y = area.top + (area.bottom-area.top-rect.height*scale)/2 - rect.top;
+    }
+    if (scale <= 1) { const automatic = automaticCover; reset(); automaticCover = automatic; return; }
     const width = rect.width * scale, height = rect.height * scale;
     const position = (start: number, size: number, low: number, high: number) => size <= high - low
       ? low + (high - low - size) / 2 : clamp(start, high - size, low);
@@ -47,7 +55,10 @@ export function createPictureZoom(options: {
     if (!options.enabled() || ![from.x, from.y, to.x, to.y, ratio].every(Number.isFinite) || ratio <= 0) return;
     const rect = base();
     if (!rect.width || !rect.height) return;
-    const next = clamp(scale * ratio, 1, 4);
+    const area = options.bounds();
+    const maximum = cover ? Math.max(4, (area.right-area.left)/rect.width, (area.bottom-area.top)/rect.height) : 4;
+    const next = clamp(scale * ratio, 1, maximum);
+    automaticCover = false;
     const imageX = (from.x - rect.left - x) / scale;
     const imageY = (from.y - rect.top - y) / scale;
     x = to.x - rect.left - imageX * next;
@@ -99,6 +110,10 @@ export function createPictureZoom(options: {
   observer?.observe(canvas); observer?.observe(viewport);
   return {
     gesture, reset,
+    setCover(value: boolean) {
+      if (cover !== value) { cover = value; reset(); }
+      if (cover) render();
+    },
     reveal: (point: PicturePoint) => {
       if (!options.enabled() || scale <= 1) return;
       const rect = canvas.getBoundingClientRect(), area = options.bounds();

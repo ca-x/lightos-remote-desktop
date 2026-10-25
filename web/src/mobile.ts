@@ -44,6 +44,7 @@ interface MobileOptions {
   input: HTMLTextAreaElement;
   bar: HTMLElement;
   toggle: HTMLButtonElement;
+  fullscreenToggle?: HTMLButtonElement;
   ready: () => boolean;
   lightBook?: () => boolean;
   send: (command: Record<string, unknown>) => boolean;
@@ -85,6 +86,8 @@ export function createMobileControls(options: MobileOptions) {
   const coarse = window.matchMedia?.("(any-pointer: coarse)");
   let touch = coarse?.matches || (navigator.maxTouchPoints ?? 0) > 0;
   let disposed = false;
+  let fullscreen = false;
+  let fullscreenTimer: ReturnType<typeof setTimeout> | null = null;
   let composing = false;
   let committed = "";
   let physicalInput = false;
@@ -95,13 +98,14 @@ export function createMobileControls(options: MobileOptions) {
   const sticky = new Set<string>();
   const keyButtons = Array.from(bar.querySelectorAll?.<HTMLButtonElement>("[data-mobile-key]") ?? []);
   const buttons = Array.from(bar.querySelectorAll?.<HTMLButtonElement>("button") ?? []);
-  const keyboardButtons = [toggle, ...Array.from(bar.querySelectorAll?.<HTMLButtonElement>('[data-mobile-action="keyboard"]') ?? [])];
+  const keyboardButtons = [toggle, ...(options.fullscreenToggle ? [options.fullscreenToggle] : []), ...Array.from(bar.querySelectorAll?.<HTMLButtonElement>('[data-mobile-action="keyboard"]') ?? [])];
   const activeTouches = new Map<number, { x: number; y: number; startX: number; startY: number }>();
   let holdTimer: ReturnType<typeof setTimeout> | null = null;
   let dragging = false;
   let rightClicked = false;
   let multiTouch = false;
   let centroid: { x: number; y: number; distance: number } | null = null;
+  let gestureFrame: number | null = null;
   let gestureOrigin: { x: number; y: number; distance: number } | null = null;
   let gestureMode: "pending" | "scroll" | "zoom" | "pan" = "pending";
   let shortcutPointer: { id: number; button: HTMLButtonElement; x: number; y: number; moved: boolean; repeated: boolean } | null = null;
@@ -116,9 +120,36 @@ export function createMobileControls(options: MobileOptions) {
   const focused = () => document.activeElement === input;
   const resetField = () => { input.value = SENTINEL; input.setSelectionRange?.(1, 1); };
 
+  function hideFullscreenToggle() {
+    if (fullscreenTimer !== null) clearTimeout(fullscreenTimer);
+    fullscreenTimer = null;
+    if (options.fullscreenToggle) options.fullscreenToggle.hidden = true;
+  }
+  function revealFullscreenToggle() {
+    if (!touch || !fullscreen || disposed || !options.fullscreenToggle) return;
+    hideFullscreenToggle();
+    options.fullscreenToggle.hidden = false;
+    fullscreenTimer = setTimeout(hideFullscreenToggle, 2000);
+  }
+  function setFullscreen(value: boolean) {
+    if (fullscreen === value) return;
+    fullscreen = value;
+    if (value && touch) {
+      reset();
+      if (closingTimer !== null) clearTimeout(closingTimer);
+      closingTimer = null; keyboardWasVisible = false;
+      revealFullscreenToggle();
+    } else hideFullscreenToggle();
+    update();
+    if (frame !== null) cancelAnimationFrame(frame);
+    frame = null; layout();
+  }
+
   function update() {
-    bar.hidden = !touch;
+    bar.hidden = !touch || (fullscreen && !focused() && options.ready());
     viewport.classList.toggle("touch-desktop", touch);
+    viewport.classList.toggle("mobile-fullscreen", touch && fullscreen);
+    viewport.classList.toggle("software-keyboard-open", focused() || closingTimer !== null);
     // Retain Headless UI's programmatic focus anchor for its popover while
     // removing the invisible floating entry from navigation and accessibility.
     if (floating) {
@@ -129,6 +160,7 @@ export function createMobileControls(options: MobileOptions) {
     input.disabled = !options.ready();
     toggle.disabled = !options.ready();
     for (const button of keyboardButtons) {
+      button.disabled = !options.ready();
       button.setAttribute("aria-pressed", String(focused()));
       for (const attribute of ["title", "aria-label"]) button.setAttribute(attribute, options.translate(focused() ? "Hide keyboard" : "Show keyboard"));
     }
@@ -171,20 +203,20 @@ export function createMobileControls(options: MobileOptions) {
     viewport.classList.toggle("software-keyboard-open", focused() || closingTimer !== null);
     const keyboardVisible = inset > 80 || ((focused() || closingTimer !== null) && bounds.height < keyboardReference - 80);
     viewport.classList.toggle("software-keyboard-visible", keyboardVisible);
-    viewport.style.setProperty("--mobile-bar-height", `${bar.getBoundingClientRect().height}px`);
+    viewport.style.setProperty("--mobile-bar-height", `${bar.hidden ? 0 : bar.getBoundingClientRect().height}px`);
     options.layout();
   }
 
   function contentBounds() {
     const bounds = geometry();
     const style = window.getComputedStyle(viewport);
-    const top = parseFloat(style.paddingTop) || 0;
-    const left = parseFloat(style.paddingLeft) || 0;
-    const right = parseFloat(style.paddingRight) || 0;
+    const top = fullscreen ? 0 : parseFloat(style.paddingTop) || 0;
+    const left = fullscreen ? 0 : parseFloat(style.paddingLeft) || 0;
+    const right = fullscreen ? 0 : parseFloat(style.paddingRight) || 0;
     return {
       top: bounds.top + top, left: bounds.left + left,
       width: Math.max(0, bounds.width - left - right), height: Math.max(0, bounds.height - top),
-      bar: bar.getBoundingClientRect().height,
+      bar: bar.hidden ? 0 : bar.getBoundingClientRect().height,
     };
   }
 
@@ -252,6 +284,15 @@ export function createMobileControls(options: MobileOptions) {
       text(button.dataset.mobileText);
     }
   }
+
+  // Reveal controls without consuming the click meant for the remote desktop.
+  listen(document, "pointerdown", revealFullscreenToggle, { capture: true, passive: true });
+  listen(options.fullscreenToggle, "pointerdown", (event: PointerEvent) => event.preventDefault());
+  listen(options.fullscreenToggle, "click", () => {
+    if (!options.ready()) return;
+    if (focused()) hideKeyboard(); else showKeyboard();
+    revealFullscreenToggle();
+  });
 
   listen(bar, "pointerdown", (event: PointerEvent) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
@@ -363,6 +404,8 @@ export function createMobileControls(options: MobileOptions) {
   });
 
   function cancelTouches() {
+    if (gestureFrame !== null) cancelAnimationFrame(gestureFrame);
+    gestureFrame = null;
     cancelHold();
     if (dragging) options.send({ type: "button", button: 0, pressed: false });
     dragging = false;
@@ -374,6 +417,23 @@ export function createMobileControls(options: MobileOptions) {
     const ids = [...activeTouches.keys()];
     activeTouches.clear();
     for (const id of ids) if (canvas.hasPointerCapture?.(id)) canvas.releasePointerCapture(id);
+  }
+
+  function applyGesture() {
+    if (!options.ready() || activeTouches.size !== 2 || !centroid) return;
+    const [a, b] = [...activeTouches.values()];
+    const next = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, distance: Math.hypot(a.x - b.x, a.y - b.y) };
+    const origin = gestureOrigin ?? centroid;
+    const distanceChanged = Math.abs(next.distance - origin.distance) > Math.max(8, origin.distance * .06);
+    const from = gestureMode === "pending" ? origin : centroid;
+    if (distanceChanged) gestureMode = "zoom";
+    else if (gestureMode === "pending" && Math.hypot(next.x - origin.x, next.y - origin.y) > 8) gestureMode = "scroll";
+    if (gestureMode === "zoom" || gestureMode === "pan") {
+      options.zoom?.gesture(from, next, gestureMode === "zoom" && from.distance > 0 ? next.distance / from.distance : 1);
+    } else if (gestureMode === "scroll") {
+      options.send({ type: "scroll", x: Math.max(-1000, Math.min(1000, from.x - next.x)), y: Math.max(-1000, Math.min(1000, from.y - next.y)) });
+    }
+    centroid = next;
   }
 
   function handlePointer(event: PointerEvent, phase: "down" | "move" | "up" | "cancel") {
@@ -419,19 +479,9 @@ export function createMobileControls(options: MobileOptions) {
     if (phase === "move") {
       if (multiTouch) {
         if (activeTouches.size !== 2 || !centroid) return true;
-        const [a, b] = [...activeTouches.values()];
-        const next = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, distance: Math.hypot(a.x - b.x, a.y - b.y) };
-        const origin = gestureOrigin ?? centroid;
-        const distanceChanged = Math.abs(next.distance - origin.distance) > Math.max(8, origin.distance * .06);
-        const from = gestureMode === "pending" ? origin : centroid;
-        if (distanceChanged) gestureMode = "zoom";
-        else if (gestureMode === "pending" && Math.hypot(next.x - origin.x, next.y - origin.y) > 8) gestureMode = "scroll";
-        if (gestureMode === "zoom" || gestureMode === "pan") {
-          options.zoom?.gesture(from, next, gestureMode === "zoom" && from.distance > 0 ? next.distance / from.distance : 1);
-        } else if (gestureMode === "scroll") {
-          options.send({ type: "scroll", x: Math.max(-1000, Math.min(1000, from.x - next.x)), y: Math.max(-1000, Math.min(1000, from.y - next.y)) });
-        }
-        centroid = next;
+        // Both fingers arrive as separate pointer events. Sample them together
+        // so a translation cannot transiently pinch against the zoom limit.
+        if (gestureFrame === null) gestureFrame = requestAnimationFrame(() => { gestureFrame = null; applyGesture(); });
       } else if (!rightClicked && Math.hypot(current.x - current.startX, current.y - current.startY) > 8) {
         cancelHold();
         if (!dragging) {
@@ -441,6 +491,10 @@ export function createMobileControls(options: MobileOptions) {
         options.move(event);
       }
     } else {
+      if (gestureFrame !== null) {
+        cancelAnimationFrame(gestureFrame); gestureFrame = null;
+        applyGesture();
+      }
       cancelHold();
       if (!multiTouch && !rightClicked) {
         options.move(event);
@@ -470,7 +524,7 @@ export function createMobileControls(options: MobileOptions) {
   listen(window, "resize", requestLayout);
   listen(window, "orientationchange", requestLayout);
   listen(window, "blur", () => { cancelTouches(); cancelRepeat(); sticky.clear(); update(); });
-  listen(document, "visibilitychange", () => { if (document.hidden) reset(); });
+  listen(document, "visibilitychange", () => { if (document.hidden) { reset(); hideFullscreenToggle(); } });
   listen(coarse, "change", () => { touch = !!coarse?.matches || (navigator.maxTouchPoints ?? 0) > 0; update(); requestLayout(); });
   const observer = window.ResizeObserver ? new window.ResizeObserver(requestLayout) : null;
   observer?.observe(bar);
@@ -478,10 +532,13 @@ export function createMobileControls(options: MobileOptions) {
   // the content box also catches top/side padding and orientation changes.
   observer?.observe(viewport);
   observer?.observe(canvas);
+  hideFullscreenToggle();
   update();
   requestLayout();
   return {
-    handlePointer, reset, update,
+    handlePointer, reset, update, setFullscreen, hideKeyboard,
+    isFullscreen: () => touch && fullscreen,
+    isTouch: () => touch,
     refreshLayout: () => { if (frame !== null) cancelAnimationFrame(frame); frame = null; layout(); },
     focusDesktop: () => {
       if (touch || !options.ready()) return false;
@@ -495,11 +552,13 @@ export function createMobileControls(options: MobileOptions) {
     dispose() {
       reset();
       disposed = true;
+      hideFullscreenToggle();
       if (closingTimer !== null) clearTimeout(closingTimer);
       lifecycle.abort();
       observer?.disconnect();
       if (frame !== null) cancelAnimationFrame(frame);
       viewport.classList.toggle("touch-desktop", false);
+      viewport.classList.toggle("mobile-fullscreen", false);
       viewport.classList.toggle("software-keyboard-open", false);
       viewport.classList.toggle("software-keyboard-visible", false);
     },

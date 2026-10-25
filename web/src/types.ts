@@ -59,6 +59,7 @@ export interface Elements {
   "mobile-input": HTMLTextAreaElement;
   "mobile-shortcuts": HTMLElement;
   "mobile-keyboard": HTMLButtonElement;
+  "mobile-fullscreen-keyboard": HTMLButtonElement;
   viewport: HTMLElement;
   text: HTMLTextAreaElement;
   width: HTMLInputElement;

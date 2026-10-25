@@ -61,9 +61,9 @@ export function LightBook({ active, ready }: { active: boolean; ready: boolean }
     <span className="lightbook-legend">{item.upper && <small aria-hidden="true">{legend(item.upper)}</small>}<span>{legend(item.label)}</span></span>
     {item.code === "CapsLock" && <i className="lightbook-caps-led" aria-hidden="true" />}
   </button>;
-  return <section ref={deck} className="lightbook-deck" hidden={!active} aria-label="LightBook">
+  return <section ref={deck} className="lightbook-deck" hidden={!active} aria-label={t("fullKeyboardMode")}>
     <div className="lightbook-controls">
-      <span className="lightbook-brand">LightBook</span>
+      <span className="lightbook-brand">LightOS</span>
       <div>
         <button type="button" className="lightbook-tool" data-mobile-action="keyboard" disabled={!ready} aria-label={t("showKeyboard")} title={t("showKeyboard")} aria-pressed={false}><Globe2 size={17}/></button>
         <button type="button" className="lightbook-tool" data-mobile-action="menu" aria-label={t("mobileMenu")} title={t("mobileMenu")}><Menu size={17}/></button>

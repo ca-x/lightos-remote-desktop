@@ -7,6 +7,7 @@ let enabled: boolean;
 let touching: boolean;
 const area = {left:0,top:0,right:640,bottom:400};
 beforeEach(() => {
+  Object.assign(area,{left:0,top:0,right:640,bottom:400});
   document.body.innerHTML='<main><canvas></canvas></main><nav><button>Home</button></nav>';
   canvas=document.querySelector('canvas')!;
   enabled=false; touching=false;
@@ -17,6 +18,23 @@ beforeEach(() => {
   };
   zoom=createPictureZoom({canvas,viewport:document.querySelector('main')!,enabled:()=>enabled,
     bounds:()=>area,touching:()=>touching,changed:()=>{}});
+});
+
+it('covers the mobile fullscreen area without distortion and permits manual zoom back out',()=>{
+  enabled=true;zoom.setCover(true);
+  const rect=canvas.getBoundingClientRect();
+  expect(rect.left).toBeLessThanOrEqual(area.left);expect(rect.top).toBeLessThanOrEqual(area.top);
+  expect(rect.right).toBeGreaterThanOrEqual(area.right);expect(rect.bottom).toBeGreaterThanOrEqual(area.bottom);
+  expect(rect.width/rect.height).toBeCloseTo(640/360);
+  zoom.gesture({x:320,y:200},{x:320,y:200},.1);zoom.layout();expect(zoom.active()).toBe(false);
+  zoom.setCover(false);expect(canvas.style.transform).toBe('');
+});
+
+it('retains a cover scale above four when panning a very different aspect ratio',()=>{
+  enabled=true;area.bottom=2000;zoom.setCover(true);
+  const before=canvas.getBoundingClientRect().height;
+  zoom.gesture({x:320,y:1000},{x:310,y:1000},1);
+  expect(canvas.getBoundingClientRect().height).toBeCloseTo(before);expect(before).toBeGreaterThanOrEqual(2000);
 });
 afterEach(()=>{zoom.dispose();document.body.innerHTML='';vi.restoreAllMocks();});
 it('blocks page zoom shortcuts and trackpad events while leaving virtual pictures unchanged',()=>{

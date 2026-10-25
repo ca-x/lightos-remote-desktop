@@ -98,6 +98,10 @@ footer { font-size: 10px; color: var(--muted); padding-top: 12px; }
 .mobile-key svg { width: 18px; height: 18px; }
 .mobile-key:active:not(:disabled) { transform: translateY(1px); opacity: .72; }
 .mobile-key[aria-pressed="true"] { background: var(--selected); color: var(--accent); border-color: var(--accent); }
+.mobile-fullscreen-keyboard { display: none; position: fixed; z-index: 13; top: calc(var(--mobile-top, 0px) + max(8px, var(--lzc-safe-area-inset-top))); left: calc(var(--mobile-left, 0px) + var(--mobile-width, 100vw) - max(8px, var(--lzc-safe-area-inset-right)) - 44px); width: 44px; height: 40px; min-height: 40px; padding: 0; border: 0; border-radius: 10px; background: #24272bd9; color: #fff; touch-action: manipulation; }
+.mobile-fullscreen .mobile-fullscreen-keyboard { display: inline-flex; }
+#viewport.touch-desktop.mobile-fullscreen { padding: 0; --desktop-area-width: var(--mobile-width, 100vw); --desktop-area-height: calc(var(--mobile-height, 100dvh) - var(--mobile-bar-height, 0px)); }
+#viewport.touch-desktop.mobile-fullscreen.fit:not(.physical-desktop) #desktop { width: var(--desktop-area-width); height: var(--desktop-area-height); max-width: none; max-height: none; object-fit: fill; }
 .touch-desktop input, .touch-desktop textarea, .touch-desktop select { font-size: 16px; }
 .touch-desktop .panel { max-height: max(0px, calc(var(--visible-height, 100dvh) - var(--mobile-bar-height, 77px) - var(--lzc-safe-area-inset-top) - 24px)); max-width: max(0px, calc(var(--dock-width, 100vw) - var(--lzc-safe-area-inset-left) - var(--lzc-safe-area-inset-right) - 24px)); }
 
@@ -315,6 +319,9 @@ button:active:not(:disabled) { transform: scale(.97); }
 .lightbook-mode.software-keyboard-visible .mobile-shortcuts { height: auto; }
 .lightbook-mode.software-keyboard-visible .lightbook-deck { height: auto; grid-template-rows: var(--lightbook-controls-height); gap: 0; }
 .lightbook-mode.software-keyboard-visible .lightbook-keys, .lightbook-mode.software-keyboard-visible .lightbook-palmrest { display: none; }
+.lightbook-mode.mobile-fullscreen.software-keyboard-open .mobile-shortcuts { height: auto; }
+.lightbook-mode.mobile-fullscreen.software-keyboard-open .lightbook-deck { height: auto; grid-template-rows: var(--lightbook-controls-height); gap: 0; }
+.lightbook-mode.mobile-fullscreen.software-keyboard-open .lightbook-keys, .lightbook-mode.mobile-fullscreen.software-keyboard-open .lightbook-palmrest { display: none; }
 .lightbook-mode .mobile-input { color-scheme: dark; }
 @media (hover: hover) and (pointer: fine) { .lightbook-key:hover:not(:disabled):not(.is-pressed), .lightbook-controls .lightbook-tool:hover:not([aria-pressed=true]) { background: #56565a; } }
 @media (max-height: 500px) {

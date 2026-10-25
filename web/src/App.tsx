@@ -181,6 +181,7 @@ function Workspace() {
     </div>
     <textarea id="mobile-input" className="mobile-input" tabIndex={-1} aria-label={t("mobileInput")}
       autoCapitalize="off" autoCorrect="off" autoComplete="off" spellCheck={false} inputMode="text" enterKeyHint="enter" />
+    <button id="mobile-fullscreen-keyboard" className="mobile-fullscreen-keyboard" type="button" hidden disabled={!controls.ready} aria-label={t("showKeyboard")} title={t("showKeyboard")} aria-pressed="false"><Keyboard size={22} aria-hidden="true"/></button>
     <nav id="mobile-shortcuts" className="mobile-shortcuts" aria-label={t("mobileShortcuts")}>
       <div className="mobile-shortcut-row lightbook-regular" role="toolbar" aria-label={t("mobileRow1")}>
         <button id="mobile-keyboard" className="mobile-key mobile-keyboard" type="button" disabled={!controls.ready} aria-label={t("showKeyboard")} title={t("showKeyboard")} aria-pressed="false"><Keyboard size={18} aria-hidden="true" /></button>
@@ -328,7 +329,7 @@ function Workspace() {
           <Field className="preference-field"><Label htmlFor="language">{t("language")}</Label><Select id="language" value={language} onChange={(event) => { const value = event.target.value as LanguagePreference; savePreference(languageKey, value); setLanguage(value); }}><option value="system">{t("browser")}</option><option value="zh">简体中文</option><option value="en">English</option></Select></Field>
           <Field className="preference-field"><Label htmlFor="theme">{t("theme")}</Label><Select id="theme" value={theme} onChange={(event) => { const value = event.target.value as ThemePreference; savePreference(themeKey, value); setTheme(value); }}><option value="system">{t("system")}</option><option value="light">{t("light")}</option><option value="dark">{t("dark")}</option></Select></Field>
           <Field className="preference-field lightbook-setting">
-            <Label className="lightbook-setting-label" htmlFor="lightbook-toggle"><span>LightBook</span><input id="lightbook-toggle" type="checkbox" role="switch" className="lightbook-switch" checked={lightBookActive} disabled={!lightBookAvailable} aria-describedby="lightbook-setting-help" onChange={(event) => { const value=event.target.checked ? "on" : "off"; savePreference(lightBookKey,value);setLightBookPreference(value); }}/></Label>
+            <Label className="lightbook-setting-label" htmlFor="lightbook-toggle"><span>{t("fullKeyboardMode")}</span><input id="lightbook-toggle" type="checkbox" role="switch" className="lightbook-switch" checked={lightBookActive} disabled={!lightBookAvailable} aria-describedby="lightbook-setting-help" onChange={(event) => { const value=event.target.checked ? "on" : "off"; savePreference(lightBookKey,value);setLightBookPreference(value); }}/></Label>
             <p id="lightbook-setting-help">{t(lightBookAvailable ? "lightbookDescription" : "lightbookUnavailable")}</p>
           </Field>
         </section>

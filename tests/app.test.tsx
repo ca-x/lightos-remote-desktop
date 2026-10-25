@@ -188,7 +188,7 @@ describe("React shell, menus and dialog lifecycle", () => {
 
 });
 
-it("places LightBook below theme, off by default, and only enables it for mobile touch devices", async () => {
+it("places full keyboard mode below theme, off by default, and only enables it for mobile touch devices", async () => {
   vi.stubGlobal("navigator", { maxTouchPoints: 5, userAgent: "Android", platform: "Linux", languages: ["en-US"], language: "en-US" });
   render(<App />);
   await waitFor(() => expect(createClient).toHaveBeenCalledTimes(1));
@@ -196,11 +196,12 @@ it("places LightBook below theme, off by default, and only enables it for mobile
   fireEvent.click(screen.getByRole("button", { name: "Settings" }));
   const dialog = await screen.findByRole("dialog", { name: "Settings" });
   fireEvent.click(within(dialog).getByRole("tab", { name: "Appearance & language" }));
-  const toggle = within(dialog).getByRole("switch", { name: "LightBook" }) as HTMLInputElement;
+  const toggle = within(dialog).getByRole("switch", { name: "Full keyboard mode" }) as HTMLInputElement;
   expect(toggle.checked).toBe(false);expect(toggle.disabled).toBe(false);
   expect(document.getElementById("theme")!.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   fireEvent.click(toggle);
   expect(localStorage.getItem("lightos-desktop-lightbook")).toBe("on");
+  expect(document.querySelector(".lightbook-brand")!.textContent).toBe("LightOS");
   expect(document.querySelector(".lightbook-deck")!.hasAttribute("hidden")).toBe(false);
   fireEvent.click(within(dialog).getByRole("button", { name: "Done" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Settings" })).toBeNull());
