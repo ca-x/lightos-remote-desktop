@@ -1019,7 +1019,10 @@ fn unicode_keymap(context: &xkb::Context, characters: &[char]) -> Result<xkb::Ke
         let symbol = match character {
             '\n' | '\r' => "Return".into(),
             '\t' => "Tab".into(),
-            character => format!("U{:04X}", *character as u32),
+            // Keep Latin characters Unicode too. XKB's U0061 spelling aliases
+            // ASCII 'a', which an active remote IME can interpret as new pinyin
+            // instead of forwarding the already committed local text.
+            character => format!("0x{:08X}", 0x0100_0000 | *character as u32),
         };
         symbols.push_str(&format!(
             "key <U{index:03}> {{ type=\"ONE_LEVEL\", [ {symbol} ] }};\n"
@@ -1552,6 +1555,29 @@ pub(crate) mod tests {
         }
         let serialized = keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);
         assert!(serialized.contains("xkb_keymap"));
+    }
+
+    #[test]
+    fn committed_latin_text_keeps_unicode_identity_through_keymap_transport() {
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let characters: Vec<char> = "aZ0 ,.!é中".chars().collect();
+        let map = unicode_keymap(&context, &characters).unwrap();
+        let transported = xkb::Keymap::new_from_string(
+            &context,
+            map.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1),
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )
+        .unwrap();
+        let state = xkb::State::new(&transported);
+        for (index, character) in characters.iter().enumerate() {
+            let keycode = (TEXT_KEYCODES[index] + 8).into();
+            assert_eq!(
+                state.key_get_one_sym(keycode).raw(),
+                0x0100_0000 | *character as u32
+            );
+            assert_eq!(state.key_get_utf32(keycode), *character as u32);
+        }
     }
 
     #[test]
