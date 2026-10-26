@@ -220,6 +220,14 @@ jobs:
       - name: macOS SIMD build dependency
         if: runner.os == 'macOS'
         run: brew list nasm >/dev/null 2>&1 || brew install nasm
+      - name: Select the macOS SDK required by native Swift dependencies
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          native_xcode_dir=/Applications/Xcode_26.3.app/Contents/Developer
+          test -d "$native_xcode_dir"
+          echo "DEVELOPER_DIR=$native_xcode_dir" >> "$GITHUB_ENV"
+          DEVELOPER_DIR="$native_xcode_dir" xcrun --sdk macosx --show-sdk-version
       - run: npm ci
       - run: npm run build
       - name: Native contracts, storage and installer unit tests

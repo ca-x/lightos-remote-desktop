@@ -4,7 +4,7 @@ use super::*;
 use crate::backend::{BackendAvailability, Frame, InputCommand, MAX_CLIPBOARD_BYTES};
 use anyhow::{Context, bail};
 use display_control::{DisplayCapabilities, DisplayMode};
-use enigo::{Axis, Button, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
+use enigo::{Axis, Button, Direction, Enigo, Keyboard, Mouse, Settings};
 use futures_util::future::BoxFuture;
 use std::{
     collections::BTreeSet,
@@ -641,7 +641,7 @@ fn run_input(
                     && guard.as_ref().is_none_or(|g| g.active())
                     && session_ready(platform, key).unwrap_or(false)
             };
-            let result = held.apply(&mut enigo, &command, &output, active);
+            let result = held.apply(platform, &mut enigo, &command, &output, active);
             let still_active = active();
             if let Some(guard) = guard {
                 guard.text_done.notify_one();
@@ -722,6 +722,7 @@ impl Held {
     }
     fn apply(
         &mut self,
+        platform: &dyn NativePlatform,
         enigo: &mut Enigo,
         command: &InputCommand,
         output: &DisplayOutput,
@@ -740,7 +741,7 @@ impl Held {
                     output.x + (x * output.width.saturating_sub(1) as f64 / scale).round() as i32;
                 let y =
                     output.y + (y * output.height.saturating_sub(1) as f64 / scale).round() as i32;
-                enigo.move_mouse(x, y, Coordinate::Abs)?;
+                platform.move_pointer(enigo, x, y)?;
             }
             InputCommand::Key { code, pressed } => {
                 let raw = keycode(*code)?;

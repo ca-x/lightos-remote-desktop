@@ -114,6 +114,11 @@ pub trait NativePlatform: PermissionProvider {
     fn probe_input(&self) -> Result<()> {
         native::probe_input()
     }
+    fn move_pointer(&self, enigo: &mut enigo::Enigo, x: i32, y: i32) -> Result<()> {
+        use enigo::Mouse as _;
+        enigo.move_mouse(x, y, enigo::Coordinate::Abs)?;
+        Ok(())
+    }
     fn kind(&self) -> BackendKind;
     fn session_key(&self) -> Result<String>;
     /// False means locked or an inaccessible secure desktop. Errors end this host.

@@ -12,7 +12,9 @@ for (const name of ["app.js", "style.css", "audio-worker.js", "audio-worklet.js"
   writeFileSync(`web/dist/${name}.gz`, gzipSync(readFileSync(`web/dist/${name}`), { level: 9 }));
 }
 
-const roots = execFileSync("npm", ["ls", "--omit=dev", "--all", "--parseable"], { encoding: "utf8" }).trim().split("\n").slice(1);
+const npmCli = process.env.npm_execpath;
+if (!npmCli) throw new Error("Generate frontend assets through npm run build");
+const roots = execFileSync(process.execPath, [npmCli, "ls", "--omit=dev", "--all", "--parseable"], { encoding: "utf8" }).trim().split(/\r?\n/).slice(1);
 const notices = ["Frontend third-party components. Generated from the locked production dependency tree.\n"];
 for (const root of [...new Set(roots)].sort()) {
   const info = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));

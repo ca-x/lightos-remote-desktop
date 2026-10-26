@@ -10,7 +10,9 @@ use axum::{
     routing::get,
 };
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(feature = "rdp")]
+use std::path::PathBuf;
 use tokio::sync::Mutex;
 
 use crate::{config::Config, server::AppState};
@@ -338,10 +340,9 @@ async fn update(State(state): State<AppState>, Json(settings): Json<Settings>) -
 mod tests {
     use super::*;
     use clap::Parser;
-    use std::{
-        fs,
-        os::unix::fs::{MetadataExt, PermissionsExt},
-    };
+    #[cfg(feature = "rdp")]
+    use std::os::unix::fs::MetadataExt;
+    use std::{fs, os::unix::fs::PermissionsExt};
 
     fn config(directory: &Path) -> Config {
         let mut config =

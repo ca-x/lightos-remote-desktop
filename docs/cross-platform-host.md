@@ -146,5 +146,11 @@ windows-service, wasapi and ScreenCaptureKit bindings. Their notices accompany
 release archives. RustDesk and uu-remote-linux inform architecture; GPL/AGPL
 implementations are not copied into this MIT project.
 
+The current native Swift dependencies require a macOS 26 SDK to build. CI selects
+the runner's installed Xcode 26.3 explicitly and retains a macOS 13.0 deployment
+target; SDK build requirements and supported runtime versions are separate.
+
 原生实现复用上述成熟 Rust crate，并随发布包提供第三方声明。RustDesk、
 uu-remote-linux 仅作为架构参考，不将 GPL/AGPL 实现复制到本 MIT 项目。
+当前 Swift 依赖需要 macOS 26 SDK 编译，CI 显式使用 runner 中的 Xcode 26.3，
+部署目标仍为 macOS 13.0；编译 SDK 要求与运行系统版本分开标明。

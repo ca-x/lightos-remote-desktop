@@ -64,7 +64,19 @@ pub fn install_service(options: ServiceOptions, rollback: bool) -> Result<()> {
     let layout = Layout::for_home(&home);
     let domain = format!("gui/{}", session.uid);
     let service = format!("{domain}/{LABEL}");
+    let pending = layout.pending();
+    let has_pending = path_exists(&pending)?;
+    let loaded_agent = launchctl_state(&service)?;
+    let installed = existing_install(&layout)?;
+    validate_managed_state(&layout, installed, has_pending, loaded_agent.as_deref())?;
+    if has_pending {
+        validate_pending(&layout)?;
+    }
     if options.remove {
+        if !installed {
+            println!("LaunchAgent {LABEL} is not installed");
+            return Ok(());
+        }
         if options.dry_run {
             println!(
                 "Would unload {service} and remove {}, {}, {}",
@@ -74,7 +86,7 @@ pub fn install_service(options: ServiceOptions, rollback: bool) -> Result<()> {
             );
             return Ok(());
         }
-        if launchctl_loaded(&service)? {
+        if loaded_agent.is_some() {
             launchctl(&["bootout", &service])?;
         }
         remove_file_if_exists(&layout.agent)?;
@@ -85,8 +97,6 @@ pub fn install_service(options: ServiceOptions, rollback: bool) -> Result<()> {
         return Ok(());
     }
 
-    let pending = layout.pending();
-    let has_pending = path_exists(&pending)?;
     let fresh = if has_pending && !options.stage_only {
         None
     } else {
@@ -132,16 +142,7 @@ pub fn install_service(options: ServiceOptions, rollback: bool) -> Result<()> {
             .parent()
             .context("LaunchAgents path has no parent")?,
     )?;
-    let was_loaded = launchctl_loaded(&service)?;
-    let installed = existing_install(&layout)?;
-    ensure!(
-        !has_pending || installed,
-        "staged macOS update exists without a complete installed service"
-    );
-    ensure!(
-        !was_loaded || installed,
-        "loaded LaunchAgent is missing its managed app, settings, or plist"
-    );
+    let was_loaded = loaded_agent.is_some();
     let prepared = match &fresh {
         Some((source, settings)) => Prepared::fresh(&layout, source, settings)?,
         None => Prepared::pending(&layout)?,
@@ -265,32 +266,192 @@ fn existing_install(layout: &Layout) -> Result<bool> {
         if !path_exists(path)? {
             continue;
         }
-        let metadata = fs::symlink_metadata(path)?;
-        ensure!(
-            metadata.uid() == unsafe { libc::geteuid() }
-                && if directory {
-                    metadata.is_dir()
-                } else {
-                    metadata.is_file()
-                },
-            "managed service path is not an owned {}: {}",
-            if directory { "directory" } else { "file" },
-            path.display()
-        );
-        if !directory {
-            ensure!(
-                metadata.mode() & 0o077 == 0,
-                "managed service file is not private: {}",
-                path.display()
-            );
-        }
+        owned_entry(path, directory, !directory)?;
         present += 1;
     }
     ensure!(
         present == 0 || present == 3,
         "existing macOS service files are incomplete"
     );
-    Ok(present == 3)
+    if present == 0 {
+        return Ok(false);
+    }
+    owned_entry(&layout.support, true, true)?;
+    owned_entry(
+        layout
+            .config
+            .parent()
+            .context("config path has no parent")?,
+        true,
+        true,
+    )?;
+    owned_entry(
+        layout.agent.parent().context("agent path has no parent")?,
+        true,
+        false,
+    )?;
+    validate_bundle(&layout.bundle)?;
+    HostSettings::load(&layout.config)?.config()?;
+    validate_agent_plist(&read_plist(&layout.agent)?, layout)?;
+    Ok(true)
+}
+
+fn validate_managed_state(
+    layout: &Layout,
+    installed: bool,
+    has_pending: bool,
+    loaded_agent: Option<&str>,
+) -> Result<()> {
+    ensure!(
+        !has_pending || installed,
+        "staged macOS update exists without a complete installed service"
+    );
+    if let Some(loaded_agent) = loaded_agent {
+        ensure!(
+            installed,
+            "loaded LaunchAgent is missing its managed app, settings, or plist"
+        );
+        validate_loaded_agent(loaded_agent, layout)?;
+    }
+    Ok(())
+}
+
+fn owned_entry(path: &Path, directory: bool, private: bool) -> Result<fs::Metadata> {
+    let metadata = fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.uid() == unsafe { libc::geteuid() }
+            && if directory {
+                metadata.is_dir()
+            } else {
+                metadata.is_file()
+            }
+            && metadata.mode() & (if private { 0o077 } else { 0o022 }) == 0,
+        "managed service path has wrong owner, type, or mode: {}",
+        path.display()
+    );
+    Ok(metadata)
+}
+
+fn read_plist(path: &Path) -> Result<serde_json::Value> {
+    let output = run_bounded(
+        "/usr/bin/plutil",
+        &["-convert", "json", "-o", "-", path_text(path)?],
+    )?;
+    ensure!(
+        output.status.success(),
+        "invalid managed plist: {}",
+        path.display()
+    );
+    serde_json::from_slice(&output.stdout).context("parse managed plist")
+}
+
+fn validate_agent_plist(plist: &serde_json::Value, layout: &Layout) -> Result<()> {
+    let executable_path = layout.executable();
+    let executable = path_text(&executable_path)?;
+    let config = path_text(&layout.config)?;
+    let expected = [executable, "service-host", "--config-file", config];
+    let arguments = plist["ProgramArguments"]
+        .as_array()
+        .context("managed LaunchAgent has no ProgramArguments")?;
+    ensure!(
+        plist["Label"].as_str() == Some(LABEL)
+            && arguments
+                .iter()
+                .map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                == expected.map(Some).to_vec()
+            && plist
+                .get("Program")
+                .is_none_or(|program| program.as_str() == Some(executable)),
+        "LaunchAgent label or program arguments do not match this installation"
+    );
+    Ok(())
+}
+
+fn validate_bundle(bundle: &Path) -> Result<()> {
+    owned_entry(bundle, true, false)?;
+    let contents = bundle.join("Contents");
+    owned_entry(&contents, true, false)?;
+    owned_entry(&contents.join("MacOS"), true, false)?;
+    let executable = contents.join("MacOS").join(EXECUTABLE);
+    let metadata = owned_entry(&executable, false, false)?;
+    ensure!(
+        metadata.len() > 0 && metadata.mode() & 0o111 != 0,
+        "managed host executable is invalid"
+    );
+    let info = contents.join("Info.plist");
+    owned_entry(&info, false, false)?;
+    let plist = read_plist(&info)?;
+    validate_bundle_plist(&plist)
+}
+
+fn validate_bundle_plist(plist: &serde_json::Value) -> Result<()> {
+    ensure!(
+        plist["CFBundleIdentifier"].as_str() == Some(BUNDLE_ID)
+            && plist["CFBundleExecutable"].as_str() == Some(EXECUTABLE)
+            && plist["CFBundlePackageType"].as_str() == Some("APPL"),
+        "app bundle identity does not match this installation"
+    );
+    Ok(())
+}
+
+fn validate_pending(layout: &Layout) -> Result<()> {
+    let pending = layout.pending();
+    owned_entry(&pending, true, true)?;
+    let ready = pending.join("ready");
+    owned_entry(&ready, false, true)?;
+    ensure!(
+        fs::read(ready)? == b"ready",
+        "staged macOS update is incomplete"
+    );
+    let config = pending.join("host.json");
+    owned_entry(&config, false, true)?;
+    HostSettings::load(&config)?.config()?;
+    let agent = pending.join("agent.plist");
+    owned_entry(&agent, false, true)?;
+    validate_agent_plist(&read_plist(&agent)?, layout)?;
+    validate_bundle(&pending.join(APP))?;
+    Ok(())
+}
+
+fn validate_loaded_agent(print: &str, layout: &Layout) -> Result<()> {
+    let lines: Vec<_> = print.lines().map(str::trim).collect();
+    let executable_path = layout.executable();
+    let executable = path_text(&executable_path)?;
+    let expected = [
+        executable,
+        "service-host",
+        "--config-file",
+        path_text(&layout.config)?,
+    ];
+    let agent_path = format!("path = {}", path_text(&layout.agent)?);
+    ensure!(
+        lines.contains(&agent_path.as_str()),
+        "loaded LaunchAgent comes from a foreign plist"
+    );
+    if let Some(program) = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("program = "))
+    {
+        ensure!(
+            program == executable,
+            "loaded LaunchAgent uses a foreign program"
+        );
+    }
+    let start = lines
+        .iter()
+        .position(|line| *line == "arguments = {")
+        .context("loaded LaunchAgent has no arguments")?;
+    let arguments: Vec<_> = lines[start + 1..]
+        .iter()
+        .take_while(|line| **line != "}")
+        .copied()
+        .collect();
+    ensure!(
+        arguments == expected,
+        "loaded LaunchAgent has foreign program arguments"
+    );
+    Ok(())
 }
 
 struct Prepared {
@@ -740,9 +901,15 @@ fn info_plist() -> String {
 }
 
 fn launchctl_loaded(service: &str) -> Result<bool> {
+    Ok(launchctl_state(service)?.is_some())
+}
+
+fn launchctl_state(service: &str) -> Result<Option<String>> {
     let output = run_launchctl(&["print", service])?;
     if output.status.success() {
-        return Ok(true);
+        return Ok(Some(
+            String::from_utf8(output.stdout).context("LaunchAgent state is not UTF-8")?,
+        ));
     }
     let error = format!(
         "{}{}",
@@ -750,7 +917,7 @@ fn launchctl_loaded(service: &str) -> Result<bool> {
         String::from_utf8_lossy(&output.stderr)
     );
     if output.status.code() == Some(113) || error.contains("Could not find service") {
-        return Ok(false);
+        return Ok(None);
     }
     bail!(
         "launchctl print {service} failed ({}): {error}",
@@ -876,6 +1043,61 @@ mod tests {
         let info = info_plist();
         assert!(info.contains("<string>org.lightos.remote-desktop</string>"));
         assert!(info.contains("<string>lightos-remoted</string>"));
+    }
+    #[test]
+    fn managed_plist_identity_rejects_same_label_with_foreign_program_or_config() {
+        let layout = Layout::for_home(Path::new("/Users/Agent Owner"));
+        let executable_path = layout.executable();
+        let executable = path_text(&executable_path).unwrap();
+        let config = path_text(&layout.config).unwrap();
+        let mut agent = serde_json::json!({
+            "Label": LABEL,
+            "ProgramArguments": [executable, "service-host", "--config-file", config]
+        });
+        assert!(validate_agent_plist(&agent, &layout).is_ok());
+        agent["ProgramArguments"][0] = serde_json::json!("/tmp/foreign-host");
+        assert!(validate_agent_plist(&agent, &layout).is_err());
+        agent["ProgramArguments"][0] = serde_json::json!(executable);
+        agent["ProgramArguments"][3] = serde_json::json!("/tmp/foreign-config");
+        assert!(validate_agent_plist(&agent, &layout).is_err());
+
+        let mut bundle = serde_json::json!({
+            "CFBundleIdentifier": BUNDLE_ID,
+            "CFBundleExecutable": EXECUTABLE,
+            "CFBundlePackageType": "APPL"
+        });
+        assert!(validate_bundle_plist(&bundle).is_ok());
+        bundle["CFBundleIdentifier"] = serde_json::json!("com.example.other");
+        assert!(validate_bundle_plist(&bundle).is_err());
+    }
+    #[test]
+    fn foreign_loaded_same_label_blocks_remove_and_update_preflight() {
+        let layout = Layout::for_home(Path::new("/Users/Agent Owner"));
+        let executable_path = layout.executable();
+        let executable = path_text(&executable_path).unwrap();
+        let config = path_text(&layout.config).unwrap();
+        let own = format!(
+            "gui/501/{LABEL} = {{\n path = {}\n program = {executable}\n arguments = {{\n  {executable}\n  service-host\n  --config-file\n  {config}\n }}\n}}",
+            layout.agent.display()
+        );
+        assert!(validate_managed_state(&layout, true, false, Some(&own)).is_ok());
+        assert!(validate_managed_state(&layout, false, false, None).is_ok());
+        assert!(validate_managed_state(&layout, false, true, None).is_err());
+        assert!(validate_managed_state(&layout, false, false, Some(&own)).is_err());
+        let foreign_path = own.replace(
+            &format!("path = {}", layout.agent.display()),
+            "path = /Users/Agent Owner/Library/LaunchAgents/foreign.plist",
+        );
+        assert!(validate_managed_state(&layout, true, false, Some(&foreign_path)).is_err());
+        let foreign_program = own.replace("  service-host\n", "  foreign-service\n");
+        assert!(validate_managed_state(&layout, true, false, Some(&foreign_program)).is_err());
+    }
+    #[test]
+    fn incomplete_fixed_path_collision_is_rejected() {
+        let home = tempfile::tempdir().unwrap();
+        let layout = Layout::for_home(home.path());
+        fs::create_dir_all(&layout.bundle).unwrap();
+        assert!(existing_install(&layout).is_err());
     }
     #[test]
     fn unsupported_linux_install_flags_fail() {

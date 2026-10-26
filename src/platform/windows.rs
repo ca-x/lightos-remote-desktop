@@ -17,6 +17,7 @@ use std::{
 
 use anyhow::{Context as _, Result, bail, ensure};
 use display_control::DisplayOutput;
+use enigo::Enigo;
 use wasapi::{
     AudioCaptureClient, AudioClient, DeviceEnumerator, Direction, Handle as WasapiEvent,
     SampleType, StreamMode, WaveFormat,
@@ -44,6 +45,14 @@ use windows::{
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
             GetDpiAwarenessContextForProcess, GetDpiForMonitor, MDT_EFFECTIVE_DPI,
             SetProcessDpiAwarenessContext, SetThreadDpiAwarenessContext,
+        },
+        UI::Input::KeyboardAndMouse::{
+            INPUT, INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_MOVE, MOUSEEVENTF_VIRTUALDESK,
+            MOUSEINPUT, SendInput,
+        },
+        UI::WindowsAndMessaging::{
+            GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+            SM_YVIRTUALSCREEN,
         },
     },
     core::PWSTR,
@@ -115,6 +124,31 @@ impl PermissionProvider for WindowsPlatform {
 }
 
 impl NativePlatform for WindowsPlatform {
+    fn move_pointer(&self, _: &mut Enigo, x: i32, y: i32) -> Result<()> {
+        let left = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+        let top = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+        let width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
+        let height = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
+        let (dx, dy) = virtual_pointer(x, y, left, top, width, height)?;
+        let input = INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx,
+                    dy,
+                    dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                    ..Default::default()
+                },
+            },
+        };
+        ensure!(
+            unsafe { SendInput(&[input], size_of::<INPUT>() as i32) } == 1,
+            "Windows virtual-desktop pointer injection failed: {}",
+            std::io::Error::last_os_error()
+        );
+        Ok(())
+    }
+
     fn kind(&self) -> BackendKind {
         BackendKind::Windows
     }
@@ -222,6 +256,70 @@ impl NativePlatform for WindowsPlatform {
         Arc::new(WasapiAudio {
             available: probe_audio().is_ok(),
         })
+    }
+}
+
+fn virtual_pointer(
+    x: i32,
+    y: i32,
+    left: i32,
+    top: i32,
+    width: i32,
+    height: i32,
+) -> Result<(i32, i32)> {
+    ensure!(
+        width > 0 && height > 0,
+        "virtual desktop has invalid dimensions"
+    );
+    let relative_x = i64::from(x) - i64::from(left);
+    let relative_y = i64::from(y) - i64::from(top);
+    ensure!(
+        (0..i64::from(width)).contains(&relative_x) && (0..i64::from(height)).contains(&relative_y),
+        "selected pointer position lies outside the current virtual desktop"
+    );
+    let normalize = |position: i64, extent: i32| -> i32 {
+        if extent == 1 {
+            0
+        } else {
+            ((position * 65_535 + i64::from(extent - 1) / 2) / i64::from(extent - 1)) as i32
+        }
+    };
+    Ok((normalize(relative_x, width), normalize(relative_y, height)))
+}
+
+#[cfg(test)]
+mod pointer_tests {
+    use super::virtual_pointer;
+
+    #[test]
+    fn two_monitor_virtual_desktop_maps_negative_origin_and_all_edges() {
+        assert_eq!(
+            virtual_pointer(-1920, 0, -1920, 0, 3840, 1080).unwrap(),
+            (0, 0)
+        );
+        assert_eq!(
+            virtual_pointer(-1, 1079, -1920, 0, 3840, 1080).unwrap().1,
+            65_535
+        );
+        assert_eq!(
+            virtual_pointer(0, 0, -1920, 0, 3840, 1080).unwrap().0,
+            32_776
+        );
+        assert_eq!(
+            virtual_pointer(1919, 1079, -1920, 0, 3840, 1080).unwrap(),
+            (65_535, 65_535)
+        );
+        assert!(virtual_pointer(-1921, 0, -1920, 0, 3840, 1080).is_err());
+        assert!(virtual_pointer(1920, 0, -1920, 0, 3840, 1080).is_err());
+        assert_eq!(
+            virtual_pointer(0, -1080, 0, -1080, 1920, 2160).unwrap().1,
+            0
+        );
+        assert_eq!(
+            virtual_pointer(0, 1079, 0, -1080, 1920, 2160).unwrap().1,
+            65_535
+        );
+        assert_eq!(virtual_pointer(-5, -8, -5, -8, 1, 1).unwrap(), (0, 0));
     }
 }
 
