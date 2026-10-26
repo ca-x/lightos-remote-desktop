@@ -1029,7 +1029,10 @@ async fn native_text_revocation_between_batches_restores_keymap_and_skips_queued
     tokio::task::spawn_blocking(move || first.recv_timeout(Duration::from_secs(3)).unwrap())
         .await
         .unwrap();
-    assert_eq!(probe.characters.load(Ordering::Acquire), 128);
+    assert_eq!(
+        probe.characters.load(Ordering::Acquire),
+        crate::wayland::TEXT_KEYCODES.len()
+    );
     for expired in [false, true] {
         let cancelled = tokio_util::sync::CancellationToken::new();
         if !expired {
@@ -1071,7 +1074,7 @@ async fn native_text_revocation_between_batches_restores_keymap_and_skips_queued
     .unwrap();
     assert_eq!(
         probe.characters.load(Ordering::Acquire),
-        128,
+        crate::wayland::TEXT_KEYCODES.len(),
         "revoked/expired input emitted more Unicode keys"
     );
     assert_eq!(probe.batches.load(Ordering::Acquire), 1);

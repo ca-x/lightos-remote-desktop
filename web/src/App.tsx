@@ -248,6 +248,7 @@ function Workspace() {
             </ToolMenu>
             <ToolMenu edge={edge} id="keyboard-toggle" label={t("keyboardMenu")} icon={<Keyboard size={18} aria-hidden="true" />}>
               <Menubar.Item className="session-menu-item" disabled={!controls.ready} onSelect={() => invoke("keyboard-capture")}>{t(view.keyboardCaptured ? "releaseCapture" : "capture")}</Menubar.Item>
+              <Menubar.Item className="session-menu-item" disabled={!controls.ready} onSelect={() => invoke("switch-input-method")}>{t("switchRemoteInput")}<span className="menu-trailing">Ctrl+Space</span></Menubar.Item>
               <Menubar.Separator className="session-menu-separator" />
               <Menubar.Item className="session-menu-item" disabled={!controls.ready} onSelect={() => showUtility("keyboard")}>{t("sendChord")}<span className="menu-trailing">…</span></Menubar.Item>
               <Menubar.Item className="session-menu-item" onSelect={() => showUtility("keyboard")}>{t("keyboardHelpTitle")}</Menubar.Item>
@@ -274,7 +275,7 @@ function Workspace() {
       </div>
     </aside>
     <div hidden aria-hidden="true">
-      <Button id="mode-fit" /><Button id="mode-actual" />
+      <Button id="mode-fit" /><Button id="mode-actual" /><Button id="switch-input-method" />
       <p id="state" /><p id="performance" /><p id="video-details" /><p id="message" />
       <p id="display-mode" />
       <section id="desktop-controls"><Select id="desktop-source" /><Button id="refresh-desktops" /><div id="monitor-controls"><Select id="monitor-source" /></div><p id="desktop-status" /></section>

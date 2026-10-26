@@ -37,6 +37,19 @@ use wayland_protocols_wlr::virtual_pointer::v1::client::{
 use xkbcommon::xkb;
 
 const START_TIMEOUT: Duration = Duration::from_secs(10);
+// Clients may retain the physical meaning of Escape/Tab/Enter even when a
+// Unicode keymap assigns printable symbols. Text must only use printable slots.
+pub(crate) const TEXT_KEYCODES: [u32; 48] = [
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 30, 31,
+    32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 57,
+];
+
+struct TextKeyboard(ZwpVirtualKeyboardV1);
+impl Drop for TextKeyboard {
+    fn drop(&mut self) {
+        self.0.destroy();
+    }
+}
 
 #[derive(Debug)]
 struct StartupTimeout {
@@ -996,13 +1009,13 @@ fn send_keymap(keyboard: &ZwpVirtualKeyboardV1, keymap: &xkb::Keymap) -> Result<
 
 fn unicode_keymap(context: &xkb::Context, characters: &[char]) -> Result<xkb::Keymap> {
     ensure!(
-        !characters.is_empty() && characters.len() <= 128,
+        !characters.is_empty() && characters.len() <= TEXT_KEYCODES.len(),
         "invalid text batch"
     );
     let mut codes = String::new();
     let mut symbols = String::new();
     for (index, character) in characters.iter().enumerate() {
-        codes.push_str(&format!("<U{index:03}> = {};\n", index + 9));
+        codes.push_str(&format!("<U{index:03}> = {};\n", TEXT_KEYCODES[index] + 8));
         let symbol = match character {
             '\n' | '\r' => "Return".into(),
             '\t' => "Tab".into(),
@@ -1114,15 +1127,25 @@ fn run_input(
                 }
                 Ok(Some((InputCommand::Text { text }, guard))) => {
                     devices.release();
+                    queue.roundtrip(&mut dispatch)?;
                     let characters: Vec<char> = text.chars().collect();
-                    for batch in characters.chunks(128) {
+                    for batch in characters.chunks(TEXT_KEYCODES.len()) {
                         if shared.stopped.load(Ordering::Acquire)
                             || guard.as_ref().is_some_and(|g| !g.active())
                         {
                             break;
                         }
                         let map = unicode_keymap(&devices.context, batch)?;
-                        send_keymap(&devices.keyboard, &map)?;
+                        // IME keyboard grabs can cache the map by device identity
+                        // (notably Hyprland). Keep the physical-key keyboard stable
+                        // and give each committed text batch its own immutable map.
+                        let keyboard = TextKeyboard(keyboard_manager.create_virtual_keyboard(
+                            &seat,
+                            &handle,
+                            (),
+                        ));
+                        send_keymap(&keyboard.0, &map)?;
+                        keyboard.0.modifiers(0, 0, 0, 0);
                         queue.roundtrip(&mut dispatch)?;
                         for index in 0..batch.len() {
                             if shared.stopped.load(Ordering::Acquire)
@@ -1134,9 +1157,11 @@ fn run_input(
                             if let Some(probe) = guard.as_ref().and_then(|g| g.probe.as_ref()) {
                                 probe.characters.fetch_add(1, Ordering::AcqRel);
                             }
-                            devices.keyboard.key(devices.time(), index as u32 + 1, 1);
-                            devices.keyboard.key(devices.time(), index as u32 + 1, 0);
+                            keyboard.0.key(devices.time(), TEXT_KEYCODES[index], 1);
+                            keyboard.0.key(devices.time(), TEXT_KEYCODES[index], 0);
                         }
+                        queue.roundtrip(&mut dispatch)?;
+                        drop(keyboard);
                         queue.roundtrip(&mut dispatch)?;
                         #[cfg(test)]
                         if let Some(probe) = guard.as_ref().and_then(|g| g.probe.as_ref())
@@ -1150,7 +1175,6 @@ fn run_input(
                                 .recv_timeout(Duration::from_secs(5))?;
                         }
                     }
-                    send_keymap(&devices.keyboard, &devices.base_keymap)?;
                     devices.modifiers();
                     queue.roundtrip(&mut dispatch)?;
                     if let Some(guard) = &guard {
@@ -1522,12 +1546,27 @@ pub(crate) mod tests {
         let state = xkb::State::new(&keymap);
         for (index, character) in characters[..4].iter().enumerate() {
             assert_eq!(
-                state.key_get_utf32((index as u32 + 9).into()),
+                state.key_get_utf32((TEXT_KEYCODES[index] + 8).into()),
                 *character as u32
             );
         }
         let serialized = keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);
         assert!(serialized.contains("xkb_keymap"));
+    }
+
+    #[test]
+    fn committed_text_never_borrows_control_or_modifier_keycodes() {
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap = unicode_keymap(&context, &vec!['中'; TEXT_KEYCODES.len()]).unwrap();
+        let state = xkb::State::new(&keymap);
+        for code in [1u32, 14, 15, 28, 29, 42, 54, 56, 58, 97, 100, 125, 126] {
+            assert_eq!(
+                state.key_get_utf32((code + 8).into()),
+                0,
+                "reserved evdev code {code}"
+            );
+        }
+        assert!(unicode_keymap(&context, &vec!['中'; TEXT_KEYCODES.len() + 1]).is_err());
     }
 
     #[test]

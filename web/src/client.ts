@@ -61,7 +61,7 @@ export function createClient(options: ClientOptions = {}) {
   const drawing = canvas.getContext("2d", { alpha: false });
   const viewport = element("viewport");
   const textBox = element("text");
-  const controls = ["apply-size", "send-text", "clipboard-get", "clipboard-set", "paste-local", "keyboard-capture", "send-shortcut"] as const;
+  const controls = ["apply-size", "send-text", "clipboard-get", "clipboard-set", "paste-local", "keyboard-capture", "send-shortcut", "switch-input-method"] as const;
   const listeners = new AbortController();
   const keys = new Set<number>();
   const buttons = new Set<number>();
@@ -1804,6 +1804,12 @@ export function createClient(options: ClientOptions = {}) {
     setToolsOpen(false);
     if (!isDesktopFullscreen()) await displayMode("fullscreen");
     else { canvas.focus({ preventScroll: true }); await captureKeyboard(); }
+  });
+  listen(element("switch-input-method"), "click", () => {
+    if (!ready || desktopPaused) return;
+    release();
+    sendChord([KEY_CODES.ControlLeft, KEY_CODES.Space]);
+    setToolsOpen(false, true);
   });
   element("shortcut-key").replaceChildren();
   for (const code of Object.keys(KEY_CODES)) {

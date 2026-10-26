@@ -47,7 +47,7 @@ fn executable(search: &OsStr, bin: &Path, name: &str) -> Option<PathBuf> {
         })
 }
 
-fn write_atomic(path: &Path, source: &str, mode: u32) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, source: &str, mode: u32) -> Result<()> {
     if fs::symlink_metadata(path)
         .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o777 == mode)
         && fs::read(path).ok().as_deref() == Some(source.as_bytes())
@@ -139,10 +139,12 @@ fn prepare_in(runtime: &Path, data: &Path, search: &OsStr) -> Result<Application
          case ${{WAYLAND_DISPLAY:-}} in /*) lightos_app_socket=$WAYLAND_DISPLAY ;; *) lightos_app_socket=$XDG_RUNTIME_DIR/${{WAYLAND_DISPLAY:-}} ;; esac\n\
          case $lightos_app_socket in {runtime}/wayland-*) ;; *) printf '%s\\n' 'LightOS: application display is outside its desktop session' >&2; exit 1 ;; esac\n\
          if [ ! -S \"$lightos_app_socket\" ]; then printf '%s\\n' 'LightOS: application desktop display is unavailable' >&2; exit 1; fi\n\
-         unset lightos_app_socket CHROME_USER_DATA_DIR\nexport CHROME_CONFIG_HOME={profile}\n",
+         unset lightos_app_socket CHROME_USER_DATA_DIR\nexport CHROME_CONFIG_HOME={profile}\n\
+         if [ -f {input_environment} ]; then . {input_environment}; fi\n",
         runtime = quote(runtime.as_os_str()),
         bus = quote(OsStr::new(&format!("unix:path={}/bus", runtime.display()))),
         profile = quote(profile_root.as_os_str()),
+        input_environment = quote(runtime.join("input-method-environment.sh").as_os_str()),
     );
     write_atomic(&environment, &source, 0o600)?;
     for (name, source) in [
@@ -379,6 +381,37 @@ mod tests {
         assert!(bytes.ends_with(b"old-shell.desktop\0"));
     }
 
+    #[test]
+    fn owned_browser_activates_wayland_ime_and_retains_explicit_overrides() {
+        let (root, runtime, host, data, _socket) = fixture();
+        fs::copy(host.join("gtk-launch"), host.join("google-chrome-stable")).unwrap();
+        prepare_in(&runtime, &data, host.as_os_str()).unwrap();
+        fs::write(
+            runtime.join("input-method-environment.sh"),
+            "export LIGHTOS_SESSION_INPUT_METHOD=fcitx5\n",
+        )
+        .unwrap();
+        let output = root.path().join("arguments");
+        assert!(
+            command(&runtime, &runtime.join("bin/google-chrome-stable"), &output)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let args = fs::read_to_string(&output).unwrap();
+        assert!(args.contains("--enable-wayland-ime\0"));
+        assert!(args.contains("--wayland-text-input-version=3\0"));
+        assert!(
+            command(&runtime, &runtime.join("bin/google-chrome-stable"), &output)
+                .arg("--disable-wayland-ime")
+                .status()
+                .unwrap()
+                .success()
+        );
+        let args = fs::read_to_string(&output).unwrap();
+        assert!(args.contains("--disable-wayland-ime\0"));
+        assert!(!args.contains("--enable-wayland-ime\0"));
+    }
     #[test]
     fn browser_commands_default_to_native_wayland_and_keep_explicit_platform_overrides() {
         let (root, runtime, host, data, _socket) = fixture();

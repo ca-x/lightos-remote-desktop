@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 mod applications;
 pub mod audio;
 pub mod audio_channel;
@@ -11,6 +12,8 @@ pub mod desktop;
 pub mod diagnostics;
 #[cfg(target_os = "linux")]
 pub mod handoff;
+#[cfg(target_os = "linux")]
+mod input_method;
 pub mod install;
 pub mod mcp;
 pub mod rdp;

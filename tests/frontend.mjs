@@ -2190,3 +2190,15 @@ test("a blocked audio resume times out, releases playback category and leaves vi
   assert.equal(video.readyState, 1);
   app.run("client.destroy()");
 });
+
+
+test("remote input-method shortcut sends Ctrl+Space without requiring an OS-reserved physical key", () => {
+  const app = harness();const socket = app.ready();
+  socket.json({ type: "ready", width:1280, height:720, key_chords:true });
+  app.nodes["switch-input-method"].fire("click");
+  assert.deepEqual(JSON.parse(JSON.stringify(socket.sent.filter(command=>command.type==="chord"))),[{type:"chord",codes:[29,57]}]);
+  socket.json({ type:"desktop_state",available:false });
+  app.nodes["switch-input-method"].fire("click");
+  assert.equal(socket.sent.filter(command=>command.type==="chord").length,1);
+  app.run("client.destroy()");
+});

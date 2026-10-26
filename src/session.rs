@@ -171,6 +171,11 @@ impl Session {
                         config.omarchy_path()?.as_deref(),
                     )?;
                     applications.update_activation(&session.runtime)?;
+                    if let Err(error) =
+                        crate::input_method::start(&session.runtime, &session.socket)
+                    {
+                        tracing::warn!(%error, "owned desktop input method unavailable");
+                    }
                     return Ok(session);
                 }
                 ensure!(
@@ -332,6 +337,9 @@ impl Session {
             .find(|entry| entry.path().join(".socket.sock").exists())
             .map(|entry| entry.file_name().to_string_lossy().into_owned());
         let display = session.prepare_application_environment(lua)?;
+        if let Err(error) = crate::input_method::start(&session.runtime, &session.socket) {
+            tracing::warn!(%error, "owned desktop input method unavailable");
+        }
         if let Some(path) = &omarchy {
             let mut shell = Command::new("quickshell");
             shell

@@ -42,6 +42,16 @@ if [ "${LIGHTOS_BROWSER_PRIVATE:-0}" = 1 ]; then
     unset LIGHTOS_BROWSER_PRIVATE
     set -- "$@" --incognito
 fi
+if [ "${LIGHTOS_SESSION_INPUT_METHOD:-}" = fcitx5 ]; then
+    lightos_explicit_ime=0
+    for lightos_argument in "$@"; do
+        case $lightos_argument in --enable-wayland-ime|--disable-wayland-ime|--wayland-text-input-version|--wayland-text-input-version=*) lightos_explicit_ime=1 ;; esac
+    done
+    if [ "$lightos_explicit_ime" = 0 ]; then
+        set -- "$@" --enable-wayland-ime --wayland-text-input-version=3
+    fi
+    unset lightos_explicit_ime
+fi
 unset lightos_argument lightos_browser
 # Packaged Chrome can prepend host chrome-flags.conf (including forced X11).
 # An owned Wayland desktop chooses its native display unless explicitly asked otherwise.

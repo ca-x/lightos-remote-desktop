@@ -84,6 +84,7 @@ export interface Elements {
   "clipboard-set": HTMLButtonElement;
   "paste-local": HTMLButtonElement;
   "keyboard-capture": HTMLButtonElement;
+  "switch-input-method": HTMLButtonElement;
   "send-shortcut": HTMLButtonElement;
   "refresh-desktops": HTMLButtonElement;
   audio: HTMLButtonElement;
