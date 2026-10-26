@@ -37,7 +37,9 @@ impl Drop for AudioLease {
 
 impl AudioLease {
     pub fn available(&self) -> bool {
-        !*self.session.stop.borrow() && self.session.target.available() && (self.session.capture_epoch)().is_some()
+        !*self.session.stop.borrow()
+            && self.session.target.available()
+            && (self.session.capture_epoch)().is_some()
     }
 }
 
@@ -178,10 +180,19 @@ mod tests {
 
     struct TestAudio;
     impl AudioCaptureFactory for TestAudio {
-        fn available(&self) -> bool { true }
-        fn start(&self, _format: AudioFormat) -> anyhow::Result<Box<dyn crate::audio::AudioCapture>> { anyhow::bail!("test capture unavailable") }
+        fn available(&self) -> bool {
+            true
+        }
+        fn start(
+            &self,
+            _format: AudioFormat,
+        ) -> anyhow::Result<Box<dyn crate::audio::AudioCapture>> {
+            anyhow::bail!("test capture unavailable")
+        }
     }
-    fn target(_source: &str) -> Arc<dyn AudioCaptureFactory> { Arc::new(TestAudio) }
+    fn target(_source: &str) -> Arc<dyn AudioCaptureFactory> {
+        Arc::new(TestAudio)
+    }
 
     fn start(hub: &AudioHub) -> u64 {
         hub.start(target("virtual.monitor"), Arc::new(|| Some(0)))

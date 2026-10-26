@@ -36,7 +36,7 @@ test("toolbar displays the server version without accepting malformed values", (
   assert.equal(app.nodes["software-version"].textContent, "v0.1.2");
 });
 
-function harness(pathname = "/", storage = new Map(), clientOptions = {}, pixelRatio = 1) {
+function harness(pathname = "/", storage = new Map(), clientOptions = {}, pixelRatio = 1, touchPoints = 0) {
   class Target {
     handlers = new Map();
     disabled = false;
@@ -97,6 +97,7 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}, pixelR
   window.innerWidth = 1280;
   window.innerHeight = 720;
   window.devicePixelRatio = pixelRatio;
+  window.getComputedStyle = () => ({paddingTop:"0px",paddingLeft:"0px",paddingRight:"0px",width:"200px",height:"100px"});
   const mediaQueries = [];
   window.matchMedia = media => {
     const query = new Target(); query.media = media; query.matches = false;
@@ -148,7 +149,7 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}, pixelR
     }
   }
   window.AudioContext = AudioContext;
-  const navigator = { clipboard: { readText: async () => "local text" } };
+  const navigator = { maxTouchPoints: touchPoints, clipboard: { readText: async () => "local text" } };
   const context = vm.createContext({ document, window, navigator, AbortController, WebSocket, clientOptions,
     URL, location: { href: `https://desktop.test${pathname}`, pathname, protocol: "https:" },
     ArrayBuffer, Uint8Array, DataView, TextEncoder, Blob, performance: { now: () => now },
@@ -2200,5 +2201,19 @@ test("remote input-method shortcut sends Ctrl+Space without requiring an OS-rese
   socket.json({ type:"desktop_state",available:false });
   app.nodes["switch-input-method"].fire("click");
   assert.equal(socket.sent.filter(command=>command.type==="chord").length,1);
+  app.run("client.destroy()");
+});
+
+
+test("rotated mobile fullscreen negotiates landscape encoding bounds while controls retain their screen axes", async () => {
+  const app = harness("/", new Map(), {}, 2, 5);
+  app.window.innerWidth=390; app.window.innerHeight=844;
+  const socket=app.ready();
+  socket.json({type:"ready",width:1280,height:720,desktop:"virtual",resize:false,frame_ack:true,frame_ids:true,video_scaling:true});
+  app.nodes.fullscreen.fire("click");await flush();
+  app.nodes["mobile-fullscreen-rotate"].fire("click");await flush();
+  for(const [id,timer] of [...app.timers]) if(timer.delay===250){app.timers.delete(id);timer.callback();}
+  assert.equal(app.nodes.viewport.classList.contains("picture-rotated"),true);
+  assert.deepEqual(socket.sent.filter(p=>p.type==="video_scale").at(-1).max_size,{width:1688,height:780});
   app.run("client.destroy()");
 });

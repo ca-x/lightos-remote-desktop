@@ -1078,8 +1078,10 @@ export function createClient(options: ClientOptions = {}) {
     const bounds = mobile?.bounds();
     const native = strategyPreference === "quality_first" || pictureZoom.active() || (!isDesktopFullscreen() && windowMode === "actual");
     if (!native && mobile?.keyboardActive()) return;
-    const maxSize = native ? null : encodingBounds(bounds?.width ?? viewport.clientWidth,
-      bounds ? bounds.height - bounds.bar : viewport.clientHeight, window.devicePixelRatio);
+    let width = bounds?.width ?? viewport.clientWidth;
+    let height = bounds ? bounds.height - bounds.bar : viewport.clientHeight;
+    if (pictureRotated) [width, height] = [height, width];
+    const maxSize = native ? null : encodingBounds(width, height, window.devicePixelRatio);
     const key = JSON.stringify(maxSize);
     if (key !== lastVideoBounds && send({ type: "video_scale", max_size: maxSize })) lastVideoBounds = key;
   }

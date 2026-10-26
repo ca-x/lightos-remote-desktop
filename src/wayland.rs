@@ -1150,7 +1150,7 @@ fn run_input(
                         send_keymap(&keyboard.0, &map)?;
                         keyboard.0.modifiers(0, 0, 0, 0);
                         queue.roundtrip(&mut dispatch)?;
-                        for index in 0..batch.len() {
+                        for &code in TEXT_KEYCODES.iter().take(batch.len()) {
                             if shared.stopped.load(Ordering::Acquire)
                                 || guard.as_ref().is_some_and(|g| !g.active())
                             {
@@ -1160,8 +1160,8 @@ fn run_input(
                             if let Some(probe) = guard.as_ref().and_then(|g| g.probe.as_ref()) {
                                 probe.characters.fetch_add(1, Ordering::AcqRel);
                             }
-                            keyboard.0.key(devices.time(), TEXT_KEYCODES[index], 1);
-                            keyboard.0.key(devices.time(), TEXT_KEYCODES[index], 0);
+                            keyboard.0.key(devices.time(), code, 1);
+                            keyboard.0.key(devices.time(), code, 0);
                         }
                         queue.roundtrip(&mut dispatch)?;
                         drop(keyboard);
