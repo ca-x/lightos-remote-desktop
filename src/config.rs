@@ -312,7 +312,7 @@ impl Config {
                 && self.aquamarine_dir.is_none()
                 && self.desktop_shell == DesktopShell::Auto
                 && self.display_backend == display_control::DisplayBackend::Auto
-                && self.cage == PathBuf::from("cage"),
+                && self.cage.as_os_str() == "cage",
             "Linux desktop/session options are unsupported on this platform"
         );
         let (width, height) = self.dimensions()?;

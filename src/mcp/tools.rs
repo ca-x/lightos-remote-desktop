@@ -39,7 +39,7 @@ pub(super) struct Desktop {
     pub(super) owned: bool,
     pub(super) release_input: Arc<dyn Fn() -> bool + Send + Sync>,
     pub(super) privacy_state: Arc<dyn Fn() -> Option<u64> + Send + Sync>,
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) text_probe: Option<Arc<crate::backend::TextProbe>>,
 }
 
@@ -55,7 +55,7 @@ impl Desktop {
             input: backend.input(),
             controller,
             owned,
-            #[cfg(test)]
+            #[cfg(all(test, target_os = "linux"))]
             text_probe: None,
             release_input: Arc::new(move || {
                 let released = backend.release_input();
@@ -119,7 +119,7 @@ impl Desktop {
             principal.cancellation.child_token(),
             Instant::now() + DEADLINE,
         );
-        #[cfg(test)]
+        #[cfg(all(test, target_os = "linux"))]
         let guard = InputGuard {
             probe: self.text_probe.clone(),
             ..guard
@@ -661,6 +661,7 @@ mod tests {
                 (!observed_lock.load(Ordering::Acquire))
                     .then(|| observed_epoch.load(Ordering::Acquire))
             }),
+            #[cfg(target_os = "linux")]
             text_probe: None,
         };
         let started = desktop.privacy_epoch().unwrap();
@@ -686,6 +687,7 @@ mod tests {
             owned: true,
             release_input: Arc::new(|| false),
             privacy_state: Arc::new(|| Some(0)),
+            #[cfg(target_os = "linux")]
             text_probe: None,
         };
         let directory = tempfile::tempdir().unwrap();

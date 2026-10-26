@@ -271,7 +271,7 @@ impl Manager {
 fn read_private(path: &Path) -> Result<Option<Vec<u8>>> {
     crate::private_storage::current().read(path, 65536)
 }
-#[cfg(any(feature = "rdp", test))]
+#[cfg(any(feature = "rdp", all(test, target_os = "linux")))]
 fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     crate::private_storage::current().write(path, bytes)
 }

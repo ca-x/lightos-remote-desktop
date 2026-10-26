@@ -466,9 +466,11 @@ impl Prepared {
     fn empty(layout: &Layout) -> Result<Self> {
         let bundle_dir = tempfile::Builder::new()
             .prefix(".lightos-app-")
+            .permissions(fs::Permissions::from_mode(0o700))
             .tempdir_in(&layout.support)?;
         let config_dir = tempfile::Builder::new()
             .prefix(".lightos-config-")
+            .permissions(fs::Permissions::from_mode(0o700))
             .tempdir_in(
                 layout
                     .config
@@ -477,6 +479,7 @@ impl Prepared {
             )?;
         let agent_dir = tempfile::Builder::new()
             .prefix(".lightos-agent-")
+            .permissions(fs::Permissions::from_mode(0o700))
             .tempdir_in(layout.agent.parent().context("agent path has no parent")?)?;
         let bundle = bundle_dir.path().join(APP);
         let config = config_dir.path().join("host.json");
@@ -584,6 +587,7 @@ fn copy_bundle(source: &Path, destination: &Path) -> Result<()> {
 fn store_pending(layout: &Layout, prepared: &Prepared) -> Result<()> {
     let temporary = tempfile::Builder::new()
         .prefix(".lightos-pending-")
+        .permissions(fs::Permissions::from_mode(0o700))
         .tempdir_in(&layout.support)?;
     copy_bundle(&prepared.bundle, &temporary.path().join(APP))?;
     let settings = HostSettings::load(&prepared.config)?;

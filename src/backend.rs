@@ -5,7 +5,7 @@
 use anyhow::{Result, bail, ensure};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 use std::sync::Mutex;
 use std::{
     sync::{
@@ -259,10 +259,10 @@ pub struct InputGuard {
     pub(crate) lock_cancellation: Option<CancellationToken>,
     pub(crate) deadline: Instant,
     pub(crate) text_done: Arc<tokio::sync::Notify>,
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) probe: Option<Arc<TextProbe>>,
 }
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[derive(Debug)]
 pub(crate) struct TextProbe {
     pub(crate) characters: std::sync::atomic::AtomicUsize,
@@ -278,7 +278,7 @@ impl InputGuard {
             lock_cancellation: None,
             deadline,
             text_done: Arc::new(tokio::sync::Notify::new()),
-            #[cfg(test)]
+            #[cfg(all(test, target_os = "linux"))]
             probe: None,
         }
     }
