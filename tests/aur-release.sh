@@ -113,6 +113,25 @@ reject 'unexpected asset'
 reset
 mutate release.json "r['assets'].pop()"
 reject 'missing asset'
+native_release() {
+    reset
+    RELEASE_TAG=v0.1.19
+    mutate release.json "r['tag_name']='v0.1.19'; r['assets'].extend(dict(name=n, state='uploaded', size=123) for archive in ('lightos-remoted-windows-x86_64.zip','lightos-remoted-macos-aarch64.tar.gz','lightos-remoted-macos-x86_64.tar.gz') for n in (archive, archive+'.sha256'))"
+    mutate runs.json "r['workflow_runs'][0]['head_branch']='v0.1.19'"
+}
+native_release
+run
+grep -q '^publish=true$' "$GITHUB_OUTPUT"
+checks=$((checks+1))
+native_release
+mutate release.json "r['assets'].pop()"
+reject 'missing native checksum'
+native_release
+mutate release.json "r['assets'] = r['assets'][:6]"
+reject 'missing native platforms'
+native_release
+mutate release.json "r['assets'].append(dict(name='unexpected',state='uploaded',size=123))"
+reject 'unexpected native release asset'
 reset
 RELEASE_TAG='v0.1.11;echo INJECTION'
 reject 'malformed tag'

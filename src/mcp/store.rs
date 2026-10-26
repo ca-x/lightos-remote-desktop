@@ -1,7 +1,9 @@
+#[cfg(all(test, unix))]
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
-    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+    fs,
+    os::unix::fs::{MetadataExt, PermissionsExt},
+};
+use std::{
     path::{Path, PathBuf},
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
@@ -294,54 +296,13 @@ impl TokenStore {
 }
 
 pub(super) fn default_path() -> Option<PathBuf> {
-    std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .filter(|p| p.is_absolute())
-                .map(|p| p.join(".local/state"))
-        })
-        .map(|p| p.join("lightos-remote-desktop/mcp.json"))
-}
-
-fn private_file(file: &File) -> Result<()> {
-    let meta = file.metadata()?;
-    ensure!(
-        meta.is_file() && meta.uid() == unsafe { libc::geteuid() } && meta.mode() & 0o077 == 0,
-        "MCP settings must be a private file owned by the current user"
-    );
-    ensure!(
-        meta.len() <= MAX_SETTINGS_BYTES,
-        "MCP settings file too large"
-    );
-    Ok(())
+    crate::private_storage::state_directory().map(|p| p.join("mcp.json"))
 }
 
 fn read(path: &Path) -> Result<Settings> {
-    let file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-    {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Settings::default());
-        }
-        Err(error) => return Err(error.into()),
+    let Some(data) = crate::private_storage::current().read(path, MAX_SETTINGS_BYTES)? else {
+        return Ok(Settings::default());
     };
-    private_directory(
-        path.parent()
-            .context("MCP settings directory unavailable")?,
-    )?;
-    private_file(&file)?;
-    let mut data = Vec::new();
-    file.take(MAX_SETTINGS_BYTES + 1).read_to_end(&mut data)?;
-    ensure!(
-        data.len() <= MAX_SETTINGS_BYTES as usize,
-        "MCP settings file too large"
-    );
     let settings: Settings = serde_json::from_slice(&data).context("Invalid MCP settings file")?;
     ensure!(
         settings.tokens.len() <= MAX_TOKENS,
@@ -362,45 +323,13 @@ fn read(path: &Path) -> Result<Settings> {
     Ok(settings)
 }
 
-fn private_directory(directory: &Path) -> Result<()> {
-    let meta = fs::symlink_metadata(directory)?;
-    ensure!(
-        meta.is_dir() && meta.uid() == unsafe { libc::geteuid() } && meta.mode() & 0o077 == 0,
-        "MCP settings directory must be private and owned by the current user"
-    );
-    Ok(())
-}
-
 fn write(path: &Path, settings: &Settings) -> Result<()> {
-    let directory = path
-        .parent()
-        .context("MCP settings directory unavailable")?;
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(directory)?;
-    private_directory(directory)?;
-    if path.symlink_metadata().is_ok() {
-        private_file(
-            &OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                .open(path)?,
-        )?;
-    }
-    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-    temporary
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))?;
-    serde_json::to_writer(&mut temporary, settings)?;
-    temporary.write_all(b"\n")?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(path).map_err(|error| error.error)?;
-    File::open(directory)?.sync_all()?;
-    Ok(())
+    let mut bytes = serde_json::to_vec(settings)?;
+    bytes.push(b'\n');
+    crate::private_storage::current().write(path, &bytes)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
@@ -503,7 +432,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod boundary_tests {
     use super::*;
 

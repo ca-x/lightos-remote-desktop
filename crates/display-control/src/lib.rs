@@ -1,21 +1,36 @@
 //! Session-scoped output discovery and control, independent of distro and transport.
+#[cfg(target_os = "linux")]
 mod command;
 mod controller;
+#[cfg(target_os = "linux")]
 mod hyprland;
+#[cfg(target_os = "linux")]
 mod kscreen;
+#[cfg(target_os = "linux")]
 mod mutter;
+#[cfg(target_os = "linux")]
 mod session;
+#[cfg(target_os = "linux")]
 mod wayland;
+#[cfg(target_os = "linux")]
 mod wlroots;
+#[cfg(target_os = "linux")]
 mod x11;
 
 pub use controller::DisplayBackend;
+#[cfg(target_os = "linux")]
 pub use hyprland::HyprlandDisplay;
+#[cfg(target_os = "linux")]
 pub use kscreen::KScreenDisplay;
+#[cfg(target_os = "linux")]
 pub use mutter::MutterDisplay;
+#[cfg(target_os = "linux")]
 pub use session::{DesktopEnvironment, SessionTarget};
+#[cfg(target_os = "linux")]
 pub use wayland::WaylandDisplay;
+#[cfg(target_os = "linux")]
 pub use wlroots::WlrootsDisplay;
+#[cfg(target_os = "linux")]
 pub use x11::X11Display;
 
 use anyhow::{Result, ensure};
@@ -70,7 +85,7 @@ pub struct DisplayCapabilities {
 }
 
 impl DisplayCapabilities {
-    fn unavailable(reason: impl ToString) -> Self {
+    pub fn unavailable(reason: impl ToString) -> Self {
         Self {
             resize: false,
             resize_scale: false,
@@ -92,6 +107,7 @@ pub trait DisplayController: Send + Sync {
     ) -> BoxFuture<'a, Result<DisplayMode>>;
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn select_output<'a>(
     outputs: &'a [DisplayOutput],
     name: Option<&str>,
@@ -105,6 +121,7 @@ pub(crate) fn select_output<'a>(
         _ => anyhow::bail!("select an output before resizing a multi-output desktop"),
     }
 }
+#[cfg(target_os = "linux")]
 pub(crate) fn output_matches(output: &DisplayOutput, mode: DisplayMode) -> bool {
     output.width == mode.width
         && output.height == mode.height

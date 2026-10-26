@@ -6,7 +6,11 @@
 
 简体中文 | [English](README.en.md)
 
-面向 Linux / LightOS 的 Rust 原生浏览器远程桌面服务。运行时不内嵌 CPython，也不调用原版 Selkies 的 Python 启动器。
+使用 Rust 开发的跨平台远程桌面主机，通过浏览器连接和控制电脑，面向 Linux、Windows 和 macOS。运行时不内嵌 CPython，也不调用原版 Selkies 的 Python 启动器。
+
+Windows/macOS 物理桌面主机正在加入实验性支持：共用浏览器协议，支持前台 `serve` 和
+`install-service` 一键服务安装。Linux 保留现有虚拟桌面与 systemd 行为。
+安装方式、权限和验收边界见 [跨平台主机说明](docs/cross-platform-host.md)。
 
 ## 当前功能
 
@@ -35,7 +39,7 @@
 
 H.264 只在有发送额度时读取最新原始帧，不会丢弃已编码的预测帧。重连或分辨率变化会重建编码器并生成关键帧。自动、低延迟、流畅和清晰优先策略通过有界 ACK 反馈调整发送节奏及受支持编码器的码率。GPU 截图和独立的远程光标形状流尚未实现。
 
-## AUR 安装与更新
+## Linux：AUR 安装与更新
 
 包名为 `lightos-remoted-bin`，命令为 `lightos-remoted`，可执行文件安装到 `/usr/lib/lightos-remoted/lightos-remoted`。GitHub 二进制压缩包名为 `lightos-remoted-linux-x86_64.tar.gz`。可选 AUR 包 `lightos-codec-ffmpeg-bin` 提供原生 FFmpeg 编码 worker，可探测硬件 H.264 编码。它在 Arch 构建环境中从同版本源码预编译，链接对应 ABI 的系统 FFmpeg，安装到 `/usr/lib/lightos-remoted/lightos-codec-ffmpeg`，主程序会自动发现。无需安装该包即可使用内置软件 H.264 和 JPEG；硬件编码是否可用仍取决于 GPU、驱动和 FFmpeg 能力。
 
@@ -123,11 +127,11 @@ cargo build --release --locked --features bundled-jpeg,rdp,portal
 
 安装后的程序不需要 Node.js，也不需要单独的前端目录或服务器。`npm run dev` 只预览界面，认证桌面和 WebSocket 集成应使用 Rust 服务验证。资源使用相对 URL，兼容已有路径前缀。
 
-工具栏的桌面来源选择器可以在常驻虚拟桌面与同一用户已有的 Wayland 桌面之间切换。物理模式列出活动输出，只捕获并控制选定显示器，不改变它的分辨率。没有物理会话时，该选项显示为不可用，不会创建新的物理登录；暂不支持物理桌面的音频。发现方式、非标准 socket 配置与协议要求参见[桌面切换说明](docs/desktop-switching.md)。
+在 Linux 上，工具栏的桌面来源选择器可以在常驻虚拟桌面与同一用户已有的 Wayland 桌面之间切换。物理模式列出活动输出，只捕获并控制选定显示器，不改变它的分辨率。没有物理会话时，该选项显示为不可用，不会创建新的物理登录；Linux 物理桌面暂不支持音频。发现方式、非标准 socket 配置与协议要求参见[桌面切换说明](docs/desktop-switching.md)。
 
-GitHub Actions 先运行 `npm ci`、前端类型检查、构建和测试，再运行 Rust 与安装器检查。测试和发布构建任务都会先构建前端，再编译 Rust，随后生成 Linux x86_64 压缩包与 SHA256 校验文件，也可通过 `workflow_dispatch` 手动触发。推送 `v*` tag 会将产物发布到 GitHub Releases。发布构建使用 Ubuntu 22.04，静态内置 SIMD JPEG 库；Wayland、xkbcommon 和 glibc 仍由系统提供。
+GitHub Actions 自动运行前端、Rust、安装器检查，并分别构建 Linux x86_64、Windows x86_64、macOS ARM64 与 Intel x86_64 发布包和 SHA256 文件。macOS ARM64 使用原生 `macos-15` ARM runner，Intel 使用 `macos-15-intel`，构建前校验 Rust host 架构。推送 `v*` tag 后，所有平台任务通过才发布到 GitHub Releases；也可通过 `workflow_dispatch` 运行验证。Linux 发布构建使用 Ubuntu 22.04，静态内置 SIMD JPEG 库；Wayland、xkbcommon 和 glibc 由 Linux 系统提供。
 
-### 安装下载的可执行文件
+### Linux：安装下载的可执行文件
 
 ```sh
 ./lightos-remoted install-service --dry-run

@@ -106,6 +106,7 @@ impl OmarchyInstallation {
 }
 
 /// Resolve a regular executable; merely finding a path is insufficient.
+#[cfg(unix)]
 pub fn find_executable(name: &Path) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let executable = |p: &Path| {
@@ -120,6 +121,11 @@ pub fn find_executable(name: &Path) -> Option<PathBuf> {
             .map(|directory| directory.join(name))
             .find(|candidate| executable(candidate))
     })
+}
+
+#[cfg(windows)]
+pub fn find_executable(name: &Path) -> Option<PathBuf> {
+    which::which(name).ok().filter(|path| path.is_file())
 }
 
 /// Validate syntax using the actual compositor, bounded in time, without starting a desktop.
@@ -225,7 +231,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod probe_tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;

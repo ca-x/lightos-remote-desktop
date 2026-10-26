@@ -16,8 +16,14 @@ base = 'lightos-remoted-linux-x86_64.tar.gz'
 worker = 'lightos-codec-ffmpeg-linux-x86_64-ubuntu-24.04.tar.gz'
 arch = 'lightos-codec-ffmpeg-linux-x86_64-archlinux.tar.gz'
 assets = r['assets']
+expected = {base, base+'.sha256', worker, worker+'.sha256', arch, arch+'.sha256'}
+if tuple(map(int, sys.argv[2][1:].split('.'))) >= (0, 1, 19):
+    for native in ('lightos-remoted-windows-x86_64.zip',
+                   'lightos-remoted-macos-aarch64.tar.gz',
+                   'lightos-remoted-macos-x86_64.tar.gz'):
+        expected.update((native, native+'.sha256'))
 assert len({a['name'] for a in assets}) == len(assets), 'Duplicate assets'
-assert {a['name'] for a in assets} == {base, base+'.sha256', worker, worker+'.sha256', arch, arch+'.sha256'}, 'Unexpected/missing release assets'
+assert {a['name'] for a in assets} == expected, 'Unexpected/missing release assets'
 assert all(a['state'] == 'uploaded' and a['size'] > 0 for a in assets), 'Incomplete assets'
 PY
 # Resolve annotated tags through the commits API and require successful CI for

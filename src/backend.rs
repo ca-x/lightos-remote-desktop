@@ -18,9 +18,13 @@ use std::{
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
+#[cfg(target_os = "linux")]
 pub mod guarded;
+#[cfg(target_os = "linux")]
 pub mod portal;
+#[cfg(target_os = "linux")]
 pub mod selector;
+#[cfg(target_os = "linux")]
 pub mod x11;
 
 pub(crate) const MAX_TEXT_BYTES: usize = 16 * 1024;
@@ -33,10 +37,21 @@ pub enum BackendKind {
     Wayland,
     Portal,
     X11,
+    #[cfg(target_os = "windows")]
+    Windows,
+    #[cfg(target_os = "macos")]
+    Macos,
 }
 
 pub trait DesktopBackend: Send + Sync {
     fn kind(&self) -> BackendKind;
+    fn paste_keycodes(&self, shift: bool) -> Vec<u32> {
+        if shift {
+            vec![29, 42, 47]
+        } else {
+            vec![29, 47]
+        }
+    }
     /// Whether captured pixels already include the pointer cursor.
     fn cursor_embedded(&self) -> bool {
         false
@@ -74,7 +89,8 @@ pub trait DesktopBackend: Send + Sync {
     }
 
     /// An acknowledgement means all input held by this backend was released.
-    /// A failed barrier requires stopping the backend before handing control on.
+    /// A failed barrier requires stopping the backend and barring new controllers
+    /// until the host process has been recovered by its supervisor.
     fn release_input(&self) -> bool {
         let (done, completed) = sync_mpsc::sync_channel(1);
         self.input()
@@ -96,7 +112,42 @@ pub trait DesktopBackend: Send + Sync {
     }
 }
 
-pub use selector::{BackendAvailability, BackendReport, probe, start_auto, start_selected};
+#[cfg(target_os = "linux")]
+pub use selector::{probe, start_auto, start_selected};
+
+#[derive(Clone, Debug, Serialize)]
+pub struct BackendAvailability {
+    pub backend: BackendKind,
+    pub available: bool,
+    pub requires_consent: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct BackendReport {
+    /// A candidate is not ready until it has produced its first validated frame.
+    pub selected: Option<BackendKind>,
+    pub candidates: Vec<BackendAvailability>,
+}
+impl BackendReport {
+    pub fn require_available(&self) -> Result<BackendKind> {
+        self.selected.ok_or_else(|| {
+            anyhow::anyhow!(
+                "desktop capture/input unavailable: {}",
+                self.candidates
+                    .iter()
+                    .filter_map(|candidate| candidate.reason.as_deref())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )
+        })
+    }
+    pub fn requires_consent(&self) -> bool {
+        self.candidates
+            .iter()
+            .any(|candidate| Some(candidate.backend) == self.selected && candidate.requires_consent)
+    }
+}
 
 /// A transport placeholder for physical Portal sessions. It owns no screen or
 /// input device and survives failed browser authorization for a later request.
@@ -281,7 +332,14 @@ pub enum InputCommand {
 impl InputCommand {
     pub(crate) fn into_active(self) -> Option<(Self, Option<InputGuard>)> {
         match self {
-            Self::Guarded { command, guard } => guard.active().then_some((*command, Some(guard))),
+            Self::Guarded { command, guard } => {
+                if guard.active() {
+                    Some((*command, Some(guard)))
+                } else {
+                    guard.text_done.notify_one();
+                    None
+                }
+            }
             command => Some((command, None)),
         }
     }

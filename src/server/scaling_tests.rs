@@ -1,5 +1,6 @@
 use super::*;
 use crate::backend::Frame;
+use crate::{backend::BackendKind, session::Session};
 use clap::Parser;
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async,

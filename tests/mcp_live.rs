@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 //! Opt-in native check: starts only its own compositor and transport.
 use std::{
     fs,

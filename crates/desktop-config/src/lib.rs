@@ -249,7 +249,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod boundary_tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};

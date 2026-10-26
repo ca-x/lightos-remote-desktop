@@ -8,7 +8,7 @@ use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use tokio::{sync::watch, time::timeout};
 
-use crate::audio::{AudioFormat, AudioStream};
+use crate::audio::{AudioCaptureFactory, AudioFormat};
 
 #[derive(Default)]
 pub struct AudioHub {
@@ -74,16 +74,18 @@ impl AudioHub {
 pub async fn connection(
     mut socket: WebSocket,
     lease: AudioLease,
-    server: Option<String>,
-    source: String,
+    factory: Arc<dyn AudioCaptureFactory>,
+    backend: Arc<dyn crate::backend::DesktopBackend>,
     format: AudioFormat,
 ) {
+    let epoch = backend.privacy_epoch();
+    let authorized =
+        || !backend.paused() && !backend.is_stopped() && backend.privacy_epoch() == epoch;
     let mut stop = lease.session.stop.subscribe();
-    if *stop.borrow() {
+    if *stop.borrow() || !authorized() {
         return;
     }
-    let initialize =
-        tokio::task::spawn_blocking(move || AudioStream::with_format(server, source, format));
+    let initialize = tokio::task::spawn_blocking(move || factory.start(format));
     let mut audio = tokio::select! {
         biased;
         _ = stop.changed() => return,
@@ -131,6 +133,9 @@ pub async fn connection(
                 },
                 _ = heartbeat.tick() => Message::Ping(bytes::Bytes::new()),
             };
+            if !authorized() {
+                break;
+            }
             if !matches!(
                 timeout(Duration::from_millis(500), writer.send(message)).await,
                 Ok(Ok(()))

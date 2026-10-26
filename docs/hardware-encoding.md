@@ -5,8 +5,12 @@ optional sibling executable `lightos-codec-ffmpeg` supplies VA-API, NVENC, AMF a
 VideoToolbox through native `ffmpeg-next` bindings. No FFmpeg command-line codec
 pipeline is launched. Browser hardware decoding is independent of server encoding.
 
-The current capture/input service supports Linux Wayland and X11. Encoder adapters for
-other operating systems do not implement Windows or macOS remote desktop sessions.
+Capture/input and encoding are separate capabilities. The host has Linux
+Wayland/X11/Portal backends and experimental Windows/macOS physical-desktop
+backends; see [native host support](cross-platform-host.md). The official optional
+FFmpeg worker packages currently target Linux. Windows/macOS host packages include
+software H.264 and JPEG; a working hardware encoder on those systems requires a
+compatible, separately built worker and actual capability validation.
 
 ## Arch Linux / Omarchy optional package
 

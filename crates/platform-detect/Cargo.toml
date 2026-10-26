@@ -9,3 +9,6 @@ rust-version = "1.88"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+which = "8"

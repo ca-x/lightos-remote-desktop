@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 use std::time::Duration;
 
 use base64::{Engine, engine::general_purpose::STANDARD};

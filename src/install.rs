@@ -1,6 +1,6 @@
-use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, process::Command};
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
 
 #[derive(Args)]
@@ -15,14 +15,18 @@ pub struct ServiceOptions {
     #[arg(long, hide = true)]
     pub test_root: Option<PathBuf>,
     #[arg(long, value_enum, conflicts_with_all = ["package_managed", "snapshot", "remove", "legacy", "dry_run", "stage_only", "test_root"]) ]
+    #[arg(hide = !cfg!(target_os = "linux"))]
     pub print_unit: Option<ServiceUnit>,
     #[arg(long, conflicts_with_all = ["snapshot", "remove", "legacy", "dry_run", "stage_only"]) ]
+    #[arg(hide = !cfg!(target_os = "linux"))]
     pub package_managed: bool,
     #[arg(long, conflicts_with_all = ["package_managed", "remove", "legacy", "dry_run", "stage_only"]) ]
+    #[arg(hide = !cfg!(target_os = "linux"))]
     pub snapshot: bool,
     #[arg(long, conflicts_with_all = ["package_managed", "snapshot", "legacy", "dry_run", "stage_only"]) ]
     pub remove: bool,
     #[arg(long, help = "Use the explicit legacy LightOS transactional installer")]
+    #[arg(hide = !cfg!(target_os = "linux"))]
     pub legacy: bool,
 }
 
@@ -32,145 +36,122 @@ pub enum ServiceUnit {
     Session,
 }
 
-const TRANSPORT: &str = include_str!("../systemd/lightos-remoted-transport.service");
-const SESSION: &str = include_str!("../systemd/lightos-remoted-session.service");
+#[cfg(target_os = "linux")]
+mod linux;
 
+pub trait ServiceInstaller {
+    fn install(&self, options: ServiceOptions, rollback: bool) -> Result<()>;
+}
+struct NativeInstaller;
+impl ServiceInstaller for NativeInstaller {
+    fn install(&self, options: ServiceOptions, rollback: bool) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            linux::service(options, rollback)
+        }
+        #[cfg(target_os = "windows")]
+        {
+            crate::platform::windows::install_service(options, rollback)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            crate::platform::macos::install_service(options, rollback)
+        }
+    }
+}
 pub fn service(options: ServiceOptions, rollback: bool) -> Result<()> {
-    let package = options.package_managed || options.snapshot || options.remove;
-    ensure!(
-        !rollback || (!package && options.print_unit.is_none()),
-        "rollback does not support package lifecycle or unit export flags"
-    );
-    if let Some(unit) = options.print_unit {
-        print!(
-            "{}",
-            match unit {
-                ServiceUnit::Transport => TRANSPORT,
-                ServiceUnit::Session => SESSION,
-            }
-        );
-        return Ok(());
-    }
-    if options.legacy {
-        return legacy_service(options, rollback);
-    }
-    ensure!(
-        options.dry_run || options.test_root.is_some() || unsafe { libc::geteuid() } == 0,
-        "service installation requires root; run with sudo (or use --dry-run)"
-    );
-    let directory = tempfile::Builder::new()
-        .prefix("lightos-services.")
-        .permissions(fs::Permissions::from_mode(0o700))
-        .tempdir()?;
-    for (name, source) in [
-        (
-            "scripts/service-install.sh",
-            include_str!("../scripts/service-install.sh"),
-        ),
-        (
-            "scripts/service-bootstrap.sh",
-            include_str!("../scripts/service-bootstrap.sh"),
-        ),
-        (
-            "scripts/service-activation.sh",
-            include_str!("../scripts/service-activation.sh"),
-        ),
-        ("systemd/lightos-remoted-transport.service", TRANSPORT),
-        ("systemd/lightos-remoted-session.service", SESSION),
-    ] {
-        let path = directory.path().join(name);
-        fs::create_dir_all(path.parent().unwrap())?;
-        fs::write(path, source)?;
-    }
-    let mut command = Command::new("/bin/bash");
-    command.arg(directory.path().join(if package {
-        "scripts/service-bootstrap.sh"
-    } else {
-        "scripts/service-install.sh"
-    }));
-    if options.snapshot {
-        command.arg("--snapshot");
-    }
-    if options.remove {
-        command.arg("--remove");
-    }
-    if !package {
-        if rollback {
-            command.arg("--rollback");
-        } else {
-            command.arg("--binary").arg(std::env::current_exe()?);
-        }
-        if options.dry_run {
-            command.arg("--dry-run");
-        }
-        if options.stage_only {
-            command.arg("--stage-only");
-        }
-    }
-    if let Some(root) = options.test_root {
-        command.arg("--test-root").arg(root);
-    }
-    let status = command.status().context("run embedded service installer")?;
-    ensure!(
-        status.success(),
-        "service installer failed: {status}; inspect its recovery output"
-    );
-    Ok(())
+    NativeInstaller.install(options, rollback)
 }
 
-fn legacy_service(options: ServiceOptions, rollback: bool) -> Result<()> {
-    ensure!(
-        options.dry_run || options.test_root.is_some() || unsafe { libc::geteuid() } == 0,
-        "service installation requires root; run with sudo (or use --dry-run)"
-    );
-    let directory = tempfile::Builder::new()
-        .prefix("lightos-installer.")
-        .permissions(fs::Permissions::from_mode(0o700))
-        .tempdir()?;
-    for (name, source) in [
-        ("scripts/install.sh", include_str!("../scripts/install.sh")),
-        (
-            "scripts/activation.sh",
-            include_str!("../scripts/activation.sh"),
-        ),
-        (
-            "systemd/95-session.conf",
-            include_str!("../systemd/95-session.conf"),
-        ),
-        (
-            "systemd/lightos-remote-desktop-session.service",
-            include_str!("../systemd/lightos-remote-desktop-session.service"),
-        ),
-        (
-            "systemd/90-native.conf",
-            include_str!("../systemd/90-native.conf"),
-        ),
-    ] {
-        let path = directory.path().join(name);
-        fs::create_dir_all(path.parent().unwrap())?;
-        fs::write(path, source)?;
+/// Parsed only inside the host. Credentials never become process arguments.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostSettings {
+    pub arguments: Vec<String>,
+}
+impl HostSettings {
+    pub fn from_environment() -> Result<Self> {
+        use clap::{CommandFactory, Parser};
+        let config = crate::config::Config::try_parse_from(["lightos-remoted"])?;
+        config.validate()?;
+        let command = crate::config::Config::command();
+        let mut arguments = Vec::new();
+        for argument in command.get_arguments() {
+            let (Some(name), Some(env)) = (argument.get_long(), argument.get_env()) else {
+                continue;
+            };
+            if let Some(value) = std::env::var_os(env) {
+                let value = value
+                    .into_string()
+                    .map_err(|_| anyhow::anyhow!("service configuration must be valid Unicode"))?;
+                if argument.get_action().takes_values() {
+                    arguments.push(format!("--{name}"));
+                    arguments.push(value);
+                } else if value == "true" || value == "1" {
+                    arguments.push(format!("--{name}"));
+                }
+            }
+        }
+        Ok(Self { arguments })
     }
-    let mut command = Command::new("/bin/bash");
-    command.arg(directory.path().join("scripts/install.sh"));
-    if rollback {
-        command.arg("--rollback");
-    } else {
-        command.arg("--binary").arg(std::env::current_exe()?);
+    pub fn config(&self) -> Result<crate::config::Config> {
+        use clap::{CommandFactory, FromArgMatches};
+        let matches = crate::config::Config::command()
+            .mut_args(|argument| argument.env(None::<&str>))
+            .try_get_matches_from(
+                std::iter::once("lightos-remoted").chain(self.arguments.iter().map(String::as_str)),
+            )?;
+        let config = crate::config::Config::from_arg_matches(&matches)?;
+        config.validate()?;
+        Ok(config)
     }
-    if options.dry_run {
-        command.arg("--dry-run");
-    } else if !options.stage_only {
-        command.arg("--activate");
+    pub fn load(path: &Path) -> Result<Self> {
+        let bytes = crate::private_storage::current()
+            .read(path, 64 * 1024)?
+            .context("service configuration missing")?;
+        Ok(serde_json::from_slice(&bytes)?)
     }
-    if let Some(root) = options.test_root {
-        command.arg("--test-root").arg(root);
+    pub fn save(&self, path: &Path) -> Result<()> {
+        self.config()?;
+        crate::private_storage::current().write(path, &serde_json::to_vec(self)?)
     }
-    let status = command
-        .status()
-        .context("run embedded transactional installer")?;
-    ensure!(
-        status.success(),
-        "service installer failed: {status}; inspect its recovery output"
-    );
-    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn service_config_validates_credentials_and_rejects_unknown_options() {
+        let mut settings = HostSettings {
+            arguments: vec![
+                "--password".into(),
+                "service-test-password".into(),
+                "--port".into(),
+                "18766".into(),
+            ],
+        };
+        let config = settings.config().unwrap();
+        assert_eq!(config.port, 18766);
+        assert_eq!(config.password, "service-test-password");
+        settings.arguments.push("--unknown-option".into());
+        assert!(settings.config().is_err());
+        assert!(HostSettings { arguments: vec![] }.config().is_err());
+    }
+    #[test]
+    fn installed_credentials_use_private_storage() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("private/host.json");
+        let settings = HostSettings {
+            arguments: vec!["--password".into(), "service-test-password".into()],
+        };
+        settings.save(&path).unwrap();
+        assert_eq!(
+            HostSettings::load(&path)
+                .unwrap()
+                .config()
+                .unwrap()
+                .password,
+            "service-test-password"
+        );
+    }
 }

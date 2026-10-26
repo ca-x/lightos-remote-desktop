@@ -5,10 +5,10 @@ resolver = "3"
 [package]
 name = "lightos-remote-desktop"
 license = "MIT"
-version = "0.1.18"
+version = "0.1.19"
 edition = "2024"
 rust-version = "1.88"
-description = "A native Rust browser remote desktop for LightOS"
+description = "A cross-platform Rust remote desktop host for browser clients"
 
 [[bin]]
 name = "lightos-remoted"
@@ -28,19 +28,16 @@ rustls-pemfile = { version = "2", optional = true }
 stream-scheduler = { path = "crates/stream-scheduler" }
 media-codec = { path = "crates/media-codec" }
 display-control = { path = "crates/display-control" }
-platform-detect = { path = "crates/platform-detect" }
-desktop-config = { path = "crates/desktop-config" }
 anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 bytes = "1"
+dirs = "6"
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 libc = "0.2"
 memmap2 = "0.9"
-libwayshot = { version = "0.9", default-features = false }
-libpulse-binding = "2.30.1"
 opus = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -56,6 +53,13 @@ tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 turbojpeg = { version = "1.5", default-features = false, features = ["pkg-config"] }
+arboard = { version = "3.7", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+platform-detect = { path = "crates/platform-detect" }
+desktop-config = { path = "crates/desktop-config" }
+libwayshot = { version = "0.9", default-features = false }
+libpulse-binding = "2.30.1"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
@@ -67,7 +71,19 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 xkbcommon = "0.9"
 x11rb = { version = "0.14", features = ["randr", "xtest", "shm", "damage"] }
 enigo = { version = "0.6.1", default-features = false, features = ["x11rb"] }
-arboard = { version = "3.7", default-features = false }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+enigo = { version = "0.6.1", default-features = false, features = ["platform_specific"] }
+keycode = "1.0.0"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-capture = "2.0.1"
+windows-service = "0.8.1"
+wasapi = "0.26"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_RemoteDesktop", "Win32_System_Environment", "Win32_System_StationsAndDesktops", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem", "Win32_System_Memory", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_System_JobObjects", "Win32_UI_Shell", "Win32_System_Com"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+screencapturekit = { version = "11.1.0", features = ["macos_13_0"] }
 
 [dev-dependencies]
 openh264 = { version = "0.9.9", default-features = false, features = ["source"] }

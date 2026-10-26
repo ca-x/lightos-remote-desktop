@@ -25,6 +25,7 @@ mod tests {
         assert_eq!(settings.port, 18766);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn rejects_runtime_paths_that_exceed_hyprland_socket_budget() {
         let mut settings = config(&["test", "--password", "some-long-secret"]);
@@ -65,6 +66,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn x11_attachment_requires_local_display_and_does_not_mix_session_modes() {
         let base = ["test", "--password", "some-long-secret"];
@@ -101,6 +103,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn service_runtime_default_preserves_explicit_targets() {
         let default = PathBuf::from("/run/lrd-session");
@@ -193,18 +196,21 @@ pub struct Config {
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_QUALITY", default_value_t = 75)]
     pub quality: u8,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_RUNTIME_DIR")]
+    #[arg(hide = !cfg!(target_os = "linux"))]
     pub runtime_dir: Option<PathBuf>,
     #[arg(
         long,
         env = "LIGHTOS_REMOTE_DESKTOP_SESSION_RUNTIME",
         conflicts_with_all = ["wayland_socket", "x11_display"]
     )]
+    #[arg(hide = !cfg!(target_os = "linux"))]
     pub session_runtime: Option<PathBuf>,
     #[arg(
         long,
         env = "LIGHTOS_REMOTE_DESKTOP_WAYLAND_SOCKET",
         conflicts_with = "x11_display"
     )]
+    #[arg(hide = !cfg!(target_os = "linux"))]
     pub wayland_socket: Option<PathBuf>,
     /// Attach to one local X11 display (for example, :0 or :0.0).
     #[arg(
@@ -212,11 +218,14 @@ pub struct Config {
         env = "LIGHTOS_REMOTE_DESKTOP_X11_DISPLAY",
         conflicts_with = "physical_wayland_socket"
     )]
+    #[arg(hide = !cfg!(target_os = "linux"))]
     pub x11_display: Option<String>,
     /// Exact X11 authorization file; defaults to XAUTHORITY or ~/.Xauthority.
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_XAUTHORITY")]
+    #[arg(hide = !cfg!(target_os = "linux"))]
     pub xauthority: Option<PathBuf>,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_PHYSICAL_WAYLAND_SOCKET")]
+    #[arg(hide = !cfg!(target_os = "linux"))]
     pub physical_wayland_socket: Option<PathBuf>,
     /// Display protocol override, independent of distribution and desktop configuration flavor.
     #[arg(
@@ -224,8 +233,10 @@ pub struct Config {
         env = "LIGHTOS_REMOTE_DESKTOP_DISPLAY_BACKEND",
         default_value = "auto"
     )]
+    #[arg(hide = !cfg!(target_os = "linux"))]
     pub display_backend: display_control::DisplayBackend,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_DESKTOP_CONFIG")]
+    #[arg(hide = !cfg!(target_os = "linux"))]
     pub desktop_config: Option<PathBuf>,
     #[arg(
         long,
@@ -233,10 +244,13 @@ pub struct Config {
         value_enum,
         default_value = "auto"
     )]
+    #[arg(hide = !cfg!(target_os = "linux"))]
     pub desktop_shell: DesktopShell,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_CAGE_BIN", default_value = "cage")]
+    #[arg(hide = !cfg!(target_os = "linux"))]
     pub cage: PathBuf,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_AQUAMARINE_DIR")]
+    #[arg(hide = !cfg!(target_os = "linux"))]
     pub aquamarine_dir: Option<PathBuf>,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_AUDIO", default_value_t = true, action = clap::ArgAction::Set)]
     pub audio: bool,
@@ -253,6 +267,7 @@ impl Config {
         }
     }
 
+    #[cfg(target_os = "linux")]
     pub fn omarchy_path(&self) -> Result<Option<PathBuf>> {
         if self.desktop_shell == DesktopShell::Minimal
             || self.desktop_config.is_some()
@@ -280,8 +295,26 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
-        self.rdp
-            .validate(self.wayland_socket.is_some() || self.x11_display.is_some())?;
+        self.rdp.validate(
+            !cfg!(target_os = "linux")
+                || self.wayland_socket.is_some()
+                || self.x11_display.is_some(),
+        )?;
+        #[cfg(not(target_os = "linux"))]
+        ensure!(
+            self.wayland_socket.is_none()
+                && self.physical_wayland_socket.is_none()
+                && self.x11_display.is_none()
+                && self.xauthority.is_none()
+                && self.runtime_dir.is_none()
+                && self.session_runtime.is_none()
+                && self.desktop_config.is_none()
+                && self.aquamarine_dir.is_none()
+                && self.desktop_shell == DesktopShell::Auto
+                && self.display_backend == display_control::DisplayBackend::Auto
+                && self.cage == PathBuf::from("cage"),
+            "Linux desktop/session options are unsupported on this platform"
+        );
         let (width, height) = self.dimensions()?;
         ensure!(
             (320..=3840).contains(&width) && (200..=2160).contains(&height),
@@ -341,6 +374,7 @@ impl Config {
                 "Wayland socket must be an absolute path"
             );
         }
+        #[cfg(target_os = "linux")]
         if let Some(display) = &self.x11_display {
             crate::session::validate_local_x11_display(display)?;
         }
@@ -364,6 +398,7 @@ impl Config {
                 directory.is_absolute(),
                 "runtime directory must be absolute"
             );
+            #[cfg(target_os = "linux")]
             crate::session::validate_runtime_socket_paths(directory)?;
         }
         Ok(())

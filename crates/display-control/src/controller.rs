@@ -1,11 +1,16 @@
+#[cfg(target_os = "linux")]
 use crate::{
     DesktopEnvironment, DisplayCapabilities, DisplayController, DisplayMode, DisplayOutput,
     HyprlandDisplay, KScreenDisplay, MutterDisplay, SessionTarget, WaylandDisplay, WlrootsDisplay,
     X11Display,
 };
+#[cfg(target_os = "linux")]
 use anyhow::{Result, bail};
+#[cfg(target_os = "linux")]
 use futures_util::future::BoxFuture;
-use std::{str::FromStr, sync::Arc};
+use std::str::FromStr;
+#[cfg(target_os = "linux")]
+use std::sync::Arc;
 
 /// Protocol selection is independent of distribution and configuration initialization.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -34,6 +39,7 @@ impl FromStr for DisplayBackend {
         }
     }
 }
+#[cfg(target_os = "linux")]
 impl DisplayBackend {
     pub fn controller(
         self,
@@ -102,10 +108,12 @@ impl DisplayBackend {
     }
 }
 // Query fallback preserves output enumeration when an optional management protocol is absent.
+#[cfg(target_os = "linux")]
 struct QueryFallback {
     primary: Arc<dyn DisplayController>,
     fallback: WaylandDisplay,
 }
+#[cfg(target_os = "linux")]
 impl DisplayController for QueryFallback {
     fn outputs(&self) -> Result<Vec<DisplayOutput>> {
         self.primary.outputs().or_else(|primary| {
@@ -127,7 +135,9 @@ impl DisplayController for QueryFallback {
     }
 }
 /// Authorization belongs to the session, rather than to desktop or distribution detection.
+#[cfg(target_os = "linux")]
 struct ReadOnly(Arc<dyn DisplayController>);
+#[cfg(target_os = "linux")]
 impl DisplayController for ReadOnly {
     fn outputs(&self) -> Result<Vec<DisplayOutput>> {
         self.0.outputs()
@@ -146,7 +156,7 @@ impl DisplayController for ReadOnly {
         Box::pin(async { bail!("resize requires an owned desktop session") })
     }
 }
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     #[tokio::test]

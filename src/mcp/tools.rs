@@ -40,7 +40,7 @@ pub(super) struct Desktop {
     pub(super) release_input: Arc<dyn Fn() -> bool + Send + Sync>,
     pub(super) privacy_state: Arc<dyn Fn() -> Option<u64> + Send + Sync>,
     #[cfg(test)]
-    pub(super) text_probe: Option<Arc<crate::wayland::TextProbe>>,
+    pub(super) text_probe: Option<Arc<crate::backend::TextProbe>>,
 }
 
 impl Desktop {

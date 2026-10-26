@@ -20,10 +20,7 @@ use axum::{
     routing::get,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use display_control::{
-    DesktopEnvironment, DisplayController, DisplayMode, DisplayOutput, SessionTarget,
-    WaylandDisplay, X11Display,
-};
+use display_control::{DisplayController, DisplayMode, DisplayOutput};
 use futures_util::{SinkExt, Stream, StreamExt, stream::SplitSink};
 use media_codec::{
     BackendPreference, CapabilityCache, EncoderBackend, EncoderFactory, EncoderRate,
@@ -39,15 +36,15 @@ use tokio::{
 };
 
 use crate::{
-    audio::{AudioFormat, AudioStream},
+    audio::{AudioCapture, AudioCaptureFactory, AudioFormat},
     audio_channel::{self, AudioHub},
     backend::{self, BackendKind, BackendReport, DesktopBackend, InputCommand},
     clipboard::ImageUpload,
     config::Config,
-    session::Session,
+    platform::{HostPlatform, HostSession, SessionLifecycle},
 };
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod scaling_tests;
 
 static NEXT_CONNECTION: AtomicU64 = AtomicU64::new(1);
@@ -78,8 +75,11 @@ pub struct AppState {
     pub rdp: Arc<crate::rdp::settings::Manager>,
     pub(crate) mcp: Arc<crate::mcp::TokenStore>,
     pub backend: Arc<dyn DesktopBackend>,
-    pub session: Arc<Mutex<Session>>,
+    pub session: Arc<Mutex<Box<dyn SessionLifecycle>>>,
+    host: Arc<dyn HostPlatform>,
+    audio: Arc<dyn AudioCaptureFactory>,
     controller: Arc<AtomicBool>,
+    input_failed: Arc<AtomicBool>,
     audio_hub: Arc<AudioHub>,
     cursor_hub: Arc<crate::cursor::Hub>,
     desktop: DesktopMode,
@@ -105,79 +105,40 @@ struct PhysicalCapabilities {
     result: Result<BackendReport, String>,
 }
 
-fn session_displays(config: &Config, session: &Session, owned: bool) -> Arc<dyn DisplayController> {
-    let target = session.target();
-    match config.display_backend.controller(
-        target.clone(),
-        if target.wayland_socket.is_none() && target.x11_display.is_some() {
-            DesktopEnvironment::X11
-        } else {
-            target.matching_environment_hint()
-        },
-        session.signature.as_deref(),
-        owned,
-    ) {
-        Ok(controller) => controller,
-        Err(error) => {
-            tracing::warn!(%error, "display backend unavailable");
-            match target.wayland_socket {
-                Some(socket) => Arc::new(WaylandDisplay::new(socket)),
-                None => Arc::new(X11Display::new(target)),
-            }
-        }
-    }
-}
-
-// Capture can still use the X11 root window without RandR output metadata.
-fn physical_output_selection(
-    backend: BackendKind,
-    requested: Option<&str>,
-    displays: &dyn DisplayController,
-) -> anyhow::Result<(Vec<DisplayOutput>, Option<String>)> {
-    use anyhow::{Context, ensure};
-    if backend == BackendKind::Portal {
-        ensure!(
-            requested.is_none(),
-            "Portal 显示器由本机授权窗口选择，请重新连接"
-        );
-        return Ok((Vec::new(), None));
-    }
-    let outputs = match displays.outputs() {
-        Ok(outputs) => outputs,
-        Err(error) if backend == BackendKind::X11 && requested.is_none() => {
-            tracing::debug!(%error, "X11 output metadata unavailable; capturing the root window");
-            return Ok((Vec::new(), None));
-        }
-        Err(error) => return Err(error).context("物理显示器枚举失败"),
-    };
-    if backend == BackendKind::X11 && requested.is_none() && outputs.is_empty() {
-        return Ok((outputs, None));
-    }
-    let selected = match requested {
-        Some(name) => outputs.iter().find(|output| output.name == name),
-        None => outputs.first(),
-    }
-    .ok_or_else(|| anyhow::anyhow!("所选显示器不可用，请刷新显示器列表"))?
-    .name
-    .clone();
-    Ok((outputs, Some(selected)))
-}
-
 impl AppState {
-    pub fn new<B: DesktopBackend + 'static>(config: Config, backend: B, session: Session) -> Self {
+    #[cfg(target_os = "linux")]
+    pub fn new<B: DesktopBackend + 'static>(
+        config: Config,
+        backend: B,
+        session: crate::session::Session,
+    ) -> Self {
         Self::with_backend(config, Arc::new(backend), session)
     }
+    #[cfg(target_os = "linux")]
     pub fn with_backend(
         config: Config,
         backend: Arc<dyn DesktopBackend>,
-        session: Session,
+        session: crate::session::Session,
     ) -> Self {
-        let desktop = if !session.is_owned() {
-            DesktopMode::Physical
-        } else {
+        let context = crate::platform::linux::context(&config, backend, session);
+        Self::with_host(config, context)
+    }
+    pub fn with_host(config: Config, context: HostSession) -> Self {
+        let HostSession {
+            backend,
+            displays,
+            lifecycle,
+            audio,
+            output,
+            outputs,
+        } = context;
+        let audio: Arc<dyn AudioCaptureFactory> =
+            Arc::new(crate::audio::SessionAudio::new(audio, backend.clone()));
+        let desktop = if lifecycle.is_owned() {
             DesktopMode::Virtual
+        } else {
+            DesktopMode::Physical
         };
-        let displays = session_displays(&config, &session, desktop == DesktopMode::Virtual);
         let mcp = Arc::new(crate::mcp::TokenStore::open(crate::mcp::settings_path(
             &config,
         )));
@@ -190,13 +151,16 @@ impl AppState {
             displays,
             config: Arc::new(config),
             backend,
-            session: Arc::new(Mutex::new(session)),
+            session: Arc::new(Mutex::new(lifecycle)),
+            host: crate::platform::current(),
+            audio,
             controller: Arc::new(AtomicBool::new(false)),
+            input_failed: Arc::new(AtomicBool::new(false)),
             audio_hub: Arc::new(AudioHub::default()),
             cursor_hub: Arc::new(crate::cursor::Hub::default()),
             desktop,
-            output: None,
-            outputs: Vec::new(),
+            output,
+            outputs,
             transient_backend: false,
             #[cfg(test)]
             encode_pause: None,
@@ -206,6 +170,12 @@ impl AppState {
     /// Cancel agent sessions and queued input before HTTP drains its connections.
     pub fn shutdown_mcp(&self) {
         self.mcp.shutdown();
+    }
+
+    /// A failed input-release acknowledgement poisons every controller sharing
+    /// this host, including connections using a transient physical backend.
+    pub fn input_failed(&self) -> bool {
+        self.input_failed.load(Ordering::Acquire)
     }
 
     #[cfg(feature = "rdp")]
@@ -225,18 +195,16 @@ impl AppState {
         })
     }
 
-    fn physical_target(&self) -> anyhow::Result<SessionTarget> {
-        Session::physical_target(&self.config)
-    }
-
     // Blocking probes use an explicit target and never open a consent dialog.
     fn probe_physical(
         &self,
         refresh: bool,
         cancelled: Option<&AtomicBool>,
     ) -> Result<BackendReport, String> {
-        let target = self.physical_target().map_err(|error| error.to_string())?;
-        let target_key = format!("{target:?}");
+        let target_key = self
+            .host
+            .physical_key(&self.config)
+            .map_err(|error| error.to_string())?;
         if !refresh {
             let cache = self
                 .physical_capabilities
@@ -249,7 +217,10 @@ impl AppState {
                 return cached.result.clone();
             }
         }
-        let result = backend::probe(&target, true, cancelled).map_err(|error| format!("{error:#}"));
+        let result = self
+            .host
+            .probe_physical(&self.config, cancelled)
+            .map_err(|error| format!("{error:#}"));
         *self
             .physical_capabilities
             .lock()
@@ -272,8 +243,7 @@ impl AppState {
         // A transient physical connection still belongs to the same service.
         // Its base configuration determines whether the retained virtual
         // desktop can be selected again.
-        let virtual_available =
-            self.config.wayland_socket.is_none() && self.config.x11_display.is_none();
+        let virtual_available = self.host.supports_virtual(&self.config);
         json!([
             {"mode":"virtual","label":"虚拟桌面","available":virtual_available,"reason":if virtual_available { "" } else { "服务以外部桌面模式启动" }},
             {"mode":"physical","label":"物理桌面","available":reason.is_none(),"reason":reason,"capabilities":physical.ok()}
@@ -298,47 +268,20 @@ impl AppState {
             return Ok(self);
         }
         ensure!(mode == DesktopMode::Physical, "虚拟桌面不可用");
-        let target = self.physical_target()?;
-        let selection = self
-            .probe_physical(true, Some(&cancelled))
-            .map_err(anyhow::Error::msg)?;
-        let selected_backend = selection.require_available()?;
-        let hint = if target.wayland_socket.is_none() {
-            DesktopEnvironment::X11
-        } else {
-            target.matching_environment_hint()
-        };
-        let displays = self
-            .config
-            .display_backend
-            .controller(target.clone(), hint, None, false)?;
-        // Portal chooses its granted stream; X11 can capture the root without RandR.
-        let (outputs, selected) = physical_output_selection(
-            selected_backend,
-            request.output.as_deref(),
-            displays.as_ref(),
-        )?;
-        ensure!(!cancelled.load(Ordering::Acquire), "桌面连接已取消");
-        let mut config = (*self.config).clone();
-        config.session_runtime = None;
-        config.wayland_socket = target.wayland_socket.clone();
-        config.x11_display = target.x11_display.clone();
-        config.xauthority = target.xauthority.clone();
-        let session = Session::start_cancellable(&config, cancelled.clone())?;
-        if selected_backend == BackendKind::Portal {
-            let _ = authorization.send(());
-        }
-        let backend = backend::start_selected(
-            selected_backend,
-            target,
-            config.fps,
-            config.quality,
-            selected.clone(),
-            cancelled.clone(),
-        )
-        .context("物理桌面采集或输入初始化失败")?;
-        let backend = backend::guarded::attach(backend, session.target())?;
-        ensure!(!cancelled.load(Ordering::Acquire), "桌面连接已取消");
+        let context = self
+            .host
+            .open_physical(&self.config, request.output, cancelled, authorization)
+            .context("物理桌面采集或输入初始化失败")?;
+        let HostSession {
+            backend,
+            displays,
+            lifecycle,
+            audio,
+            output,
+            outputs,
+        } = context;
+        let audio: Arc<dyn AudioCaptureFactory> =
+            Arc::new(crate::audio::SessionAudio::new(audio, backend.clone()));
         tracing::info!(connection_id, elapsed_ms = started.elapsed().as_millis() as u64, kind = ?backend.kind(), "physical capture and input ready");
         Ok(Self {
             rdp: self.rdp,
@@ -348,12 +291,15 @@ impl AppState {
             displays,
             config: self.config,
             controller: self.controller,
+            input_failed: self.input_failed,
             audio_hub: self.audio_hub,
             backend,
             cursor_hub: self.cursor_hub,
-            session: Arc::new(Mutex::new(session)),
+            session: Arc::new(Mutex::new(lifecycle)),
+            host: self.host,
+            audio,
             desktop: mode,
-            output: selected,
+            output,
             outputs,
             transient_backend: true,
             #[cfg(test)]
@@ -607,20 +553,11 @@ async fn desktops(State(state): State<AppState>) -> impl IntoResponse {
         let options = state.desktop_options(physical.clone());
         let outputs = (|| -> anyhow::Result<Vec<DisplayOutput>> {
             let selection = physical.map_err(anyhow::Error::msg)?;
-            if selection.require_available()? == BackendKind::Portal {
+            selection.require_available()?;
+            if selection.requires_consent() {
                 return Ok(Vec::new());
             }
-            let target = state.physical_target()?;
-            let hint = if target.wayland_socket.is_none() {
-                DesktopEnvironment::X11
-            } else {
-                target.matching_environment_hint()
-            };
-            state
-                .config
-                .display_backend
-                .controller(target, hint, None, false)?
-                .outputs()
+            state.host.physical_displays(&state.config)?.outputs()
         })();
         (options, outputs)
     })
@@ -661,20 +598,33 @@ pub(crate) struct ControllerLease {
 }
 
 impl ControllerLease {
-    pub(crate) async fn release(self) {
+    pub(crate) async fn release(self) -> bool {
         // Worker joins must not block the async socket executor. The lease's
         // Drop keeps the controller gate until its input workers have stopped.
-        let _ = tokio::task::spawn_blocking(move || drop(self)).await;
+        let failed = self.state.input_failed.clone();
+        tokio::task::spawn_blocking(move || drop(self))
+            .await
+            .is_ok()
+            && !failed.load(Ordering::Acquire)
     }
 }
 
 impl Drop for ControllerLease {
     fn drop(&mut self) {
         self.state.audio_hub.stop();
-        if self.state.transient_backend || !self.state.backend.release_input() {
+        let released = self.state.backend.release_input();
+        if !released {
+            self.state.input_failed.store(true, Ordering::Release);
+            tracing::error!(
+                "input release unacknowledged; barring controllers until host recovery"
+            );
+        }
+        if self.state.transient_backend || !released {
             self.state.backend.stop();
         }
-        self.state.controller.store(false, Ordering::Release);
+        if released && !self.state.input_failed() {
+            self.state.controller.store(false, Ordering::Release);
+        }
     }
 }
 
@@ -741,10 +691,10 @@ async fn upgrade(
                 Ok(Ok(selected)) => {
                     lease.state = selected.clone();
                     let end = connection(socket, selected, connection_id, started).await;
-                    lease.release().await;
+                    let released = lease.release().await;
                     tracing::info!(connection_id, "desktop controller released");
                     if let Some(mut end) = end {
-                        if end.release_requested {
+                        if end.release_requested && released {
                             let acknowledgement = Message::Text(json!({"type":"released"}).to_string().into());
                             let _ = timeout(Duration::from_secs(1), end.writer.send(acknowledgement)).await;
                         }
@@ -823,18 +773,14 @@ async fn upgrade_audio(
         )
             .into_response();
     };
-    let session = state.session.lock().unwrap();
-    let source = session.audio_source.clone();
-    let server = session.pulse_server.clone();
-    drop(session);
-    let Some(source) = source.filter(|_| state.config.audio) else {
+    if !state.config.audio || !state.audio.available() {
         return (StatusCode::CONFLICT, "Audio unavailable").into_response();
-    };
+    }
     upgrade
         .max_message_size(1024)
         .max_frame_size(1024)
         .on_upgrade(move |socket| {
-            audio_channel::connection(socket, lease, server, source, request.codec)
+            audio_channel::connection(socket, lease, state.audio, state.backend, request.codec)
         })
 }
 
@@ -860,12 +806,8 @@ async fn connection(
         .as_ref()
         .map(|frame| (frame.width, frame.height));
     let (width, height) = dimensions?;
-    let audio_source = state
-        .session
-        .lock()
-        .ok()
-        .and_then(|session| session.audio_source.clone());
-    let audio_available = state.config.audio && audio_source.is_some();
+    let audio_available = state.config.audio && state.audio.available();
+    let audio_source = audio_available.then_some("available");
     let audio_session = audio_available.then(|| state.audio_hub.start());
     let display_capabilities = state.displays.capabilities().await;
     let cursor_scope = state.cursor_hub.start(state.backend.clone());
@@ -1225,7 +1167,7 @@ async fn connection(
                                 }
                                 continue;
                             }
-                            match handle_command(&state, &text, &mut audio, audio_source.as_deref(), &mut clipboard_upload).await {
+                            match handle_command(&state, &text, &mut audio, audio_source, &mut clipboard_upload).await {
                                 Ok(response) => response,
                                 Err(error) => Some(error_message(&error.to_string())),
                             }
@@ -1239,6 +1181,11 @@ async fn connection(
                 let video_packet = matches!(&message, Message::Binary(bytes) if matches!(bytes.first(), Some(1 | 3)));
                 if let Some(epoch) = outgoing_epoch {
                     discard_stale_frame!(epoch);
+                }
+                let audio_packet = matches!(&message, Message::Binary(bytes) if matches!(bytes.first(), Some(2 | 4)));
+                if audio_packet && !frame_privacy_current(state.backend.as_ref(), current_epoch) {
+                    audio.take();
+                    continue;
                 }
                 if video_packet && state.backend.paused() {
                     continue;
@@ -1418,7 +1365,10 @@ async fn receive_commands(
     false
 }
 
-async fn read_audio(audio: &mut Option<AudioStream>, buffer: &mut [u8]) -> std::io::Result<usize> {
+async fn read_audio(
+    audio: &mut Option<Box<dyn AudioCapture>>,
+    buffer: &mut [u8],
+) -> std::io::Result<usize> {
     match audio {
         Some(stream) => stream.read(buffer).await,
         None => std::future::pending().await,
@@ -1428,7 +1378,7 @@ async fn read_audio(audio: &mut Option<AudioStream>, buffer: &mut [u8]) -> std::
 async fn handle_command(
     state: &AppState,
     text: &str,
-    audio: &mut Option<AudioStream>,
+    audio: &mut Option<Box<dyn AudioCapture>>,
     source: Option<&str>,
     clipboard_upload: &mut Option<ImageUpload>,
 ) -> anyhow::Result<Option<Message>> {
@@ -1449,11 +1399,9 @@ async fn handle_command(
             timeout(
                 Duration::from_millis(500),
                 state.backend.input().send(InputCommand::Chord {
-                    codes: if value.get("shift").and_then(|value| value.as_bool()) == Some(true) {
-                        vec![29, 42, 47]
-                    } else {
-                        vec![29, 47]
-                    },
+                    codes: state.backend.paste_keycodes(
+                        value.get("shift").and_then(|value| value.as_bool()) == Some(true),
+                    ),
                 }),
             )
             .await??;
@@ -1502,13 +1450,10 @@ async fn handle_command(
                         timeout(
                             Duration::from_millis(500),
                             state.backend.input().send(InputCommand::Chord {
-                                codes: if value.get("shift").and_then(|value| value.as_bool())
-                                    == Some(true)
-                                {
-                                    vec![29, 42, 47]
-                                } else {
-                                    vec![29, 47]
-                                },
+                                codes: state.backend.paste_keycodes(
+                                    value.get("shift").and_then(|value| value.as_bool())
+                                        == Some(true),
+                                ),
                             }),
                         )
                         .await??;
@@ -1573,9 +1518,11 @@ async fn handle_command(
             audio.take();
             if value.get("enabled").and_then(|value| value.as_bool()) == Some(true) {
                 anyhow::ensure!(state.config.audio, "audio disabled");
-                let source = source.ok_or_else(|| anyhow::anyhow!("audio unavailable"))?;
-                let server = state.session.lock().unwrap().pulse_server.clone();
-                *audio = Some(AudioStream::new(server, source.to_owned())?);
+                anyhow::ensure!(
+                    source.is_some() && state.audio.available(),
+                    "audio unavailable"
+                );
+                *audio = Some(state.audio.start(AudioFormat::Pcm)?);
             }
         }
         _ => {
@@ -1595,10 +1542,78 @@ fn error_message(message: &str) -> Message {
     Message::Text(json!({"type":"error","message":message}).to_string().into())
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use crate::{platform::linux::physical_output_selection, session::Session};
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn unacknowledged_input_release_bars_handoff_for_base_and_transient_backends() {
+        use clap::Parser;
+        struct BarrierBackend {
+            acknowledge: bool,
+            stopped: AtomicBool,
+            input: mpsc::Sender<InputCommand>,
+        }
+        impl DesktopBackend for BarrierBackend {
+            fn kind(&self) -> BackendKind {
+                BackendKind::X11
+            }
+            fn frames(&self) -> watch::Receiver<Option<Arc<backend::Frame>>> {
+                watch::channel(None).1
+            }
+            fn input(&self) -> mpsc::Sender<InputCommand> {
+                self.input.clone()
+            }
+            fn release_input(&self) -> bool {
+                self.acknowledge
+            }
+            fn stop(&self) {
+                self.stopped.store(true, Ordering::Release);
+            }
+        }
+        for transient in [false, true] {
+            for acknowledge in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let mut config = Config::try_parse_from(["test"]).unwrap();
+                config.mcp_settings = Some(directory.path().join("mcp.json"));
+                config.rdp.rdp_settings = Some(directory.path().join("rdp.json"));
+                let backend = Arc::new(BarrierBackend {
+                    acknowledge,
+                    stopped: AtomicBool::new(false),
+                    input: mpsc::channel(1).0,
+                });
+                let session = Session::attached(
+                    directory.path().into(),
+                    directory.path().join("wayland-test"),
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+                let state = AppState::with_backend(config, backend.clone(), session);
+                let mut connection = state.clone();
+                connection.transient_backend = transient;
+                state.controller.store(true, Ordering::Release);
+                let released = ControllerLease { state: connection }.release().await;
+                assert_eq!(released, acknowledge);
+                assert_eq!(state.input_failed(), !acknowledge);
+                assert_eq!(
+                    backend.stopped.load(Ordering::Acquire),
+                    transient || !acknowledge
+                );
+                assert_eq!(
+                    state
+                        .controller
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok(),
+                    acknowledge,
+                    "a missing release acknowledgement must prevent every new controller"
+                );
+            }
+        }
+    }
 
     #[test]
     fn physical_connection_still_advertises_the_services_virtual_desktop() {

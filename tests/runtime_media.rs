@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 //! Explicit wire check against an isolated candidate with the test-only password below.
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};

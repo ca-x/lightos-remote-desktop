@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 
 #[tokio::test]

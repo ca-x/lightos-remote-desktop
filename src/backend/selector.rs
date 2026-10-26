@@ -1,8 +1,8 @@
 //! Automatic backend selection within one already resolved desktop session.
+use super::{BackendAvailability, BackendReport};
 use super::{BackendKind, DesktopBackend};
 use anyhow::{Context, Result, bail, ensure};
 use display_control::SessionTarget;
-use serde::Serialize;
 use std::{
     sync::{
         Arc,
@@ -10,40 +10,6 @@ use std::{
     },
     time::Duration,
 };
-
-#[derive(Clone, Debug, Serialize)]
-pub struct BackendAvailability {
-    pub backend: BackendKind,
-    pub available: bool,
-    pub requires_consent: bool,
-    pub reason: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct BackendReport {
-    /// A candidate is not ready until it has produced its first validated frame.
-    pub selected: Option<BackendKind>,
-    pub candidates: Vec<BackendAvailability>,
-}
-impl BackendReport {
-    pub fn require_available(&self) -> Result<BackendKind> {
-        self.selected.ok_or_else(|| {
-            anyhow::anyhow!(
-                "desktop capture/input unavailable: {}",
-                self.candidates
-                    .iter()
-                    .filter_map(|candidate| candidate.reason.as_deref())
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            )
-        })
-    }
-    pub fn requires_consent(&self) -> bool {
-        self.candidates
-            .iter()
-            .any(|candidate| Some(candidate.backend) == self.selected && candidate.requires_consent)
-    }
-}
 
 fn candidate(
     backend: BackendKind,

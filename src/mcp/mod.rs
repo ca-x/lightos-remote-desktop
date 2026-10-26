@@ -203,5 +203,5 @@ async fn revoke_token(State(store): State<Arc<TokenStore>>, Path(id): Path<Strin
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests;

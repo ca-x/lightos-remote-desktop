@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 //! Explicit local integration test; creates its own virtual desktop, never restarts production.
 use serde_json::Value;
 use std::{

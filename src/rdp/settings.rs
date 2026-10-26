@@ -1,18 +1,4 @@
 //! Authenticated, persistent settings for the independently replaceable RDP transport.
-use std::{
-    fs::{self, OpenOptions},
-    io::Read,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::{Path, PathBuf},
-};
-
-#[cfg(any(feature = "rdp", test))]
-use std::{
-    fs::File,
-    io::Write,
-    os::unix::fs::{DirBuilderExt, PermissionsExt},
-};
-
 use anyhow::{Context, Result, ensure};
 use axum::{
     Json, Router,
@@ -24,6 +10,7 @@ use axum::{
     routing::get,
 };
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use tokio::sync::Mutex;
 
 use crate::{config::Config, server::AppState};
@@ -70,16 +57,7 @@ pub struct Manager {
 impl Manager {
     pub fn new(config: &Config) -> Self {
         let path = config.rdp.rdp_settings.clone().or_else(|| {
-            std::env::var_os("XDG_STATE_HOME")
-                .map(PathBuf::from)
-                .filter(|p| p.is_absolute())
-                .or_else(|| {
-                    std::env::var_os("HOME")
-                        .map(PathBuf::from)
-                        .filter(|p| p.is_absolute())
-                        .map(|p| p.join(".local/state"))
-                })
-                .map(|p| p.join("lightos-remote-desktop/rdp/settings.json"))
+            crate::private_storage::state_directory().map(|p| p.join("rdp/settings.json"))
         });
         let initial = Settings {
             enabled: config.rdp.rdp,
@@ -114,7 +92,9 @@ impl Manager {
             #[cfg(feature = "rdp")]
             path,
             config: config.rdp.clone(),
-            attached: (config.wayland_socket.is_some() || config.x11_display.is_some()),
+            attached: (!cfg!(target_os = "linux")
+                || config.wayland_socket.is_some()
+                || config.x11_display.is_some()),
             runtime: Mutex::new(Runtime {
                 settings,
                 invalid_store,
@@ -286,62 +266,12 @@ impl Manager {
     }
 }
 
-fn private_directory(path: &Path) -> Result<()> {
-    let meta = fs::symlink_metadata(path)?;
-    ensure!(
-        meta.is_dir() && meta.uid() == unsafe { libc::geteuid() } && meta.mode() & 0o077 == 0,
-        "RDP state directory must be private and owned by the service user"
-    );
-    Ok(())
-}
-
 fn read_private(path: &Path) -> Result<Option<Vec<u8>>> {
-    let file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-    {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    private_directory(path.parent().context("missing RDP state directory")?)?;
-    let meta = file.metadata()?;
-    ensure!(
-        meta.is_file()
-            && meta.uid() == unsafe { libc::geteuid() }
-            && meta.mode() & 0o077 == 0
-            && meta.len() <= 65536,
-        "RDP state must be a private regular file"
-    );
-    let mut bytes = Vec::new();
-    file.take(65537).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() <= 65536, "RDP state too large");
-    Ok(Some(bytes))
+    crate::private_storage::current().read(path, 65536)
 }
-
 #[cfg(any(feature = "rdp", test))]
 fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
-    let directory = path.parent().context("missing RDP state directory")?;
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(directory)?;
-    private_directory(directory)?;
-    read_private(path)?;
-    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-    temporary
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))?;
-    temporary.write_all(bytes)?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(path).map_err(|error| error.error)?;
-    // Rename is the commit point: a directory fsync failure must not leave the
-    // live listener using the old settings after the new file was committed.
-    if let Err(error) = File::open(directory).and_then(|file| file.sync_all()) {
-        tracing::warn!(%error, "RDP settings committed but directory sync failed");
-    }
-    Ok(())
+    crate::private_storage::current().write(path, bytes)
 }
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -386,7 +316,9 @@ async fn update(State(state): State<AppState>, Json(settings): Json<Settings>) -
         return (StatusCode::BAD_REQUEST, "Port must be 1–65535").into_response();
     }
     if settings.enabled
-        && (state.config.wayland_socket.is_some() || state.config.x11_display.is_some())
+        && (!cfg!(target_os = "linux")
+            || state.config.wayland_socket.is_some()
+            || state.config.x11_display.is_some())
     {
         return StatusCode::CONFLICT.into_response();
     }
@@ -402,10 +334,14 @@ async fn update(State(state): State<AppState>, Json(settings): Json<Settings>) -
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use clap::Parser;
+    use std::{
+        fs,
+        os::unix::fs::{MetadataExt, PermissionsExt},
+    };
 
     fn config(directory: &Path) -> Config {
         let mut config =

@@ -1,5 +1,16 @@
 # Runtime display, media and scheduling boundaries
 
+`HostPlatform` opens the operating system's desktop session and supplies
+`DesktopBackend`, `DisplayController`, `SessionLifecycle` and an
+`AudioCaptureFactory`. `PermissionProvider`, `ServiceInstaller` and `PrivateStorage`
+isolate permission, service and settings APIs. Linux, Windows and macOS are
+selected automatically at the platform boundary. Windows/macOS share the logged-in
+physical desktop; their capability and acceptance limits are documented in
+[cross-platform host support](cross-platform-host.md).
+
+The distribution, desktop and protocol discovery below belongs to the Linux
+adapter and does not select Windows/macOS implementations.
+
 Linux distribution, desktop session and display protocol are independent:
 `platform-detect::Distribution` reads os-release; `OmarchyInstallation` discovers
 configuration installed on disk; `desktop-config` initializes the owned session.

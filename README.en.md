@@ -6,8 +6,14 @@
 
 [简体中文](README.md) | English
 
-A native Rust browser remote desktop service for Linux/LightOS. The runtime
-does not embed CPython or invoke the original Selkies Python launcher.
+A cross-platform remote desktop host written in Rust. Connect to and control
+Linux, Windows and macOS computers from a browser. The runtime does not embed
+CPython or invoke the original Selkies Python launcher.
+
+Experimental Windows/macOS physical-desktop hosts share the browser protocol and
+provide foreground `serve` and one-command `install-service` execution. Linux
+retains its existing virtual desktops and systemd services. See
+[native host installation, permissions and acceptance limits](docs/cross-platform-host.md).
 
 Fit and fullscreen modes can downscale video to the visible device pixels using FIR SIMD and reusable buffers. Quality-first and actual-size modes keep native video. Encoding size remains separate from capture resolution, display modes, normalized input, and cursor coordinates; see the [scaling behavior and measured limits](docs/encoder-scaling.md).
 
@@ -117,7 +123,7 @@ changes create a fresh encoder/keyframe. Automatic, low-latency, smooth and
 quality-first policies adjust pacing and supported encoder bitrate from bounded
 ACK feedback. GPU capture is not implemented in this build.
 
-## AUR installation and updates
+## Linux: AUR installation and updates
 
 The package is `lightos-remoted-bin`; the command is `lightos-remoted` and the
 installed executable is `/usr/lib/lightos-remoted/lightos-remoted`. GitHub
@@ -250,21 +256,22 @@ The installed executable needs neither Node.js nor a frontend directory/server.
 `npm run dev` previews the UI only; use the Rust server for authenticated desktop
 and WebSocket integration. Assets use relative URLs under the existing prefix.
 
-The toolbar's desktop-source selector switches between the persistent virtual
+On Linux, the toolbar's desktop-source selector switches between the persistent virtual
 desktop and an existing same-user Wayland desktop. Physical mode lists active
 outputs and captures/controls one selected monitor, without changing its resolution.
 No physical session means an unavailable option, not a new physical login.
-Physical audio is not yet supported. See `docs/desktop-switching.md` for discovery,
+Linux physical-desktop audio is not yet supported. See `docs/desktop-switching.md` for discovery,
 nonstandard socket configuration and protocol requirements.
 
-GitHub Actions first runs npm ci, frontend typecheck/build/tests, then Rust and
-installer checks. Both test and release-build jobs build the frontend before
-compiling Rust. It then builds a Linux x86_64 archive and
-SHA256 checksum (also available through `workflow_dispatch`). A `v*` tag
-publishes these files to GitHub Releases. Release builds use Ubuntu 22.04 and
-bundle the SIMD JPEG library; Wayland, xkbcommon and glibc remain system libraries.
+GitHub Actions automatically checks the frontend, Rust and installers, then builds
+Linux x86_64, Windows x86_64, macOS ARM64 and macOS Intel x86_64 archives with
+SHA256 checksums. ARM64 macOS builds run natively on `macos-15`; Intel builds use
+`macos-15-intel`. Each job verifies the Rust host architecture before building.
+Pushing a `v*` tag publishes to GitHub Releases only after all platform jobs pass;
+`workflow_dispatch` can also run verification. Linux release builds use Ubuntu
+22.04 and bundle SIMD JPEG; Wayland, xkbcommon and glibc come from the Linux host.
 
-### Install the downloaded executable
+### Linux: install the downloaded executable
 
 ```sh
 ./lightos-remoted install-service --dry-run

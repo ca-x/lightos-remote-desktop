@@ -1,5 +1,4 @@
 use std::{
-    ffi::OsStr,
     io::{Read, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
     path::PathBuf,
@@ -11,10 +10,8 @@ use anyhow::{Context, Result, ensure};
 use axum::serve::{Listener, ListenerExt};
 use clap::{Parser, Subcommand};
 use lightos_remote_desktop::{
-    backend::{self, BackendKind, DesktopBackend},
     config::Config,
     server::{AppState, router},
-    session::Session,
 };
 
 #[derive(Parser)]
@@ -26,12 +23,25 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
-    #[command(about = "Install this binary and both LightOS services, or manage package lifecycle")]
+    #[command(about = "Install the native desktop service, or manage its lifecycle")]
     InstallService(lightos_remote_desktop::install::ServiceOptions),
     #[command(about = "Restore the previous standalone service installation")]
+    #[command(hide = !cfg!(target_os = "linux"))]
     RollbackService(lightos_remote_desktop::install::ServiceOptions),
+    #[cfg(target_os = "windows")]
+    #[command(hide = true)]
+    ServiceRun,
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[command(hide = true)]
+    ServiceHost {
+        #[arg(long)]
+        config_file: PathBuf,
+        #[arg(long)]
+        stop_event: Option<String>,
+    },
     Serve(Config),
     #[command(about = "Own a persistent desktop independently of the HTTP transport")]
+    #[command(hide = !cfg!(target_os = "linux"))]
     DesktopSession(Config),
     Doctor(Config),
     Probe {
@@ -44,8 +54,10 @@ enum Action {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    #[cfg(target_os = "linux")]
     if std::env::args_os().len() == 2
-        && std::env::args_os().nth(1).as_deref() == Some(OsStr::new("--internal-x11-worker"))
+        && std::env::args_os().nth(1).as_deref()
+            == Some(std::ffi::OsStr::new("--internal-x11-worker"))
     {
         return lightos_remote_desktop::backend::x11::worker_main();
     }
@@ -62,21 +74,32 @@ async fn main() -> Result<()> {
                     .map(PathBuf::from),
             );
         }
-        Action::InstallService(_) | Action::RollbackService(_) | Action::DesktopSession(_) => {}
+        _ => {}
     }
     match cli.command {
         Action::InstallService(options) => lightos_remote_desktop::install::service(options, false),
         Action::RollbackService(options) => lightos_remote_desktop::install::service(options, true),
+        #[cfg(target_os = "windows")]
+        Action::ServiceRun => lightos_remote_desktop::platform::windows::run_service(),
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        Action::ServiceHost {
+            config_file,
+            stop_event,
+        } => {
+            let settings = lightos_remote_desktop::install::HostSettings::load(&config_file)?;
+            serve(settings.config()?, stop_event).await
+        }
         Action::Doctor(config) => doctor(&config),
         Action::Probe { config, expect_pid } => {
             config.validate()?;
             tokio::task::spawn_blocking(move || probe(&config, expect_pid)).await?
         }
-        Action::Serve(config) => serve(config).await,
+        Action::Serve(config) => serve(config, None).await,
         Action::DesktopSession(config) => desktop_session(config).await,
     }
 }
 
+#[cfg(target_os = "linux")]
 fn doctor(config: &Config) -> Result<()> {
     config.validate()?;
     use lightos_remote_desktop::diagnostics::{SessionMode, dependencies};
@@ -98,7 +121,7 @@ fn doctor(config: &Config) -> Result<()> {
         lightos_remote_desktop::session::validate_wayland_socket(socket)?;
     }
     if mode == SessionMode::ExternalX11 {
-        Session::physical_target(config)?;
+        lightos_remote_desktop::session::Session::physical_target(config)?;
     }
     if mode == SessionMode::OwnedVirtual
         && let Some(directory) = &config.aquamarine_dir
@@ -115,6 +138,7 @@ fn doctor(config: &Config) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 async fn desktop_session(mut config: Config) -> Result<()> {
     config.session_runtime = None;
     ensure!(
@@ -130,8 +154,9 @@ async fn desktop_session(mut config: Config) -> Result<()> {
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let startup_cancelled = cancelled.clone();
-    let mut startup =
-        tokio::task::spawn_blocking(move || Session::start_cancellable(&config, startup_cancelled));
+    let mut startup = tokio::task::spawn_blocking(move || {
+        lightos_remote_desktop::session::Session::start_cancellable(&config, startup_cancelled)
+    });
     let mut session = tokio::select! {
         result = &mut startup => result??,
         _ = async { tokio::select! { _ = term.recv() => {}, _ = interrupt.recv() => {} } } => {
@@ -154,12 +179,61 @@ async fn desktop_session(mut config: Config) -> Result<()> {
     result
 }
 
-async fn serve(config: Config) -> Result<()> {
-    doctor(&config)?;
-    ensure!(
-        unsafe { libc::geteuid() } != 0,
-        "refusing to run desktop as root"
-    );
+#[cfg(not(target_os = "linux"))]
+fn doctor(config: &Config) -> Result<()> {
+    config.validate()?;
+    let report = lightos_remote_desktop::platform::current().probe_physical(config, None)?;
+    println!("{}", serde_json::to_string(&report)?);
+    report.require_available()?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn desktop_session(_: Config) -> Result<()> {
+    anyhow::bail!(
+        "desktop-session owns Linux virtual desktops; use serve or install-service for the logged-in desktop"
+    )
+}
+
+async fn shutdown_signal(stop_event: Option<String>) {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = stop_event;
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("register SIGTERM");
+        tokio::select! { _ = term.recv() => {}, _ = tokio::signal::ctrl_c() => {} }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            result = async {
+                match stop_event {
+                    Some(name) => lightos_remote_desktop::platform::windows::wait_for_stop_event(name).await,
+                    None => std::future::pending().await,
+                }
+            } => { if let Err(error) = result { tracing::error!(%error, "service shutdown event failed"); } }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = stop_event;
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("register SIGTERM");
+        tokio::select! { _ = term.recv() => {}, _ = tokio::signal::ctrl_c() => {} }
+    }
+}
+
+async fn serve(config: Config, stop_event: Option<String>) -> Result<()> {
+    config.validate()?;
+    #[cfg(target_os = "linux")]
+    {
+        doctor(&config)?;
+        ensure!(
+            unsafe { libc::geteuid() } != 0,
+            "refusing to run desktop as root"
+        );
+    }
     if std::env::var("LIGHTOS_REMOTE_DESKTOP_ENABLE").as_deref() == Ok("0") {
         return Ok(());
     }
@@ -171,52 +245,24 @@ async fn serve(config: Config) -> Result<()> {
                 tracing::warn!(%error, "could not enable TCP_NODELAY");
             }
         });
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopping = cancelled.clone();
     let settings = config.clone();
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let startup_cancelled = cancelled.clone();
-    let mut startup = tokio::task::spawn_blocking(move || -> Result<_> {
-        let session = Session::start_cancellable(&settings, startup_cancelled.clone())?;
-        ensure!(
-            !startup_cancelled.load(std::sync::atomic::Ordering::Acquire),
-            "startup cancelled"
-        );
-        let target = session.target();
-        let selection = backend::probe(&target, false, Some(startup_cancelled.as_ref()))?;
-        let selected = selection.require_available()?;
-        let backend: Arc<dyn DesktopBackend> =
-            if defer_initial_consent(session.is_owned(), selected) {
-                tracing::info!("Portal consent deferred until an explicit desktop connection");
-                Arc::new(backend::DeferredPortalBackend::new())
-            } else {
-                let active = backend::start_selected(
-                    selected,
-                    target.clone(),
-                    settings.fps,
-                    settings.quality,
-                    None,
-                    startup_cancelled.clone(),
-                )?;
-                if session.is_owned() {
-                    active
-                } else {
-                    backend::guarded::attach(active, target)?
-                }
-            };
-        Ok((session, backend))
+    let mut startup = tokio::task::spawn_blocking(move || {
+        lightos_remote_desktop::platform::current().open(&settings, stopping)
     });
-    let (session, backend) = tokio::select! {
+    let mut shutdown = Box::pin(shutdown_signal(stop_event));
+    let host = tokio::select! {
         result = &mut startup => result??,
-        _ = async { tokio::select! { _ = term.recv() => {}, _ = interrupt.recv() => {} } } => {
+        _ = &mut shutdown => {
             cancelled.store(true, std::sync::atomic::Ordering::Release);
-            if let Ok(Ok((session, backend))) = startup.await { backend.stop(); drop(session); }
+            if let Ok(Ok(host)) = startup.await { host.backend.stop(); }
             return Ok(());
         }
     };
-    let state = AppState::with_backend(config, backend, session);
+    let state = AppState::with_host(config, host);
     state.rdp.initialize(state.clone()).await;
-    let failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let monitor = state.clone();
     let monitor_failed = failed.clone();
     tracing::info!(address = %listener.local_addr()?, "Rust desktop HTTP listener started");
@@ -224,10 +270,9 @@ async fn serve(config: Config) -> Result<()> {
         let mut ticks = tokio::time::interval(Duration::from_secs(2));
         loop {
             tokio::select! {
-                _ = interrupt.recv() => break,
-                _ = term.recv() => break,
+                _ = &mut shutdown => break,
                 _ = ticks.tick() => {
-                    if !monitor.session.lock().is_ok_and(|mut session| {
+                    if monitor.input_failed() || !monitor.session.lock().is_ok_and(|mut session| {
                         session.healthy() && !monitor.backend.is_stopped()
                             && (monitor.backend.paused() || monitor.backend.frame_is_fresh(Duration::from_secs(5)))
                     }) {
@@ -251,10 +296,6 @@ async fn serve(config: Config) -> Result<()> {
         "desktop session failed"
     );
     Ok(())
-}
-
-fn defer_initial_consent(owned: bool, selected: BackendKind) -> bool {
-    !owned && selected == BackendKind::Portal
 }
 
 fn probe(config: &Config, expected: Option<u32>) -> Result<()> {
@@ -300,19 +341,5 @@ fn probe(config: &Config, expected: Option<u32>) -> Result<()> {
             "native desktop failed its readiness probe"
         );
         std::thread::sleep(Duration::from_millis(250));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_attached_portal_waits_for_browser_consent() {
-        assert!(defer_initial_consent(false, BackendKind::Portal));
-        for kind in [BackendKind::Wayland, BackendKind::X11] {
-            assert!(!defer_initial_consent(false, kind));
-        }
-        assert!(!defer_initial_consent(true, BackendKind::Portal));
     }
 }

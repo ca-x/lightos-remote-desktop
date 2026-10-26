@@ -18,11 +18,9 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
-    time::timeout,
-};
+#[cfg(target_os = "linux")]
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Default)]
@@ -112,9 +110,10 @@ impl Hub {
     }
 }
 
+#[cfg(target_os = "linux")]
 async fn request(path: &Path, pid: i32, text: &str) -> Result<Vec<u8>> {
     timeout(Duration::from_millis(500), async {
-        let mut stream = UnixStream::connect(path).await?;
+        let mut stream = tokio::net::UnixStream::connect(path).await?;
         let peer = stream.peer_cred()?;
         ensure!(
             peer.pid() == Some(pid) && peer.uid() == unsafe { libc::geteuid() },
@@ -134,6 +133,10 @@ async fn request(path: &Path, pid: i32, text: &str) -> Result<Vec<u8>> {
     })
     .await
     .context("cursor metadata timed out")?
+}
+#[cfg(not(target_os = "linux"))]
+async fn request(_: &Path, _: i32, _: &str) -> Result<Vec<u8>> {
+    anyhow::bail!("independent cursor metadata unavailable; cursor is embedded in native video")
 }
 async fn source(backend: &dyn DesktopBackend) -> Result<(PathBuf, i32, Option<String>)> {
     let (runtime, pid, output) = backend.cursor_target()?;

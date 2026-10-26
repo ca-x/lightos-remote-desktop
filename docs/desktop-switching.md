@@ -1,5 +1,9 @@
 # Desktop switching
 
+The virtual/physical session discovery below describes Linux hosts. Windows and
+macOS share the current logged-in physical desktop and do not create the Linux
+virtual session; see [native host support](cross-platform-host.md).
+
 Owned virtual sessions advertise `resize_scale` for automatic high-density
 capture. Optional `resize.scale` accepts 1, 1.5, 2, 2.5 or 3; dimensions must fit
 the existing encoder limits and divide into whole logical pixels at that scale.

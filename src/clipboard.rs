@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn chords_are_bounded_and_cannot_leave_duplicate_key_state() {
-        use crate::wayland::InputCommand;
+        use crate::backend::InputCommand;
         assert!(
             InputCommand::Chord {
                 codes: vec![29, 47]

@@ -92,7 +92,11 @@ pub(super) async fn start_with(state: AppState, settings: &super::RdpConfig) -> 
 
 pub(super) async fn prepare(state: AppState, settings: &super::RdpConfig) -> Result<RdpService> {
     state.config.validate()?;
-    settings.validate(state.config.wayland_socket.is_some())?;
+    settings.validate(
+        !cfg!(target_os = "linux")
+            || state.config.wayland_socket.is_some()
+            || state.config.x11_display.is_some(),
+    )?;
     let mut cert_reader = BufReader::new(
         File::open(
             settings
@@ -568,6 +572,6 @@ fn evdev_scancode(code: u8, extended: bool) -> Option<u32> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[path = "tests.rs"]
 mod tests;

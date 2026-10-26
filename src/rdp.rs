@@ -80,11 +80,17 @@ mod tests {
     fn enabling_rdp_requires_feature_owned_desktop_and_complete_explicit_tls() {
         let mut config =
             Config::try_parse_from(["test", "--password", "some-long-secret", "--rdp"]).unwrap();
-        assert_eq!(config.validate().is_ok(), cfg!(feature = "rdp"));
+        assert_eq!(
+            config.validate().is_ok(),
+            cfg!(all(feature = "rdp", target_os = "linux"))
+        );
         config.rdp.rdp_tls_cert = Some(PathBuf::from("cert.pem"));
         assert!(config.validate().is_err());
         config.rdp.rdp_tls_key = Some(PathBuf::from("key.pem"));
-        assert_eq!(config.validate().is_ok(), cfg!(feature = "rdp"));
+        assert_eq!(
+            config.validate().is_ok(),
+            cfg!(all(feature = "rdp", target_os = "linux"))
+        );
         config.wayland_socket = Some(PathBuf::from("/tmp/physical-wayland"));
         assert!(config.validate().is_err());
         config.wayland_socket = None;

@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 //! Explicit synthetic link test. It ACKs complete packets, not browser render.
 use base64::{Engine, engine::general_purpose::STANDARD};
 use futures_util::{SinkExt, StreamExt};

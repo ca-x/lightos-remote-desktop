@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 use clap::Parser;
 use lightos_remote_desktop::{config::Config, desktop};
 use std::{fs, os::unix::fs::PermissionsExt};

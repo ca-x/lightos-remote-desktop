@@ -11,7 +11,14 @@ session and closes the associated stream. Closing audio must not close video or
 release remote input. An older server without the capability retains the legacy
 single-socket audio path.
 
-Audio capture stays on its native worker. Pulse initialization runs on the
+`AudioCaptureFactory` supplies a native source: Linux private PulseAudio,
+Windows WASAPI loopback, or macOS ScreenCaptureKit system audio. Native desktop
+permissions and session checks apply to audio as well as video. Streams belong
+to one privacy epoch; lock or permission transitions discard buffered packets.
+Windows/macOS runtime acceptance remains experimental; see
+[native host support](cross-platform-host.md).
+
+Audio capture stays on its native worker. Linux Pulse initialization runs on the
 blocking pool; the independent async sender does not wait for video encoding or
 render acknowledgements. Its four-packet queue drops stale capture packets;
 a send timeout terminates a slow audio connection instead of accumulating an
