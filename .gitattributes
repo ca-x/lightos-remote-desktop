@@ -1,4 +1,6 @@
 *.patch whitespace=-blank-at-eol,-blank-at-eof
+# Preserve the exact upstream bytes checked by scripts/mcp-notices.py.
+/docs/licenses/protocols/** -text
 
 # Preserve verbatim upstream notices, including terminal blank lines.
 docs/licenses/protocols/** whitespace=-blank-at-eof
