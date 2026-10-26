@@ -17,7 +17,7 @@ def main():
     parser.add_argument("--notices", type=Path, required=True)
     args = parser.parse_args()
     repo = Path(__file__).resolve().parent.parent
-    version = tomllib.loads((repo / "Cargo.toml").read_text())["package"]["version"]
+    version = tomllib.loads((repo / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
     arch = args.target.split("-")[0]
     if args.target.endswith("windows-msvc"):
         system, suffix = "windows", ".exe"
@@ -80,7 +80,7 @@ def main():
         with tarfile.open(archive, "w:gz") as output:
             output.add(staging, arcname=staging.name)
     digest = hashlib.file_digest(archive.open("rb"), "sha256").hexdigest()
-    Path(str(archive) + ".sha256").write_text(f"{digest}  {archive.name}\n")
+    Path(str(archive) + ".sha256").write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
     print(f"Packaged {archive.name} ({version})")
 
 
