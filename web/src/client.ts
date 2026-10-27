@@ -64,6 +64,10 @@ export function createClient(options: ClientOptions = {}) {
   const controls = ["apply-size", "send-text", "clipboard-get", "clipboard-set", "paste-local", "keyboard-capture", "send-shortcut", "switch-input-method"] as const;
   const listeners = new AbortController();
   const keys = new Set<number>();
+  const deferredMeta = new Set<number>();
+  let localMeta = false;
+  let clipboardKeyEvent: number | null = null;
+  const appleClipboard = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent);
   const buttons = new Set<number>();
   const sources = new Set<AudioBufferSourceNode>();
   let socket: WebSocket | null = null;
@@ -168,12 +172,16 @@ export function createClient(options: ClientOptions = {}) {
   let publishedView: SessionView | undefined;
   let keyChords = false;
   let imageClipboard = false;
+  let textClipboard = false;
+  let clipboardTextInput = false;
+  let clipboardSession:string|null=null;
+  let clipboardSync=false;
   let pendingHardwareKey: KeyboardEvent | null = null;
   let localPasteShift = false;
   const keyboardInput = element("mobile-input");
   const keyboardFocused = () => document.activeElement === canvas || document.activeElement === keyboardInput;
   const clipboard = createClipboard({ send, ready: () => ready && !desktopPaused && !destroyed, session: () => generation,
-    images: () => imageClipboard, release, text: pasteText, message, shift: () => localPasteShift });
+    images: () => imageClipboard, release, text: pasteText, message, signal: listeners.signal, shift: () => localPasteShift });
 
   function desktopLabel() {
     return desktopMode === "physical" ? "物理桌面" : "虚拟桌面";
@@ -294,7 +302,9 @@ export function createClient(options: ClientOptions = {}) {
     const token = keyboardToken;
     keyboardRequest = true;
     try {
-      await navigator.keyboard.lock();
+      // Keep native paste available. Locking KeyV suppresses the browser's
+      // trusted paste event on Chromium/Electron even when keydown is allowed.
+      await navigator.keyboard.lock(Object.keys(KEY_CODES).filter(code => code !== "KeyV"));
       if (token !== keyboardToken || !ready || destroyed || document.hidden || !document.hasFocus() || !isDesktopFullscreen() || !keyboardFocused()) {
         navigator.keyboard.unlock();
         return;
@@ -392,6 +402,12 @@ export function createClient(options: ClientOptions = {}) {
   const rttSamples: number[] = [];
   const renderSamples: number[] = [];
   let pipelineMetrics: Record<string, { count: number; p50_ms: number | null; p95_ms: number | null }> = {};
+  function cursorFreeFrame(id?:number|null) {
+    const embedded=typeof id==="number"?(frameCursorModes.get(id)??cursorEmbedded):cursorEmbedded;
+    if(!embedded)return true;
+    if(typeof id==="number") {frameCursorModes.delete(id);frameSourceSizes.delete(id);}
+    return false;
+  }
 
   function recordFrame(codec: string, started?: number, id?: number | null) {
     if (typeof id === "number") {
@@ -573,13 +589,14 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   function release() {
+    clipboardKeyEvent = null;
     pendingHardwareKey = null;
     lightBook?.reset();
     if (moveFrame !== null) cancelAnimationFrame(moveFrame);
     moveFrame = null;
     pendingMove = null;
     send({ type: "release" });
-    keys.clear();
+    keys.clear(); deferredMeta.clear(); localMeta=false;
     buttons.clear();
     const pointers = [...capturedPointers];
     capturedPointers.clear();
@@ -635,8 +652,9 @@ export function createClient(options: ClientOptions = {}) {
     lastVideoBounds = null;
     cancelTimer(videoScaleTimer); videoScaleTimer = null;
     clipboard.reset();
+    clipboardSession=null;clipboardSync=false;
     keyChords = false;
-    imageClipboard = false;
+    imageClipboard = false; textClipboard = false; clipboardTextInput = false;
     resizeScaleAvailable = false;
     resizeScales = LEGACY_SCALES;
     lastAutoResolution = null;
@@ -663,7 +681,7 @@ export function createClient(options: ClientOptions = {}) {
     sequencedFrames = false;
     pendingFrameId = null;
     closeVideo();
-    keys.clear();
+    keys.clear(); deferredMeta.clear(); localMeta=false;
     buttons.clear();
     release();
     stopAudio(false);
@@ -883,6 +901,10 @@ export function createClient(options: ClientOptions = {}) {
       desktopPaused = false;
       keyChords = value.key_chords === true;
       imageClipboard = value.image_clipboard === true;
+      textClipboard = value.text_clipboard === true;
+      clipboardTextInput = value.clipboard_text_input === true;
+      clipboardSession=typeof value.clipboard_session==="string"&&/^[0-9a-f]{32}$/.test(value.clipboard_session)?value.clipboard_session:null;
+      clipboardSync=value.clipboard_sync===true;
       resizeScaleAvailable = value.resize_scale === true;
       resizeScales = Array.isArray(value.resize_scales) ? CAPTURE_SCALES.filter(scale => value.resize_scales.includes(scale)) : LEGACY_SCALES;
       lastAutoResolution = null;
@@ -930,6 +952,7 @@ export function createClient(options: ClientOptions = {}) {
         cursorSession = value.cursor_session;
         cursor.connect(value.cursor_session);
       }
+      clipboard.connect(clipboardSession,clipboardSync);
       updateControls();
       if (document.activeElement === canvas) mobile?.focusDesktop();
       scheduleAutoResize();
@@ -950,11 +973,12 @@ export function createClient(options: ClientOptions = {}) {
         pendingFrame = null;
         pendingFrameId = null;
         drawing?.clearRect(0, 0, canvas.width, canvas.height);
-        keys.clear(); buttons.clear();
+        keys.clear(); deferredMeta.clear(); localMeta=false; buttons.clear();
         desktopStatus("Desktop locked or temporarily unavailable.");
       } else {
         if (cursorSession) cursor.connect(cursorSession);
         else cursor.present(cursorEmbedded);
+        clipboard.connect(clipboardSession,clipboardSync);
         desktopStatus(`已连接${desktopLabel()}${selectedOutput ? ` · ${selectedOutput}` : ""}。`);
       }
       updateControls();
@@ -1008,6 +1032,7 @@ export function createClient(options: ClientOptions = {}) {
         try {
           bitmap = await createImageBitmap(new Blob([frame.data], { type: "image/jpeg" }));
           if (frame.generation === generation && frame.videoToken === videoToken && ready && !desktopPaused && !destroyed) {
+            if(!cursorFreeFrame(frame.id))continue;
             if (!validDimensions(bitmap.width, bitmap.height)) {
               message("Server supplied invalid JPEG dimensions.");
               continue;
@@ -1032,6 +1057,7 @@ export function createClient(options: ClientOptions = {}) {
     const active = () => token === videoToken && session === generation && ready && !destroyed;
     losslessChain = losslessChain.catch(() => {}).then(async () => {
       if (!active()) return;
+      if(!cursorFreeFrame(id))return;
       const started = performance.now();
       const update = parseDesktopUpdate(data);
       if (update.width !== canvas.width || update.height !== canvas.height) throw Error("Desktop update does not match the canvas");
@@ -1167,10 +1193,12 @@ export function createClient(options: ClientOptions = {}) {
             cancelTimer(videoTimer);
             videoTimer = null;
             if (!validDimensions(frame.displayWidth, frame.displayHeight)) { fallbackVideo(); return; }
-            resizeCanvas(frame.displayWidth, frame.displayHeight, videoFrameIds.get(frame.timestamp));
-            drawing?.drawImage(frame, 0, 0, canvas.width, canvas.height);
-            canvas.hidden = false;
-            recordFrame("H.264", videoDecodeStarted.get(frame.timestamp), videoFrameIds.get(frame.timestamp));
+            if(cursorFreeFrame(videoFrameIds.get(frame.timestamp))) {
+              resizeCanvas(frame.displayWidth, frame.displayHeight, videoFrameIds.get(frame.timestamp));
+              drawing?.drawImage(frame, 0, 0, canvas.width, canvas.height);
+              canvas.hidden = false;
+              recordFrame("H.264", videoDecodeStarted.get(frame.timestamp), videoFrameIds.get(frame.timestamp));
+            }
             videoDecodeStarted.delete(frame.timestamp);
             const id = videoFrameIds.get(frame.timestamp);
             videoFrameIds.delete(frame.timestamp);
@@ -1429,22 +1457,35 @@ export function createClient(options: ClientOptions = {}) {
   function typeText(text: string) {
     if (!ready || !text || !validText(text, 16384)) return;
     release();
-    if (send({ type: "text", text })) message("Text sent.");
+    const sent = clipboardTextInput
+      ? clipboard.send({type:"clipboard_paste_text",text,shift:false})
+      : send({ type: "text", text });
+    if (sent) message("Text sent.");
   }
 
-  function pasteText(text: string) {
-    if (!imageClipboard) { typeText(text); return; }
+  function pasteText(text: string, shift=localPasteShift) {
+    if (!textClipboard && !imageClipboard) { typeText(text); return; }
     if (!ready || !text || !validText(text)) return;
     release();
-    send({ type: "clipboard_paste_text", text, shift: localPasteShift });
+    clipboard.send({ type: "clipboard_paste_text", text, shift });
   }
 
   const capturedPointers = new Set<number>();
-  function syncModifiers(event: KeyboardEvent | PointerEvent) {
+  function syncModifiers(event: KeyboardEvent | PointerEvent, flushMeta = true) {
+    if (flushMeta) localMeta=false;
     for (const [flag, left, right] of [
       ["ctrlKey", "ControlLeft", "ControlRight"], ["shiftKey", "ShiftLeft", "ShiftRight"],
       ["altKey", "AltLeft", "AltRight"], ["metaKey", "MetaLeft", "MetaRight"],
     ] as const) {
+      if (flag === "metaKey" && localMeta && !flushMeta) continue;
+      if (flag === "metaKey" && deferredMeta.size) {
+        if (!event.metaKey) deferredMeta.clear();
+        else if (!flushMeta) continue;
+        else {
+          for (const code of deferredMeta) if (send({type:"key",code,pressed:true})) keys.add(code);
+          deferredMeta.clear();
+        }
+      }
       if (event[flag]) {
         if (!("code" in event && (event.code === left || event.code === right)) && !keys.has(KEY_CODES[left]) && !keys.has(KEY_CODES[right])) {
           if (send({ type: "key", code: KEY_CODES[left], pressed: true })) keys.add(KEY_CODES[left]);
@@ -1583,6 +1624,7 @@ export function createClient(options: ClientOptions = {}) {
     send({ type: "scroll", x: bounded(delta.x), y: bounded(delta.y) });
   }, { passive: false });
   function hardwareKey(event: KeyboardEvent, editable = false) {
+    clipboardKeyEvent = null;
     pendingHardwareKey = null;
     if (!ready || desktopPaused || event.isComposing || composing || event.keyCode === 229) return false;
     if (event.code === "Escape" && event.ctrlKey && event.altKey && event.shiftKey) {
@@ -1593,17 +1635,40 @@ export function createClient(options: ClientOptions = {}) {
       element("connection").focus();
       return false;
     }
+    // A local Command+V must not become a bare Super tap in the remote
+    // compositor. Defer Meta until a remote chord/click or a deliberate tap.
+    if ((event.code === "MetaLeft" || event.code === "MetaRight") && !keys.has(KEY_CODES[event.code])) {
+      event.preventDefault();
+      deferredMeta.add(KEY_CODES[event.code]);
+      syncModifiers(event, false);
+      return true;
+    }
     // Wait for insertText before forwarding printable keys: some IMEs start
     // composition after the first otherwise ordinary keydown.
     if (editable && event.key?.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
       pendingHardwareKey = event;
       return false;
     }
-    syncModifiers(event);
     // Browser/Electron paste events carry local text and images even in fullscreen.
-    if (event.code === "KeyV" && (event.ctrlKey || event.metaKey)) { localPasteShift = event.shiftKey; return false; }
+    if ((event.code === "KeyV" && (event.ctrlKey || event.metaKey))
+      || (event.code === "Insert" && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey)) {
+      localPasteShift = event.code === "KeyV" && event.shiftKey;
+      release(); localMeta=event.metaKey;
+      return false;
+    }
+    if(appleClipboard&&event.metaKey&&!event.ctrlKey&&!event.altKey&&!event.shiftKey
+      &&(event.code==="KeyC"||event.code==="KeyX")) {
+      if(event.repeat){event.preventDefault();return true;}
+      if(clipboard.copyKey(KEY_CODES[event.code],undefined,true)) {
+        event.preventDefault();release();localMeta=true;clipboardKeyEvent=KEY_CODES[event.code];return true;
+      }
+    }
+    syncModifiers(event);
     const code = Object.hasOwn(KEY_CODES, event.code) ? KEY_CODES[event.code] : undefined;
     if (code === undefined) return false;
+    if(!event.repeat&&!keys.has(code)&&(event.ctrlKey||event.metaKey)&&["KeyC","KeyX"].includes(event.code)&&clipboard.copyKey(code)) {
+      event.preventDefault();keys.add(code);clipboardKeyEvent=code;return true;
+    }
     // Editable focus is required to start a local IME. Cancel its eventual
     // beforeinput after forwarding a physical key, rather than cancelling keydown.
     if (!editable || event.ctrlKey || event.altKey || event.metaKey || event.key?.length !== 1) event.preventDefault();
@@ -1613,27 +1678,51 @@ export function createClient(options: ClientOptions = {}) {
   listen(canvas, "keydown", (event) => { hardwareKey(event); });
   listen(window, "keyup", (event) => {
     const code = KEY_CODES[event.code];
+    if (!event.metaKey && (event.code==="MetaLeft"||event.code==="MetaRight")) localMeta=false;
+    if (deferredMeta.delete(code) && !event.metaKey && ready && !desktopPaused && keyboardFocused()) {
+      event.preventDefault();
+      send({type:"key",code,pressed:true});
+      send({type:"key",code,pressed:false});
+    }
     if (keys.delete(code)) {
       event.preventDefault();
       send({ type: "key", code, pressed: false });
     }
-    if (ready && keyboardFocused()) syncModifiers(event);
+    if (ready && keyboardFocused() && !(event.code === "KeyV" && (event.ctrlKey || event.metaKey))) syncModifiers(event, false);
   });
   listen(canvas, "compositionstart", () => { composing = true; release(); });
   listen(canvas, "compositionend", (event) => { composing = false; typeText(event.data); });
   listen(textBox, "compositionstart", () => { composing = true; });
   listen(textBox, "compositionend", () => { composing = false; });
   listen(textBox, "blur", () => { composing = false; });
+  listen(document,"pointerdown",()=>{clipboardKeyEvent=null;},{capture:true});
+  // Native browser/Electron menu accelerators can invoke Copy/Cut without
+  // delivering the matching keydown. Never copy the hidden IME sentinel.
+  for (const target of [canvas,keyboardInput]) {
+    for (const type of ["copy","cut"] as const) listen(target,type,(event)=>{
+      event.preventDefault();
+      if(!ready||desktopPaused)return;
+      const code=type==="copy"?KEY_CODES.KeyC:KEY_CODES.KeyX;
+      const paired=clipboardKeyEvent===code&&clipboard.copying();
+      clipboardKeyEvent=null;
+      const accepted=paired||clipboard.copyKey(code,undefined,true);
+      release();localMeta=appleClipboard;
+      if(!accepted)message("Remote clipboard synchronization is unavailable for this desktop.");
+    });
+  }
   listen(canvas, "paste", (event) => { void clipboard.paste(event); });
   listen(canvas, "focus", () => { mobile?.focusDesktop(); void captureKeyboard(); });
   listen(keyboardInput, "focus", () => { void captureKeyboard(); });
   listen(keyboardInput, "blur", () => { release(); unlockKeyboard(); });
-  listen(window, "focus", () => { void captureKeyboard(); });
+  for (const type of ["copy","cut"] as const) listen(document,type,(event)=>{
+    if(event.target!==canvas&&event.target!==keyboardInput&&!event.defaultPrevented)clipboard.localChanged();
+  });
+  listen(window, "focus", () => { clipboard.localFocusEntered(); void captureKeyboard(); });
   listen(canvas, "blur", (event) => { if (event.relatedTarget !== keyboardInput) { release(); unlockKeyboard(); } });
-  listen(window, "blur", () => { composing = false; release(); unlockKeyboard(); });
+  listen(window, "blur", () => { composing = false; clipboard.localFocusLeft(); release(); unlockKeyboard(); });
   listen(document, "visibilitychange", () => {
-    if (document.hidden) { composing = false; release(); stopAudio(); unlockKeyboard(); }
-    else { scheduleAutoResize(); scheduleVideoScale(); }
+    if (document.hidden) { composing = false; clipboard.localFocusLeft(); release(); stopAudio(); unlockKeyboard(); }
+    else { clipboard.localFocusEntered(); scheduleAutoResize(); scheduleVideoScale(); }
   });
   listen(element("connection"), "click", () => {
     if (wanted) disconnect();
@@ -1836,6 +1925,16 @@ export function createClient(options: ClientOptions = {}) {
   });
   function sendChord(chord: number[]) {
     release();
+    if(chord.length===2&&chord.includes(KEY_CODES.Insert)&&chord.some(code=>code===KEY_CODES.ShiftLeft||code===KEY_CODES.ShiftRight)) {
+      localPasteShift=false;void clipboard.read();return;
+    }
+    if(chord.includes(KEY_CODES.KeyV)&&chord.some(code=>code===KEY_CODES.ControlLeft||code===KEY_CODES.ControlRight)
+      &&chord.every(code=>[KEY_CODES.ControlLeft,KEY_CODES.ControlRight,KEY_CODES.ShiftLeft,KEY_CODES.ShiftRight,KEY_CODES.KeyV].includes(code))) {
+      localPasteShift=chord.some(code=>code===KEY_CODES.ShiftLeft||code===KEY_CODES.ShiftRight);
+      void clipboard.read();return;
+    }
+    const copyCode=chord.find(code=>code===KEY_CODES.KeyC||code===KEY_CODES.KeyX);
+    if(copyCode!==undefined&&chord.some(code=>[KEY_CODES.ControlLeft,KEY_CODES.ControlRight,KEY_CODES.MetaLeft,KEY_CODES.MetaRight].includes(code))&&clipboard.copyKey(copyCode,chord))return;
     if (keyChords) { send({ type: "chord", codes: chord }); return; }
     for (const code of chord) {
       if (!send({ type: "key", code, pressed: true })) return;
@@ -1872,7 +1971,7 @@ export function createClient(options: ClientOptions = {}) {
   listen(element("clipboard-set"), "click", () => {
     if (validText(textBox.value) && send({ type: "clipboard_set", text: textBox.value })) message("Remote clipboard update requested.");
   });
-  listen(element("paste-local"), "click", () => { localPasteShift = false; setToolsOpen(false, true); void clipboard.read(); });
+  listen(element("paste-local"), "click", () => { localPasteShift = false; setToolsOpen(false, true); void clipboard.read(true); });
 
   function destroy() {
     if (destroyed) return;
@@ -1921,6 +2020,12 @@ export function createClient(options: ClientOptions = {}) {
     key(code, pressed) {
       if (!Object.hasOwn(KEY_CODES, code) || !ready || desktopPaused) return false;
       const value = KEY_CODES[code];
+      const modifier=[KEY_CODES.ControlLeft,KEY_CODES.ControlRight,KEY_CODES.MetaLeft,KEY_CODES.MetaRight].some(key=>keys.has(key));
+      if(pressed&&(keys.has(KEY_CODES.ControlLeft)||keys.has(KEY_CODES.ControlRight))&&code==="KeyV"){
+        localPasteShift=keys.has(KEY_CODES.ShiftLeft)||keys.has(KEY_CODES.ShiftRight);
+        release();void clipboard.read();return true;
+      }
+      if(pressed&&modifier&&(code==="KeyC"||code==="KeyX")&&clipboard.copyKey(value)){keys.add(value);return true;}
       if (pressed) { if (keys.has(value)) return true; if (send({type:"key",code:value,pressed:true})) { keys.add(value); return true; } }
       else if (keys.delete(value)) return send({type:"key",code:value,pressed:false});
       return false;
@@ -1962,7 +2067,13 @@ export function createClient(options: ClientOptions = {}) {
       return hardwareKey(pending);
     },
     paste: (event) => { void clipboard.paste(event); },
-    chord: (codes) => { if (ready && codes.every((code) => Object.hasOwn(KEY_CODES, code))) sendChord(codes.map((code) => KEY_CODES[code])); },
+    chord: (codes) => {
+      if(!ready||!codes.every(code=>Object.hasOwn(KEY_CODES,code)))return;
+      if(codes.includes("KeyV")&&codes.some(code=>code==="ControlLeft"||code==="ControlRight")) {
+        localPasteShift=codes.some(code=>code==="ShiftLeft"||code==="ShiftRight");release();void clipboard.read();return;
+      }
+      sendChord(codes.map(code=>KEY_CODES[code]));
+    },
     layout: () => { updateCanvasDensity(); pictureZoom.setCover(!!mobile?.isFullscreen() && desktopMode === "physical"); pictureZoom.layout(); layoutTools(); scheduleAutoResize(); scheduleVideoScale(); },
   });
   setLightBook(options.lightBook === true);

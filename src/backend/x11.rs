@@ -1,15 +1,22 @@
 //! Native X11 capture with input and clipboard isolated in one session-bound child.
 mod capture;
+mod cursor;
 use std::{
     collections::BTreeSet,
     io::{self, Read, Write},
     net::Shutdown,
-    os::{fd::AsRawFd, unix::net::UnixStream},
+    os::{
+        fd::AsRawFd,
+        unix::{
+            fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+            net::UnixStream,
+        },
+    },
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc as sync_mpsc,
     },
     thread::{self, JoinHandle},
@@ -26,13 +33,17 @@ use x11rb::{
     connection::Connection,
     protocol::{
         randr::{self, ConnectionExt as _},
+        xfixes::{self, ConnectionExt as _},
         xproto::{self, ConnectionExt as _, ImageFormat, ImageOrder, VisualClass},
         xtest::ConnectionExt as _,
     },
     rust_connection::{DefaultStream, RustConnection},
 };
 
-use super::{BackendKind, DesktopBackend, Frame, InputCommand, MAX_CLIPBOARD_BYTES};
+use super::{
+    BackendKind, ClipboardRevision, CursorFrame, DesktopBackend, Frame, InputCommand,
+    MAX_CLIPBOARD_BYTES,
+};
 
 const START_TIMEOUT: Duration = Duration::from_secs(6);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
@@ -566,6 +577,10 @@ enum WireRequest {
     Input { command: WireInput },
     ClipboardRead,
     ClipboardWrite { text: String },
+    ActiveApp,
+    ClipboardWritePng { path: PathBuf },
+    ClipboardReadPng { path: PathBuf },
+    ClipboardRevision,
     Release,
     Stop,
 }
@@ -586,6 +601,7 @@ enum WireReply {
     Ready,
     Ok { text: Option<String> },
     Error { message: String },
+    Revision { value: u64 },
 }
 
 fn poll_fd(fd: i32, events: i16, deadline: Instant) -> io::Result<()> {
@@ -746,7 +762,9 @@ impl WorkerProcess {
         let deadline = Instant::now() + timeout;
         write_request(&mut self.stdin, request, deadline)?;
         match self.stdout.read(deadline)? {
-            response @ (WireReply::Ok { .. } | WireReply::Error { .. }) => Ok(response),
+            response @ (WireReply::Ok { .. }
+            | WireReply::Error { .. }
+            | WireReply::Revision { .. }) => Ok(response),
             WireReply::Ready => bail!("unexpected X11 worker readiness response"),
         }
     }
@@ -767,6 +785,13 @@ enum QueueItem {
     Input(InputCommand),
     ClipboardRead(oneshot::Sender<Result<String>>),
     ClipboardWrite(String, oneshot::Sender<Result<()>>),
+    ActiveApp(oneshot::Sender<Result<String>>),
+    ClipboardWritePng(tempfile::NamedTempFile, oneshot::Sender<Result<()>>),
+    ClipboardReadPng(
+        tempfile::NamedTempFile,
+        oneshot::Sender<Result<Option<Vec<u8>>>>,
+    ),
+    ClipboardRevision(oneshot::Sender<Result<u64>>),
 }
 
 struct Shared {
@@ -774,6 +799,10 @@ struct Shared {
     frames: watch::Sender<Option<Arc<Frame>>>,
     capture_socket: Mutex<Option<UnixStream>>,
     rect: Mutex<Option<Rect>>,
+    cursors: watch::Sender<Option<Arc<CursorFrame>>>,
+    cursor_supported: AtomicBool,
+    clipboard_supported: AtomicBool,
+    cursor_owner: AtomicU64,
 }
 impl Shared {
     fn finish(&self) {
@@ -782,6 +811,7 @@ impl Shared {
             self.stopped.store(true, Ordering::Release);
             *rect = None;
             self.frames.send_replace(None);
+            self.cursors.send_replace(None);
         }
         if let Some(socket) = self
             .capture_socket
@@ -793,7 +823,7 @@ impl Shared {
         }
     }
 
-    fn refresh(&self, rect: Rect, pixels: Arc<[u8]>) -> bool {
+    fn refresh(&self, rect: Rect, pixels: Arc<[u8]>, embedded: bool) -> bool {
         let mut current_rect = self.rect.lock().unwrap_or_else(|e| e.into_inner());
         if self.stopped.load(Ordering::Acquire) {
             return false;
@@ -802,16 +832,14 @@ impl Shared {
         // Geometry was read successfully: static pixels are healthy, without
         // a full-screen comparison or a new encode notification.
         self.frames.send_if_modified(|slot| {
-            *slot = Some(Arc::new(Frame::new(
-                u32::from(rect.width),
-                u32::from(rect.height),
-                pixels,
-            )));
+            let mut frame = Frame::new(u32::from(rect.width), u32::from(rect.height), pixels);
+            frame.cursor_embedded = embedded;
+            *slot = Some(Arc::new(frame));
             false
         });
         true
     }
-    fn publish(&self, rect: Rect, pixels: Arc<[u8]>) -> bool {
+    fn publish(&self, rect: Rect, pixels: Arc<[u8]>, embedded: bool) -> bool {
         let mut current_rect = self.rect.lock().unwrap_or_else(|e| e.into_inner());
         if self.stopped.load(Ordering::Acquire) {
             return false;
@@ -821,12 +849,11 @@ impl Shared {
             previous.width != u32::from(rect.width)
                 || previous.height != u32::from(rect.height)
                 || previous.pixels.as_ref() != pixels.as_ref()
+                || previous.cursor_embedded != embedded
         });
-        let frame = Arc::new(Frame::new(
-            u32::from(rect.width),
-            u32::from(rect.height),
-            pixels,
-        ));
+        let mut frame = Frame::new(u32::from(rect.width), u32::from(rect.height), pixels);
+        frame.cursor_embedded = embedded;
+        let frame = Arc::new(frame);
         self.frames.send_if_modified(|slot| {
             *slot = Some(frame);
             changed
@@ -843,6 +870,7 @@ pub struct Backend {
     child: Arc<Mutex<Child>>,
     workers: Mutex<Vec<JoinHandle<()>>>,
     io_done: Mutex<sync_mpsc::Receiver<()>>,
+    clipboard_directory: tempfile::TempDir,
 }
 
 impl Backend {
@@ -871,6 +899,41 @@ impl Backend {
         cancelled: Arc<AtomicBool>,
         executable: &Path,
     ) -> Result<Self> {
+        Self::start_pipeline(target, fps, quality, output, cancelled, executable, true)
+    }
+
+    pub(crate) fn clipboard_only(
+        target: SessionTarget,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Self> {
+        Self::start_pipeline(
+            target,
+            1,
+            80,
+            None,
+            cancelled,
+            &std::env::current_exe()?,
+            false,
+        )
+    }
+
+    pub(crate) async fn active_app(&self) -> Result<String> {
+        let (done, response) = oneshot::channel();
+        tokio::time::timeout(REQUEST_TIMEOUT, self.queue.send(QueueItem::ActiveApp(done)))
+            .await??;
+        tokio::time::timeout(REQUEST_TIMEOUT, response).await??
+    }
+
+    #[allow(clippy::too_many_arguments)] // One pinned worker can serve clipboard without capturing pixels.
+    fn start_pipeline(
+        target: SessionTarget,
+        fps: u32,
+        quality: u8,
+        output: Option<String>,
+        cancelled: Arc<AtomicBool>,
+        executable: &Path,
+        capture: bool,
+    ) -> Result<Self> {
         ensure!((1..=60).contains(&fps), "FPS must be between 1 and 60");
         ensure!(
             (1..=100).contains(&quality),
@@ -886,6 +949,10 @@ impl Backend {
             frames: frames_tx,
             capture_socket: Mutex::new(None),
             rect: Mutex::new(None),
+            cursors: watch::channel(None).0,
+            cursor_supported: AtomicBool::new(false),
+            clipboard_supported: AtomicBool::new(false),
+            cursor_owner: AtomicU64::new(0),
         });
         let (input, input_rx) = mpsc::channel(128);
         let (queue, queue_rx) = mpsc::channel(128);
@@ -899,6 +966,10 @@ impl Backend {
             child,
             workers: Mutex::new(Vec::new()),
             io_done: Mutex::new(io_done),
+            clipboard_directory: tempfile::Builder::new()
+                .prefix("lrd-x11-clipboard-")
+                .permissions(std::fs::Permissions::from_mode(0o700))
+                .tempdir()?,
         };
 
         let io_shared = shared.clone();
@@ -923,21 +994,31 @@ impl Backend {
                     run_input_queue(input_rx, queue, &pump_shared);
                 })?,
         );
-        let capture_shared = shared.clone();
-        backend.workers.get_mut().unwrap().push(
-            thread::Builder::new()
-                .name("x11-capture".into())
-                .spawn(move || {
-                    if let Err(error) =
-                        run_capture(&target, output.as_deref(), fps, &capture_shared, &ready_tx)
-                        && !capture_shared.stopped.load(Ordering::Acquire)
-                    {
-                        let _ = ready_tx.try_send(Err(format!("{error:#}")));
-                        tracing::error!("X11 capture failed: {error:#}");
-                        capture_shared.finish();
-                    }
-                })?,
-        );
+        if capture {
+            let capture_shared = shared.clone();
+            backend.workers.get_mut().unwrap().push(
+                thread::Builder::new()
+                    .name("x11-capture".into())
+                    .spawn(move || {
+                        if let Err(error) =
+                            run_capture(&target, output.as_deref(), fps, &capture_shared, &ready_tx)
+                            && !capture_shared.stopped.load(Ordering::Acquire)
+                        {
+                            let _ = ready_tx.try_send(Err(format!("{error:#}")));
+                            tracing::error!("X11 capture failed: {error:#}");
+                            capture_shared.finish();
+                        }
+                    })?,
+            );
+        } else {
+            let connection = connect(&target, &Mutex::new(None))?;
+            shared
+                .clipboard_supported
+                .store(cursor::supported(&connection), Ordering::Release);
+            ready_tx
+                .send(Ok(()))
+                .map_err(|_| anyhow::anyhow!("clipboard worker readiness closed"))?;
+        }
         let deadline = Instant::now() + START_TIMEOUT;
         loop {
             ensure!(!cancelled.load(Ordering::Acquire), "X11 startup cancelled");
@@ -955,7 +1036,7 @@ impl Backend {
             }
         }
         ensure!(
-            backend.frames.borrow().is_some(),
+            !capture || backend.frames.borrow().is_some(),
             "X11 capture produced no frame"
         );
         Ok(backend)
@@ -1000,8 +1081,97 @@ impl Drop for Backend {
 }
 
 impl DesktopBackend for Backend {
+    fn text_paste_keycodes(&self, shift: bool) -> BoxFuture<'_, Vec<u32>> {
+        Box::pin(async move {
+            let terminal = self
+                .active_app()
+                .await
+                .is_ok_and(|app| super::terminal_app(&app));
+            super::linux_text_paste_keys(shift, terminal)
+        })
+    }
     fn kind(&self) -> BackendKind {
         BackendKind::X11
+    }
+    fn cursor_embedded(&self) -> bool {
+        false
+    }
+    fn cursor_frames(&self) -> Option<watch::Receiver<Option<Arc<CursorFrame>>>> {
+        self.shared
+            .cursor_supported
+            .load(Ordering::Acquire)
+            .then(|| self.shared.cursors.subscribe())
+    }
+    fn begin_cursor(&self, owner: u64) {
+        self.shared
+            .cursor_owner
+            .store(owner << 1, Ordering::Release);
+    }
+    fn separate_cursor(&self, owner: u64) {
+        let _ = self.shared.cursor_owner.compare_exchange(
+            owner << 1,
+            (owner << 1) | 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+    fn release_cursor(&self, owner: u64) {
+        let _ = self.shared.cursor_owner.compare_exchange(
+            (owner << 1) | 1,
+            owner << 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+    fn supports_image_clipboard(&self) -> bool {
+        true
+    }
+    fn supports_clipboard_sync(&self) -> bool {
+        self.shared.clipboard_supported.load(Ordering::Acquire)
+    }
+    fn clipboard_revision(&self) -> BoxFuture<'_, Result<ClipboardRevision>> {
+        Box::pin(async move {
+            let (done, completed) = oneshot::channel();
+            self.queue
+                .send(QueueItem::ClipboardRevision(done))
+                .await
+                .context("X11 clipboard worker closed")?;
+            let serial = tokio::time::timeout(CLIPBOARD_TIMEOUT, completed)
+                .await
+                .context("X11 clipboard revision timed out")?
+                .context("X11 clipboard worker closed")??;
+            Ok(ClipboardRevision { epoch: 0, serial })
+        })
+    }
+    fn clipboard_write_png<'a>(&'a self, data: &'a [u8]) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            ensure!(data.len() <= 8 * 1024 * 1024, "clipboard image too large");
+            let mut file = tempfile::NamedTempFile::new_in(self.clipboard_directory.path())?;
+            file.write_all(data)?;
+            let (done, completed) = oneshot::channel();
+            self.queue
+                .send(QueueItem::ClipboardWritePng(file, done))
+                .await
+                .context("X11 clipboard worker closed")?;
+            tokio::time::timeout(CLIPBOARD_TIMEOUT, completed)
+                .await
+                .context("X11 image clipboard write timed out")?
+                .context("X11 clipboard worker closed")?
+        })
+    }
+    fn clipboard_read_png(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>>> {
+        Box::pin(async move {
+            let file = tempfile::NamedTempFile::new_in(self.clipboard_directory.path())?;
+            let (done, completed) = oneshot::channel();
+            self.queue
+                .send(QueueItem::ClipboardReadPng(file, done))
+                .await
+                .context("X11 clipboard worker closed")?;
+            tokio::time::timeout(CLIPBOARD_TIMEOUT, completed)
+                .await
+                .context("X11 image clipboard read timed out")?
+                .context("X11 clipboard worker closed")?
+        })
     }
     fn frames(&self) -> watch::Receiver<Option<Arc<Frame>>> {
         self.frames.clone()
@@ -1085,16 +1255,57 @@ fn run_capture(
     let period = Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut first = true;
     let mut capture = capture::Capture::new(&connection, target, output);
+    let cursor_supported = cursor::supported(&connection);
+    shared
+        .clipboard_supported
+        .store(cursor_supported, Ordering::Release);
+    shared
+        .cursor_supported
+        .store(cursor_supported, Ordering::Release);
+    let mut previous_cursor: Option<Arc<CursorFrame>> = None;
+    let mut resize_retry: Option<Instant> = None;
     while !shared.stopped.load(Ordering::Acquire) {
         let started = Instant::now();
-        let (rect, pixels, acquired) = capture.next()?;
-        if !if acquired {
-            shared.publish(rect, pixels)
+        let (rect, pixels, acquired) = match capture.next() {
+            Ok(frame) => {
+                resize_retry = None;
+                frame
+            }
+            Err(error) if capture::resize_race(&error) => {
+                let since = resize_retry.get_or_insert(started);
+                if since.elapsed() >= Duration::from_secs(2) {
+                    return Err(error);
+                }
+                thread::park_timeout(period.min(Duration::from_millis(16)));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let next_cursor = if cursor_supported {
+            match cursor::read(&connection, rect, previous_cursor.as_deref()) {
+                Ok(cursor) => Some(Arc::new(cursor)),
+                // X11 can deny the current cursor image during a grab or
+                // desktop startup. Keep the independent shape and retry;
+                // this is not a reason to restart the desktop and its apps.
+                Err(error) if error.downcast_ref::<x11rb::errors::ReplyError>()
+                    .is_some_and(|error| matches!(error, x11rb::errors::ReplyError::X11Error(reply) if reply.error_kind == x11rb::protocol::ErrorKind::Access)) => previous_cursor.clone(),
+                Err(error) => return Err(error),
+            }
         } else {
-            shared.refresh(rect, pixels)
+            None
+        };
+        let cursor_changed = previous_cursor != next_cursor;
+        if cursor_changed {
+            shared.cursors.send_replace(next_cursor.clone());
+        }
+        if !if acquired {
+            shared.publish(rect, pixels, false)
+        } else {
+            shared.refresh(rect, pixels, false)
         } {
             break;
         }
+        previous_cursor = next_cursor;
         if first {
             let _ = ready.send(Ok(()));
             first = false;
@@ -1166,7 +1377,7 @@ fn run_ipc(
                                 Err(anyhow::anyhow!("X11 clipboard returned no text"))
                             }
                             WireReply::Error { message } => Err(anyhow::anyhow!(message)),
-                            WireReply::Ready => unreachable!(),
+                            WireReply::Ready | WireReply::Revision { .. } => unreachable!(),
                         };
                     let _ = reply.send(result);
                 }
@@ -1181,7 +1392,67 @@ fn run_ipc(
                     {
                         WireReply::Ok { .. } => Ok(()),
                         WireReply::Error { message } => Err(anyhow::anyhow!(message)),
-                        WireReply::Ready => unreachable!(),
+                        WireReply::Ready | WireReply::Revision { .. } => unreachable!(),
+                    };
+                    let _ = reply.send(result);
+                }
+                QueueItem::ActiveApp(reply) => {
+                    if reply.is_closed() {
+                        continue;
+                    }
+                    let result = match process.exchange(&WireRequest::ActiveApp, REQUEST_TIMEOUT)? {
+                        WireReply::Ok { text } => Ok(text.unwrap_or_default()),
+                        WireReply::Error { message } => Err(anyhow::anyhow!(message)),
+                        _ => bail!("unexpected focus query reply"),
+                    };
+                    let _ = reply.send(result);
+                }
+                QueueItem::ClipboardRevision(reply) => {
+                    if reply.is_closed() {
+                        continue;
+                    }
+                    let result =
+                        match process.exchange(&WireRequest::ClipboardRevision, REQUEST_TIMEOUT)? {
+                            WireReply::Revision { value } => Ok(value),
+                            WireReply::Error { message } => Err(anyhow::anyhow!(message)),
+                            _ => bail!("unexpected clipboard revision reply"),
+                        };
+                    let _ = reply.send(result);
+                }
+                QueueItem::ClipboardWritePng(file, reply) => {
+                    if reply.is_closed() {
+                        continue;
+                    }
+                    let result = match process.exchange(
+                        &WireRequest::ClipboardWritePng {
+                            path: file.path().to_path_buf(),
+                        },
+                        CLIPBOARD_TIMEOUT,
+                    )? {
+                        WireReply::Ok { .. } => Ok(()),
+                        WireReply::Error { message } => Err(anyhow::anyhow!(message)),
+                        _ => bail!("unexpected image clipboard reply"),
+                    };
+                    let _ = reply.send(result);
+                }
+                QueueItem::ClipboardReadPng(file, reply) => {
+                    if reply.is_closed() {
+                        continue;
+                    }
+                    let result = match process.exchange(
+                        &WireRequest::ClipboardReadPng {
+                            path: file.path().to_path_buf(),
+                        },
+                        CLIPBOARD_TIMEOUT,
+                    )? {
+                        WireReply::Ok { text: Some(_) } => {
+                            let bytes = std::fs::read(file.path())?;
+                            ensure!(bytes.len() <= 8 * 1024 * 1024, "clipboard image too large");
+                            Ok(Some(bytes))
+                        }
+                        WireReply::Ok { text: None } => Ok(None),
+                        WireReply::Error { message } => Err(anyhow::anyhow!(message)),
+                        _ => bail!("unexpected image clipboard reply"),
                     };
                     let _ = reply.send(result);
                 }
@@ -1263,7 +1534,7 @@ fn process_input(
                     WireReply::Error { message } => {
                         bail!("X11 input release before text: {message}")
                     }
-                    WireReply::Ready => unreachable!(),
+                    WireReply::Ready | WireReply::Revision { .. } => unreachable!(),
                 }
                 let chars: Vec<char> = text.chars().collect();
                 // A physical-session lock cancels the guard between individual
@@ -1353,6 +1624,9 @@ struct WorkerState {
     mapped: [bool; 256],
     keys: BTreeSet<u16>,
     buttons: BTreeSet<u32>,
+    clipboard_connection: XConnection,
+    clipboard_selection: u32,
+    clipboard_revision: u64,
 }
 
 impl WorkerState {
@@ -1383,6 +1657,18 @@ impl WorkerState {
                 mapped[usize::from(min) + index] = true;
             }
         }
+        let clipboard_selection = connection.intern_atom(false, b"CLIPBOARD")?.reply()?.atom;
+        if cursor::supported(&connection) {
+            connection
+                .xfixes_select_selection_input(
+                    connection.setup().roots[screen].root,
+                    clipboard_selection,
+                    xfixes::SelectionEventMask::SET_SELECTION_OWNER
+                        | xfixes::SelectionEventMask::SELECTION_WINDOW_DESTROY
+                        | xfixes::SelectionEventMask::SELECTION_CLIENT_CLOSE,
+                )?
+                .check()?;
+        }
         Ok(Self {
             settings,
             enigo: Some(enigo),
@@ -1390,6 +1676,9 @@ impl WorkerState {
             mapped,
             keys: BTreeSet::new(),
             buttons: BTreeSet::new(),
+            clipboard_connection: connection,
+            clipboard_selection,
+            clipboard_revision: 0,
         })
     }
     fn enigo(&mut self) -> Result<&mut Enigo> {
@@ -1521,9 +1810,130 @@ impl WorkerState {
             }
         }
     }
+    fn active_app(&self) -> Result<String> {
+        let mut window = self.clipboard_connection.get_input_focus()?.reply()?.focus;
+        for _ in 0..8 {
+            if window <= 1 {
+                break;
+            }
+            let property = self
+                .clipboard_connection
+                .get_property(
+                    false,
+                    window,
+                    xproto::AtomEnum::WM_CLASS,
+                    xproto::AtomEnum::STRING,
+                    0,
+                    1024,
+                )?
+                .reply()?;
+            let classes = String::from_utf8_lossy(&property.value);
+            if let Some(class) = classes
+                .split('\0')
+                .find(|class| crate::backend::terminal_app(class))
+            {
+                return Ok(class.to_owned());
+            }
+            if !property.value.is_empty() {
+                return Ok(classes
+                    .split('\0')
+                    .rfind(|s| !s.is_empty())
+                    .unwrap_or_default()
+                    .to_owned());
+            }
+            let tree = self.clipboard_connection.query_tree(window)?.reply()?;
+            if tree.parent == window {
+                break;
+            }
+            window = tree.parent;
+        }
+        Ok(String::new())
+    }
+
     fn handle(&mut self, request: WireRequest) -> (WireReply, bool) {
         let stop = matches!(request, WireRequest::Stop);
+        if matches!(request, WireRequest::ClipboardRevision) {
+            // Flush server selection notifications before reporting a revision,
+            // including ownership acquired by the separate arboard connection.
+            if let Err(error) = self
+                .clipboard_connection
+                .get_input_focus()
+                .map_err(anyhow::Error::from)
+                .and_then(|cookie| cookie.reply().map_err(anyhow::Error::from))
+            {
+                return (
+                    WireReply::Error {
+                        message: error.to_string(),
+                    },
+                    false,
+                );
+            }
+        }
+        while let Ok(Some(event)) = self.clipboard_connection.poll_for_event() {
+            if let x11rb::protocol::Event::XfixesSelectionNotify(event) = event
+                && event.selection == self.clipboard_selection
+            {
+                self.clipboard_revision = self.clipboard_revision.wrapping_add(1);
+            }
+        }
         let result = match request {
+            WireRequest::ClipboardRevision => {
+                return (
+                    WireReply::Revision {
+                        value: self.clipboard_revision,
+                    },
+                    false,
+                );
+            }
+            WireRequest::ClipboardWritePng { path } => (|| -> Result<Option<String>> {
+                let file = clipboard_transfer_file(&path, false)?;
+                let mut reader = image::ImageReader::with_format(
+                    io::BufReader::new(file),
+                    image::ImageFormat::Png,
+                );
+                let mut limits = image::Limits::default();
+                limits.max_image_width = Some(8192);
+                limits.max_image_height = Some(8192);
+                limits.max_alloc = Some(128 * 1024 * 1024);
+                reader.limits(limits);
+                let image = reader.decode()?.into_rgba8();
+                ensure!(
+                    u64::from(image.width()) * u64::from(image.height()) <= 33554432,
+                    "clipboard image dimensions too large"
+                );
+                self.clipboard.set_image(arboard::ImageData {
+                    width: image.width() as usize,
+                    height: image.height() as usize,
+                    bytes: std::borrow::Cow::Owned(image.into_raw()),
+                })?;
+                Ok(None)
+            })(),
+            WireRequest::ClipboardReadPng { path } => (|| -> Result<Option<String>> {
+                use image::ImageEncoder;
+                let image = match self.clipboard.get_image() {
+                    Ok(image) => image,
+                    Err(arboard::Error::ContentNotAvailable) => return Ok(None),
+                    Err(error) => return Err(error.into()),
+                };
+                ensure!(
+                    image.width <= 8192
+                        && image.height <= 8192
+                        && image.width * image.height <= 33554432,
+                    "clipboard image dimensions too large"
+                );
+                let mut bytes = Vec::new();
+                image::codecs::png::PngEncoder::new(&mut bytes).write_image(
+                    &image.bytes,
+                    image.width as u32,
+                    image.height as u32,
+                    image::ExtendedColorType::Rgba8,
+                )?;
+                ensure!(bytes.len() <= 8 * 1024 * 1024, "clipboard image too large");
+                let mut file = clipboard_transfer_file(&path, true)?;
+                file.set_len(0)?;
+                file.write_all(&bytes)?;
+                Ok(Some("image/png".into()))
+            })(),
             WireRequest::Input { command } => self.input(command).map(|()| None),
             WireRequest::ClipboardRead => self
                 .clipboard
@@ -1538,6 +1948,7 @@ impl WorkerState {
                 self.clipboard.set_text(text)?;
                 Ok(None)
             })(),
+            WireRequest::ActiveApp => self.active_app().map(Some),
             WireRequest::Release | WireRequest::Stop => self.release().map(|()| None),
         };
         let reply = match result {
@@ -1548,6 +1959,34 @@ impl WorkerState {
         };
         (reply, stop)
     }
+}
+
+fn clipboard_transfer_file(path: &Path, write: bool) -> Result<std::fs::File> {
+    let owner = unsafe { libc::geteuid() };
+    ensure!(path.is_absolute(), "clipboard transfer path is relative");
+    let parent =
+        std::fs::symlink_metadata(path.parent().context("clipboard transfer parent missing")?)?;
+    ensure!(
+        parent.is_dir()
+            && !parent.file_type().is_symlink()
+            && parent.uid() == owner
+            && parent.mode() & 0o077 == 0,
+        "clipboard transfer directory is not private"
+    );
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(write)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file()
+            && metadata.uid() == owner
+            && metadata.mode() & 0o077 == 0
+            && metadata.len() <= 8 * 1024 * 1024,
+        "invalid clipboard transfer file"
+    );
+    Ok(file)
 }
 
 fn mouse_button(button: u32) -> Result<Button> {
@@ -1770,6 +2209,10 @@ mod tests {
             frames,
             capture_socket: Mutex::new(None),
             rect: Mutex::new(None),
+            cursors: watch::channel(None).0,
+            cursor_supported: AtomicBool::new(false),
+            clipboard_supported: AtomicBool::new(false),
+            cursor_owner: AtomicU64::new(0),
         });
         let (input, input_rx) = mpsc::channel(2);
         let (queue, mut queue_rx) = mpsc::channel(2);
@@ -1816,6 +2259,10 @@ mod tests {
             frames: sender,
             capture_socket: Mutex::new(None),
             rect: Mutex::new(None),
+            cursors: watch::channel(None).0,
+            cursor_supported: AtomicBool::new(false),
+            clipboard_supported: AtomicBool::new(false),
+            cursor_owner: AtomicU64::new(0),
         };
         let small = Rect {
             x: 0,
@@ -1823,12 +2270,12 @@ mod tests {
             width: 2,
             height: 1,
         };
-        assert!(shared.publish(small, vec![255u8; 8].into()));
+        assert!(shared.publish(small, vec![255u8; 8].into(), false));
         receiver.mark_unchanged();
-        assert!(shared.publish(small, vec![255u8; 8].into()));
+        assert!(shared.publish(small, vec![255u8; 8].into(), false));
         assert!(!receiver.has_changed().unwrap());
         let current = receiver.borrow().as_ref().unwrap().pixels.clone();
-        assert!(shared.refresh(small, current.clone()));
+        assert!(shared.refresh(small, current.clone(), false));
         assert!(!receiver.has_changed().unwrap());
         assert!(Arc::ptr_eq(
             &current,
@@ -1840,12 +2287,12 @@ mod tests {
             width: 3,
             height: 1,
         };
-        assert!(shared.publish(large, vec![255u8; 12].into()));
+        assert!(shared.publish(large, vec![255u8; 12].into(), false));
         assert!(receiver.has_changed().unwrap());
         assert_eq!(receiver.borrow().as_ref().unwrap().width, 3);
         shared.finish();
-        assert!(!shared.publish(small, vec![0u8; 8].into()));
-        assert!(!shared.refresh(small, current));
+        assert!(!shared.publish(small, vec![0u8; 8].into(), false));
+        assert!(!shared.refresh(small, current, false));
         assert!(receiver.borrow().is_none());
     }
 
@@ -1950,6 +2397,133 @@ mod tests {
         );
         drop(capture);
         connection.get_input_focus()?.reply()?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a private authenticated Xvfb display"]
+    fn live_private_xvfb_cursor_shape_motion_and_disconnect_never_changes_video() -> Result<()> {
+        let session = SessionTarget {
+            x11_display: Some(std::env::var("LRD_X11_TEST_DISPLAY")?),
+            xauthority: Some(std::env::var("LRD_X11_TEST_AUTH")?.into()),
+            ..SessionTarget::default()
+        };
+        let target = XTarget::from_session(&session)?;
+        let connection = connect(&target, &Mutex::new(None))?;
+        let root = connection.setup().roots[target.screen].root;
+        let (visual, _) = visual_and_format(&connection, target.screen)?;
+        paint_root(&connection, target.screen, visual.blue_mask)?;
+        let source = connection.generate_id()?;
+        let mask = connection.generate_id()?;
+        let gc = connection.generate_id()?;
+        connection.create_pixmap(1, source, root, 8, 8)?.check()?;
+        connection.create_pixmap(1, mask, root, 8, 8)?.check()?;
+        connection
+            .create_gc(gc, source, &xproto::CreateGCAux::new().foreground(1))?
+            .check()?;
+        let area = [xproto::Rectangle {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 8,
+        }];
+        connection.poly_fill_rectangle(source, gc, &area)?.check()?;
+        connection.poly_fill_rectangle(mask, gc, &area)?.check()?;
+        let arrow = connection.generate_id()?;
+        connection
+            .create_cursor(arrow, source, mask, 65535, 0, 0, 0, 0, 0, 2, 3)?
+            .check()?;
+        connection
+            .change_window_attributes(
+                root,
+                &xproto::ChangeWindowAttributesAux::new().cursor(arrow),
+            )?
+            .check()?;
+        connection
+            .warp_pointer(x11rb::NONE, root, 0, 0, 0, 0, 10, 20)?
+            .check()?;
+        let backend = Backend::start_with_executable(
+            session,
+            60,
+            85,
+            None,
+            Arc::new(AtomicBool::new(false)),
+            Path::new(&std::env::var("LRD_X11_TEST_BINARY")?),
+        )?;
+        let cursors = backend
+            .cursor_frames()
+            .context("XFixes cursor channel missing")?;
+        let wait = |condition: &dyn Fn() -> bool| -> Result<()> {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !condition() {
+                ensure!(Instant::now() < deadline, "cursor update timed out");
+                thread::sleep(Duration::from_millis(10));
+            }
+            Ok(())
+        };
+        wait(&|| {
+            cursors
+                .borrow()
+                .as_ref()
+                .is_some_and(|c| c.visible && c.width == 8)
+        })?;
+        let first = cursors.borrow().as_ref().unwrap().clone();
+        assert_eq!((first.hotspot_x, first.hotspot_y), (2, 3));
+        assert_eq!(&first.pixels[..4], &[0, 0, 255, 255]);
+        let frames = backend.frames();
+        let index = (17 * first.units_width as usize + 8) * 4;
+        assert!(!frames.borrow().as_ref().unwrap().cursor_embedded);
+        assert_eq!(
+            &frames.borrow().as_ref().unwrap().pixels[index..index + 4],
+            &[0, 0, 255, 255]
+        );
+        backend.begin_cursor(41);
+        backend.separate_cursor(41);
+        wait(&|| frames.borrow().as_ref().is_some_and(|f| !f.cursor_embedded))?;
+        assert_eq!(
+            &frames.borrow().as_ref().unwrap().pixels[index..index + 4],
+            &[0, 0, 255, 255]
+        );
+        connection
+            .warp_pointer(x11rb::NONE, root, 0, 0, 0, 0, 30, 40)?
+            .check()?;
+        wait(&|| {
+            cursors
+                .borrow()
+                .as_ref()
+                .is_some_and(|c| (c.x * f64::from(c.units_width) - 30.).abs() < 0.01)
+        })?;
+        backend.release_cursor(40);
+        assert!(!frames.borrow().as_ref().unwrap().cursor_embedded);
+        backend.release_cursor(41);
+        assert!(!frames.borrow().as_ref().unwrap().cursor_embedded);
+        let next_index = (37 * first.units_width as usize + 28) * 4;
+        assert_eq!(
+            &frames.borrow().as_ref().unwrap().pixels[next_index..next_index + 4],
+            &[0, 0, 255, 255]
+        );
+        connection
+            .change_gc(gc, &xproto::ChangeGCAux::new().foreground(0))?
+            .check()?;
+        connection.poly_fill_rectangle(mask, gc, &area)?.check()?;
+        let hidden = connection.generate_id()?;
+        connection
+            .create_cursor(hidden, source, mask, 65535, 0, 0, 0, 0, 0, 2, 3)?
+            .check()?;
+        connection
+            .change_window_attributes(
+                root,
+                &xproto::ChangeWindowAttributesAux::new().cursor(hidden),
+            )?
+            .check()?;
+        wait(&|| cursors.borrow().as_ref().is_some_and(|c| !c.visible))?;
+        wait(&|| {
+            frames
+                .borrow()
+                .as_ref()
+                .is_some_and(|f| f.pixels[next_index..next_index + 4] == [0, 0, 255, 255])
+        })?;
+        backend.stop();
         Ok(())
     }
 
@@ -2118,6 +2692,30 @@ mod tests {
             runtime.block_on(backend.clipboard_read())?,
             "private X11 clipboard ✓"
         );
+        // Image ownership uses the same selected X server and private IPC as
+        // text. Compare decoded pixels, not merely a successful write reply.
+        let before_image = runtime.block_on(backend.clipboard_revision())?;
+        let pixels = image::RgbaImage::from_raw(
+            2,
+            2,
+            vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 30, 60, 90, 255,
+            ],
+        )
+        .unwrap();
+        let mut png = io::Cursor::new(Vec::new());
+        pixels.write_to(&mut png, image::ImageFormat::Png)?;
+        runtime.block_on(backend.clipboard_write_png(png.get_ref()))?;
+        let restored = runtime
+            .block_on(backend.clipboard_read_png())?
+            .context("X11 image clipboard missing")?;
+        assert_eq!(image::load_from_memory(&restored)?.to_rgba8(), pixels);
+        assert_ne!(
+            runtime.block_on(backend.clipboard_revision())?,
+            before_image
+        );
+        runtime.block_on(backend.clipboard_write("private X11 clipboard ✓"))?;
+
         // Block the IPC worker after one text batch, then cancel a clipboard
         // write while it is queued. This is the same receiver cancellation used
         // by GuardedBackend when the physical session locks.

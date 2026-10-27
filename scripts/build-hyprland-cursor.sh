@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the optional read-only adapter against this host's exact Hyprland ABI.
+# Build cursor export/capture isolation against this host's exact Hyprland ABI.
 set -euo pipefail
 source_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cursor_output=${1:-"$source_root/target/release/lightos-cursor.so"}

@@ -9,7 +9,21 @@ use anyhow::{Context, ensure};
 use display_control::{DesktopEnvironment, SessionTarget, WaylandDisplay, X11Display};
 use std::sync::atomic::Ordering;
 
+mod idle;
 pub struct LinuxHost;
+
+struct OwnedLifecycle {
+    _idle: Option<idle::Inhibitor>,
+    session: Session,
+}
+impl SessionLifecycle for OwnedLifecycle {
+    fn healthy(&mut self) -> bool {
+        self.session.healthy()
+    }
+    fn is_owned(&self) -> bool {
+        self.session.is_owned()
+    }
+}
 
 impl SessionLifecycle for Session {
     fn healthy(&mut self) -> bool {
@@ -43,11 +57,25 @@ pub fn context(config: &Config, backend: Arc<dyn DesktopBackend>, session: Sessi
         server: session.pulse_server.clone(),
         source: session.audio_source.clone(),
     });
+    let idle = session
+        .is_owned()
+        .then(|| session.target().bus_address)
+        .flatten()
+        .and_then(|address| match idle::Inhibitor::start(address) {
+            Ok(inhibitor) => Some(inhibitor),
+            Err(error) => {
+                tracing::warn!(%error,"could not start owned desktop idle guard");
+                None
+            }
+        });
     HostSession {
         backend,
         displays,
         audio,
-        lifecycle: Box::new(session),
+        lifecycle: Box::new(OwnedLifecycle {
+            _idle: idle,
+            session,
+        }),
         output: None,
         outputs: Vec::new(),
     }
@@ -134,12 +162,42 @@ impl HostPlatform for LinuxHost {
         backend::probe(&Session::physical_target(config)?, true, cancelled)
     }
     fn supports_virtual(&self, config: &Config) -> bool {
-        config.wayland_socket.is_none() && config.x11_display.is_none()
+        config.virtual_wayland_server_pid.is_some()
+            || (config.wayland_socket.is_none() && config.x11_display.is_none())
     }
     fn open(&self, config: &Config, cancelled: Arc<AtomicBool>) -> Result<HostSession> {
         let session = Session::start_cancellable(config, cancelled.clone())?;
         ensure!(!cancelled.load(Ordering::Acquire), "startup cancelled");
         let target = session.target();
+        if let Some(pid) = config.virtual_wayland_server_pid {
+            #[cfg(feature = "portal")]
+            {
+                let executable = std::fs::read_link(format!("/proc/{pid}/exe"))?;
+                let active: Arc<dyn DesktopBackend> = if executable
+                    .file_name()
+                    .is_some_and(|name| name == "gnome-shell")
+                {
+                    Arc::new(backend::mutter::Backend::start(target, pid, cancelled)?)
+                } else if executable.file_name().is_some_and(|name| name == "labwc") {
+                    Arc::new(crate::wayland::Backend::start_with_output_cancellable(
+                        target
+                            .wayland_socket
+                            .context("owned Wayland socket missing")?,
+                        config.fps,
+                        config.quality,
+                        None,
+                        cancelled,
+                    )?)
+                } else {
+                    Arc::new(backend::kwin::Backend::start(target, pid, cancelled)?)
+                };
+                return Ok(context(config, active, session));
+            }
+            #[cfg(not(feature = "portal"))]
+            anyhow::bail!(
+                "owned Wayland capture requires the portal build feature (compositor PID {pid})"
+            );
+        }
         let selected = backend::probe(&target, false, Some(&cancelled))?.require_available()?;
         let active: Arc<dyn DesktopBackend> =
             if !session.is_owned() && selected == BackendKind::Portal {

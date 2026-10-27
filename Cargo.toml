@@ -53,7 +53,7 @@ tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 turbojpeg = { version = "1.5", default-features = false, features = ["pkg-config"] }
-arboard = { version = "3.7", default-features = false }
+arboard = { version = "3.7", default-features = false, features = ["image-data"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 platform-detect = { path = "crates/platform-detect" }
@@ -61,15 +61,16 @@ desktop-config = { path = "crates/desktop-config" }
 libwayshot = { version = "0.9", default-features = false }
 libpulse-binding = "2.30.1"
 wayland-client = "0.31"
-wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
+wayland-protocols-plasma = { version = "0.3", features = ["client"] }
 ashpd = { version = "0.13.13", default-features = false, features = ["tokio", "remote_desktop", "screencast", "clipboard"], optional = true }
 pipewire = { version = "0.10.1", optional = true }
 configparser = { version = "3.3", optional = true }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 xkbcommon = "0.9"
-x11rb = { version = "0.14", features = ["randr", "xtest", "shm", "damage"] }
+x11rb = { version = "0.14", features = ["randr", "xtest", "shm", "damage", "xfixes"] }
 enigo = { version = "0.6.1", default-features = false, features = ["x11rb"] }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]

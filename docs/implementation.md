@@ -74,15 +74,17 @@ installed Python service. Source lives in ~/code/rust/lightos-remote-desktop.
 - Keycode is Linux evdev, without the XKB +8 offset. Browser event.code mapping
   must not forward arbitrary strings to a shell. Text uses a Unicode-aware
   virtual keymap in the backend. Bounded text and clipboard sizes.
-- Readiness starts with `cursor: "embedded"` and an optional connection-scoped
+- Readiness starts with `cursor: "default"` and a connection-scoped
   `cursor_session`. A same-origin authenticated `/cursor?session=...` socket
-  carries actual shapes/positions independently of video. The optional Hyprland
-  observer verifies the exact running ABI and exposes read-only cursor data.
-  `frame_id.cursor_embedded` identifies the actual capture mode of a displayed
-  frame, so switching local/embedded presentation cannot duplicate the cursor.
-  Session generations prevent an old cursor connection from changing the new
-  controller's mode. Unsupported or failed cursor channels retain video capture
-  with its embedded cursor.
+  carries actual shapes/positions independently of video. Hyprland's adapter
+  verifies the exact running ABI and snapshots the render target before the
+  software cursor is drawn. Only monitor capture uses that cursor-free texture;
+  physical output and ordinary mirrored monitors retain their normal rendering.
+  Cursor-inclusive screenshot requests explicitly draw their one cursor.
+  Capture startup verifies the adapter before publishing its first frame.
+  `frame_id.cursor_embedded` remains false. Session generations prevent an old
+  cursor connection from changing the new controller's state. Failed cursor
+  channels retain independent presentation while reconnecting.
 - While dragging the floating toolbar, all layout requests retain the current
   pointer-relative position, including React updates and resize callbacks.
   The toolbar docks and persists its position only on pointer release;

@@ -8,16 +8,30 @@ interface CursorState {
 }
 export function createCursorLayer(canvas: HTMLCanvasElement, overlay: HTMLImageElement, rtt: () => number = () => 0, clipBounds?: () => { left: number; top: number; right: number; bottom: number }, rotated: () => boolean = () => false) {
   let socket: WebSocket | null = null, generation = 0, imageRevision = 0;
-  let embedded = true, shape: CursorState | null = null, latest: CursorState | null = null;
-  let url: string | null = null, inside = false, touch = false, corrected = false;
+  let reconnect: ReturnType<typeof setTimeout> | null = null;
+  let shape: CursorState | null = null, latest: CursorState | null = null;
+  let url: string | null = null, inside = false, touch = false, corrected = false, predicting = false;
+  let cursorStyle: { requested: string; applied: string } | null = null;
   let point: { x: number; y: number } | null = null, localAt = -Infinity;
   let bounds = canvas.getBoundingClientRect();
   const listeners = new AbortController();
+  function setCursor(value: string) {
+    if (cursorStyle?.requested !== value || cursorStyle.applied !== canvas.style.cursor) {
+      canvas.style.setProperty("cursor", value);
+      cursorStyle = { requested: value, applied: canvas.style.cursor };
+    }
+  }
+  function position() {
+    // Painting and the next relative stroke must use the same position. An old
+    // echo must not become authoritative merely because a video frame arrives
+    // or the user lifts their finger for longer than one network round trip.
+    return point && (touch ? predicting : inside && !corrected) ? point : latest ?? point;
+  }
   function render() {
-    overlay.hidden = true;
-    if (embedded) { canvas.style.setProperty("cursor", "none"); return; }
-    if (!latest || !shape || !url) { canvas.style.setProperty("cursor", latest?.visible === false ? "none" : "default"); return; }
-    if (!latest.visible) { canvas.style.setProperty("cursor", "none"); return; }
+    if (!latest?.visible || !shape || !url) {
+      overlay.hidden = true;
+      setCursor(latest?.visible === false ? "none" : "default"); return;
+    }
     const rotation = rotated();
     const sx = (rotation ? bounds.height : bounds.width) / shape.units_width, sy = (rotation ? bounds.width : bounds.height) / shape.units_height;
     const width = shape.display_width * sx, height = shape.display_height * sy;
@@ -27,12 +41,12 @@ export function createCursorLayer(canvas: HTMLCanvasElement, overlay: HTMLImageE
     const native = !rotation && !touch && !corrected && width > 0 && height > 0 && width <= 128 && height <= 128
       && shape.width <= 128 && shape.height <= 128 && hx >= 0 && hy >= 0 && hx < width && hy < height
       && Math.abs(density - shape.height / height) < 0.01 && window.CSS?.supports("cursor", cursor);
-    canvas.style.setProperty("cursor", native ? cursor : "none");
-    if (native && inside) return;
-    const position = point && (touch ? performance.now() - localAt < Math.max(150, rtt() * 2) : inside && !corrected) ? point : latest;
-    overlay.src = url;
-    overlay.style.width = `${width}px`; overlay.style.height = `${height}px`;
-    const client = pictureClientPoint(bounds, position, rotation);
+    setCursor(native ? cursor : "none");
+    if (native && inside) { overlay.hidden = true; return; }
+    if (overlay.src !== url) overlay.src = url;
+    if (overlay.style.width !== `${width}px`) overlay.style.width = `${width}px`;
+    if (overlay.style.height !== `${height}px`) overlay.style.height = `${height}px`;
+    const client = pictureClientPoint(bounds, position() ?? latest, rotation);
     const left = client.x + (rotation ? hy-height : -hx), top = client.y - (rotation ? hx : hy);
     overlay.style.transform = rotation ? `translate3d(${client.x+hy}px, ${top}px, 0) rotate(90deg)` : `translate3d(${left}px, ${top}px, 0)`;
     const clip = clipBounds?.();
@@ -41,7 +55,7 @@ export function createCursorLayer(canvas: HTMLCanvasElement, overlay: HTMLImageE
   }
   function layout() { bounds = canvas.getBoundingClientRect(); render(); }
   function move(x: number, y: number, pointerType = "mouse") {
-    localAt = performance.now(); touch = pointerType === "touch"; corrected = false;
+    localAt = performance.now(); touch = pointerType === "touch"; corrected = false; predicting = true;
     inside = x >= bounds.left && y >= bounds.top && x <= bounds.right && y <= bounds.bottom;
     const normalized = pictureNormalizedPoint(bounds, { x, y }, rotated());
     point = { x: Math.max(0, Math.min(1, normalized.x)), y: Math.max(0, Math.min(1, normalized.y)) };
@@ -58,8 +72,16 @@ export function createCursorLayer(canvas: HTMLCanvasElement, overlay: HTMLImageE
   async function receive(value: CursorState, session: number) {
     if (session !== generation || !valid(value)) return;
     latest = value;
-    if (point && !touch && performance.now() - localAt > Math.max(150, Math.min(1500, rtt() * 2))) {
-      corrected = Math.abs((value.x - point.x) * (rotated() ? bounds.height : bounds.width)) > 3 || Math.abs((value.y - point.y) * (rotated() ? bounds.width : bounds.height)) > 3;
+    if (point) {
+      // Coordinates can be rounded by the compositor's absolute input device.
+      const acknowledged = Math.abs(value.x-point.x)*value.units_width <= .75
+        && Math.abs(value.y-point.y)*value.units_height <= .75;
+      const expired = performance.now()-localAt >= Math.max(1000, Math.min(3000, rtt()*3));
+      if (acknowledged || !predicting || expired) {
+        predicting = false;
+        corrected = !acknowledged && (Math.abs((value.x-point.x)*(rotated()?bounds.height:bounds.width)) > 3
+          || Math.abs((value.y-point.y)*(rotated()?bounds.width:bounds.height)) > 3);
+      }
     }
     if (value.png !== undefined) {
       if (typeof value.png !== "string" || value.png.length > 1500000 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value.png) || !value.width || !value.height) return;
@@ -82,22 +104,42 @@ export function createCursorLayer(canvas: HTMLCanvasElement, overlay: HTMLImageE
   }
   function reset() {
     generation++; imageRevision++;
+    if (reconnect !== null) clearTimeout(reconnect); reconnect = null;
     if (socket) { socket.onmessage = socket.onclose = socket.onerror = null; socket.close(); socket = null; }
     if (url) URL.revokeObjectURL(url);
-    url = null; shape = latest = null; embedded = true; inside = false; touch = false; corrected = false; point = null;
-    overlay.hidden = true; overlay.removeAttribute("src"); canvas.style.setProperty("cursor", "none");
+    url = null; shape = latest = null; inside = false; touch = false; corrected = predicting = false; point = null;
+    cursorStyle = null;
+    overlay.hidden = true; overlay.removeAttribute("src"); setCursor("default");
   }
   function connect(token: string) {
     reset();
     const session = generation;
     const endpoint = new URL("./cursor", location.href); endpoint.protocol = location.protocol === "https:" ? "wss:" : "ws:"; endpoint.searchParams.set("session", token);
-    const current = new WebSocket(endpoint); socket = current;
-    current.onmessage = event => {
-      if (session !== generation || typeof event.data !== "string" || event.data.length > 1600000) return;
-      try { const value = JSON.parse(event.data); if (value.type === "cursor") void receive(value, session).catch(() => { if (socket === current) current.close(); }); } catch {}
-    };
-    current.onerror = () => { if (socket === current) current.close(); };
-    current.onclose = () => { if (socket === current) socket = null; };
+    let retryDelay = 250;
+    function open() {
+      if (session !== generation) return;
+      const current = new WebSocket(endpoint); socket = current;
+      current.onmessage = event => {
+        if (session !== generation || socket !== current || typeof event.data !== "string" || event.data.length > 1600000) return;
+        try {
+          const value = JSON.parse(event.data);
+          if (value.type === "cursor" && valid(value)) {
+            retryDelay = 250;
+            void receive(value, session).catch(() => { if (socket === current) current.close(); });
+          }
+        } catch {}
+      };
+      current.onerror = () => { if (socket === current) current.close(); };
+      current.onclose = () => {
+        if (session !== generation || socket !== current) return;
+        socket = null; imageRevision++;
+        // Retain the independent shape while reconnecting. Cursor loss never
+        // enables a video-embedded pointer or reconnects the desktop.
+        reconnect = setTimeout(() => { reconnect = null; open(); }, retryDelay);
+        retryDelay = Math.min(5000, retryDelay * 2);
+      };
+    }
+    open();
   }
   canvas.addEventListener("pointerenter", event => { layout(); move(event.clientX,event.clientY,event.pointerType); }, { signal: listeners.signal });
   canvas.addEventListener("pointerleave", () => { inside = false; render(); }, { signal: listeners.signal });
@@ -108,12 +150,11 @@ export function createCursorLayer(canvas: HTMLCanvasElement, overlay: HTMLImageE
   return {
     connect, reset, layout, move,
     position: () => {
-      const recent = point && performance.now() - localAt < Math.max(150, rtt() * 2);
-      const current = recent ? point : latest ?? point;
+      const current = position();
       return { x: Math.max(0, Math.min(1, current?.x ?? .5)), y: Math.max(0, Math.min(1, current?.y ?? .5)) };
     },
     moveNormalized: (x: number, y: number) => { const client = pictureClientPoint(bounds, { x, y }, rotated()); move(client.x, client.y, "touch"); },
-    present: (value: boolean) => { embedded = value; if (!embedded && !touch) inside = canvas.matches?.(":hover") ?? inside; render(); },
+    present: (_value: boolean) => { if (!touch) inside = canvas.matches?.(":hover") ?? inside; render(); },
     dispose: () => { reset(); listeners.abort(); observer?.disconnect(); },
   };
 }

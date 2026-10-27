@@ -363,6 +363,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/audio", get(upgrade_audio))
         .route("/cursor", get(upgrade_cursor))
+        .route("/clipboard", get(upgrade_clipboard))
         .route("/desktops", get(desktops))
         .merge(crate::rdp::settings::routes())
         .merge(crate::mcp::management(state.mcp.clone()).with_state(()));
@@ -756,6 +757,24 @@ async fn upgrade_cursor(
         .max_message_size(1024)
         .on_upgrade(move |socket| crate::cursor::connection(socket, lease))
 }
+async fn upgrade_clipboard(
+    State(mut state): State<AppState>,
+    Query(request): Query<CursorRequest>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    if !origin_allowed(&headers) {
+        return (StatusCode::FORBIDDEN, "Same-origin WebSocket required").into_response();
+    }
+    let Some(lease) = state.cursor_hub.attach_clipboard(&request.session) else {
+        return (StatusCode::CONFLICT, "Clipboard session unavailable").into_response();
+    };
+    state.backend = lease.backend();
+    upgrade
+        .max_message_size(96 * 1024)
+        .max_frame_size(96 * 1024)
+        .on_upgrade(move |socket| crate::clipboard::connection(socket, lease, state))
+}
 
 async fn upgrade_audio(
     State(state): State<AppState>,
@@ -797,7 +816,6 @@ async fn connection(
     let (control_tx, mut controls) = mpsc::channel(16);
     let (pacing_tx, mut pacing) =
         watch::channel(FrameScheduler::new(state.config.fps).expect("validated frame rate"));
-    let receive = receive_commands(reader, state.backend.input(), control_tx, pacing_tx.clone());
     let mut frames = state.backend.frames();
     let dimensions = frames
         .borrow()
@@ -817,6 +835,19 @@ async fn connection(
     });
     let display_capabilities = state.displays.capabilities().await;
     let cursor_scope = state.cursor_hub.start(state.backend.clone());
+    let clipboard_cancellation = cursor_scope.cancellation();
+    let receive = receive_commands(
+        reader,
+        state.backend.input(),
+        control_tx,
+        pacing_tx.clone(),
+        Some(ClipboardInput {
+            backend: state.backend.clone(),
+            requests: cursor_scope.clipboard_sender(),
+            stop: cursor_scope.cancellation(),
+            gate: cursor_scope.clipboard_gate(),
+        }),
+    );
     let mut capability_updates = state.codec_capabilities.subscribe();
     let mut codec_capabilities = state
         .codec_capabilities
@@ -834,7 +865,7 @@ async fn connection(
     .await
     .ok()?;
     let ready = Message::Text(
-        json!({"type":"ready","key_chords":true,"image_clipboard":state.backend.supports_image_clipboard(),"backend_selection":true,"video_request_ids":true,"video_scaling":true,"control_release":true,"resize_scale":display_capabilities.resize_scale,"resize_scales":if display_capabilities.resize_scale { DisplayMode::SUPPORTED_SCALES.as_slice() } else { &[] },"cursor_session":if state.backend.kind() == BackendKind::Wayland { Some(cursor_scope.token()) } else { None },"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":if state.backend.cursor_embedded() { "embedded" } else { "default" },"audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktop_backend":state.backend.kind(),"desktops":desktop_options,"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
+        json!({"type":"ready","key_chords":true,"text_clipboard":true,"clipboard_text_input":state.backend.clipboard_text_input(),"image_clipboard":state.backend.supports_image_clipboard(),"clipboard_sync":state.backend.supports_clipboard_sync(),"clipboard_session":Some(cursor_scope.token()),"backend_selection":true,"video_request_ids":true,"video_scaling":true,"control_release":true,"resize_scale":display_capabilities.resize_scale,"resize_scales":if display_capabilities.resize_scale { DisplayMode::SUPPORTED_SCALES.as_slice() } else { &[] },"cursor_session":if state.backend.kind() == BackendKind::Wayland || state.backend.cursor_frames().is_some() { Some(cursor_scope.token()) } else { None },"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":if state.backend.cursor_embedded() { "embedded" } else { "default" },"audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktop_backend":state.backend.kind(),"desktops":desktop_options,"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
 
             .to_string()
             .into(),
@@ -1057,7 +1088,7 @@ async fn connection(
                     pacing_tx.send_modify(|flow| flow.sent(frame_id, Instant::now()));
                     if pacing.borrow().sequenced() {
                         discard_stale_frame!(frame_epoch);
-                        let metadata = Message::Text(json!({"type":"frame_id","id":frame_id,"source_width":source_size.0,"source_height":source_size.1,"cursor_embedded":if state.backend.kind() == BackendKind::Wayland { Some(cursor_embedded) } else { None }}).to_string().into());
+                        let metadata = Message::Text(json!({"type":"frame_id","id":frame_id,"source_width":source_size.0,"source_height":source_size.1,"cursor_embedded":if state.backend.kind() == BackendKind::Wayland || state.backend.cursor_frames().is_some() { Some(cursor_embedded) } else { None }}).to_string().into());
                         if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(metadata)).await, Ok(Ok(()))) { break; }
                         discard_stale_frame!(frame_epoch);
                     }
@@ -1173,7 +1204,7 @@ async fn connection(
                                 }
                                 continue;
                             }
-                            match handle_command(&state, &text, &mut audio, audio_source, &mut clipboard_upload).await {
+                            match handle_command(&state, &text, &mut audio, audio_source, &mut clipboard_upload,Some(&clipboard_cancellation)).await {
                                 Ok(response) => response,
                                 Err(error) => Some(error_message(&error.to_string())),
                             }
@@ -1219,6 +1250,7 @@ async fn connection(
     };
     let release_requested =
         tokio::select! { requested = receive => requested, _ = transmit => false };
+    cursor_scope.cancel();
     audio.take();
     let _ = timeout(
         Duration::from_secs(1),
@@ -1300,11 +1332,82 @@ async fn wait_for_video_frame<T>(
     }
 }
 
+struct ClipboardInput {
+    backend: Arc<dyn DesktopBackend>,
+    requests: mpsc::Sender<crate::clipboard::CopyRequest>,
+    stop: tokio_util::sync::CancellationToken,
+    gate: Arc<crate::clipboard::Gate>,
+}
+
+impl ClipboardInput {
+    async fn paste_text(&self, value: &serde_json::Value) -> anyhow::Result<()> {
+        let text = value["text"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing clipboard text"))?;
+        anyhow::ensure!(text.len() <= 64 * 1024, "clipboard text too large");
+        let _gate = self.gate.lock.lock().await;
+        let operation = self.stop.child_token();
+        let result = async {
+            // Flush preceding key events before changing the selection. In
+            // particular, an earlier Backspace must not erase newly pasted text.
+            let backend = self.backend.clone();
+            anyhow::ensure!(
+                tokio::task::spawn_blocking(move || backend.release_input()).await?,
+                "preceding input did not complete"
+            );
+            let hash =
+                crate::clipboard::fingerprint(crate::clipboard::CopyData::Text(text.to_owned()))
+                    .await?
+                    .1;
+            *self
+                .gate
+                .last_selection
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(hash);
+            self.backend.clipboard_write(text).await?;
+            let revision = self.backend.clipboard_revision().await?;
+            *self
+                .gate
+                .local_revision
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(revision);
+            let codes = self
+                .backend
+                .text_paste_keycodes(value["shift"] == true)
+                .await;
+            let guard = crate::backend::InputGuard::new(
+                operation.clone(),
+                Instant::now() + Duration::from_secs(2),
+            );
+            self.backend
+                .input()
+                .send(InputCommand::Guarded {
+                    command: Box::new(InputCommand::Chord { codes }),
+                    guard,
+                })
+                .await?;
+            let backend = self.backend.clone();
+            anyhow::ensure!(
+                tokio::task::spawn_blocking(move || backend.release_input()).await?,
+                "text paste did not complete"
+            );
+            anyhow::Ok(())
+        };
+        let result = tokio::select! {
+            _ = self.stop.cancelled() => Err(anyhow::anyhow!("text input cancelled")),
+            result = timeout(Duration::from_secs(3), result) => result.map_err(anyhow::Error::from).and_then(|r| r),
+        };
+        operation.cancel();
+        result
+    }
+}
+
 async fn receive_commands(
     mut reader: impl Stream<Item = Result<Message, axum::Error>> + Unpin,
     input: mpsc::Sender<InputCommand>,
     controls: mpsc::Sender<String>,
     pacing: watch::Sender<FrameScheduler>,
+    clipboard: Option<ClipboardInput>,
 ) -> bool {
     while let Ok(Some(Ok(message))) = timeout(Duration::from_secs(60), reader.next()).await {
         match message {
@@ -1312,9 +1415,123 @@ async fn receive_commands(
                 if text.len() > 96 * 1024 {
                     break;
                 }
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
+                    && value["type"] == "clipboard_paste_text"
+                    && let Some(scope) = &clipboard
+                {
+                    if let Some(order) = value["order"].as_u64() {
+                        scope
+                            .gate
+                            .latest
+                            .fetch_max(order, std::sync::atomic::Ordering::AcqRel);
+                    }
+                    if let Err(error) = scope.paste_text(&value).await {
+                        let _ = controls
+                            .send(
+                                json!({"type":"input_error","message":error.to_string()})
+                                    .to_string(),
+                            )
+                            .await;
+                    }
+                    continue;
+                }
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
+                    && value["type"] == "clipboard_copy_key"
+                    && let (Some(id), Some(code)) = (value["id"].as_u64(), value["code"].as_u64())
+                    && (1..=9007199254740991).contains(&id)
+                    && matches!(code, 45 | 46)
+                {
+                    let _gate = if let Some(scope) = &clipboard {
+                        scope
+                            .gate
+                            .latest
+                            .fetch_max(id, std::sync::atomic::Ordering::AcqRel);
+                        Some(scope.gate.lock.lock().await)
+                    } else {
+                        None
+                    };
+                    let before = if let Some(scope) = &clipboard {
+                        timeout(
+                            Duration::from_millis(500),
+                            scope.backend.clipboard_revision(),
+                        )
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                    } else {
+                        None
+                    };
+                    let command = if value["semantic"] == true {
+                        let Some(scope) = &clipboard else {
+                            continue;
+                        };
+                        let mut codes = scope.backend.text_paste_keycodes(false).await;
+                        if let Some(last) = codes.last_mut() {
+                            *last = code as u32;
+                        }
+                        InputCommand::Chord { codes }
+                    } else if let Some(codes) = value.get("chord") {
+                        match serde_json::from_value::<Vec<u32>>(codes.clone()) {
+                            Ok(codes) => {
+                                let command = InputCommand::Chord { codes };
+                                if command.validate().is_err() {
+                                    continue;
+                                }
+                                command
+                            }
+                            Err(_) => continue,
+                        }
+                    } else {
+                        InputCommand::Key {
+                            code: code as u32,
+                            pressed: true,
+                        }
+                    };
+                    let command = if let Some(scope) = &clipboard {
+                        InputCommand::Guarded {
+                            command: Box::new(command),
+                            guard: crate::backend::InputGuard::new(
+                                scope.stop.clone(),
+                                Instant::now() + Duration::from_secs(1),
+                            ),
+                        }
+                    } else {
+                        command
+                    };
+                    if !matches!(
+                        timeout(Duration::from_millis(500), input.send(command)).await,
+                        Ok(Ok(()))
+                    ) {
+                        break;
+                    }
+                    if let Some(scope) = &clipboard {
+                        let _ = scope.requests.try_send(crate::clipboard::CopyRequest {
+                            id,
+                            before,
+                            epoch: scope.backend.privacy_epoch(),
+                        });
+                    }
+                    continue;
+                }
                 if let Ok(command) = serde_json::from_str::<InputCommand>(&text)
                     && command.validate().is_ok()
                 {
+                    let _gate = if !matches!(
+                        command,
+                        InputCommand::Release
+                            | InputCommand::ReleaseSync { .. }
+                            | InputCommand::Move { .. }
+                            | InputCommand::Scroll { .. }
+                            | InputCommand::Key { pressed: false, .. }
+                    ) {
+                        if let Some(scope) = &clipboard {
+                            Some(scope.gate.lock.lock().await)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
                     if !matches!(
                         timeout(Duration::from_millis(500), input.send(command)).await,
                         Ok(Ok(()))
@@ -1381,12 +1598,44 @@ async fn read_audio(
     }
 }
 
-async fn handle_command(
+async fn send_clipboard_paste(
+    state: &AppState,
+    value: &serde_json::Value,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
+) -> anyhow::Result<()> {
+    let shift = value.get("shift").and_then(|v| v.as_bool()) == Some(true);
+    let codes = if value["type"] == "clipboard_paste_text" {
+        state.backend.text_paste_keycodes(shift).await
+    } else {
+        state.backend.paste_keycodes(shift)
+    };
+    let command = InputCommand::Chord { codes };
+    let command = if let Some(cancellation) = cancellation {
+        InputCommand::Guarded {
+            command: Box::new(command),
+            guard: crate::backend::InputGuard::new(
+                cancellation.clone(),
+                Instant::now() + Duration::from_secs(1),
+            ),
+        }
+    } else {
+        command
+    };
+    timeout(
+        Duration::from_millis(500),
+        state.backend.input().send(command),
+    )
+    .await??;
+    Ok(())
+}
+
+pub(crate) async fn handle_command(
     state: &AppState,
     text: &str,
     audio: &mut Option<Box<dyn AudioCapture>>,
     source: Option<&str>,
     clipboard_upload: &mut Option<ImageUpload>,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
 ) -> anyhow::Result<Option<Message>> {
     anyhow::ensure!(text.len() <= 96 * 1024, "control message too large");
     let value: serde_json::Value = serde_json::from_str(text)?;
@@ -1395,6 +1644,11 @@ async fn handle_command(
         .and_then(|kind| kind.as_str())
         .unwrap_or_default();
     match kind {
+        "input_error" => {
+            return Ok(Some(error_message(
+                value["message"].as_str().unwrap_or("Text input failed"),
+            )));
+        }
         "clipboard_paste_text" => {
             let content = value
                 .get("text")
@@ -1402,17 +1656,12 @@ async fn handle_command(
                 .ok_or_else(|| anyhow::anyhow!("missing clipboard text"))?;
             anyhow::ensure!(content.len() <= 64 * 1024, "clipboard text too large");
             state.backend.clipboard_write(content).await?;
-            timeout(
-                Duration::from_millis(500),
-                state.backend.input().send(InputCommand::Chord {
-                    codes: state.backend.paste_keycodes(
-                        value.get("shift").and_then(|value| value.as_bool()) == Some(true),
-                    ),
-                }),
-            )
-            .await??;
+            send_clipboard_paste(state, &value, cancellation).await?;
         }
-        "clipboard_image_start" | "clipboard_image_chunk" | "clipboard_image_paste" => {
+        "clipboard_image_start"
+        | "clipboard_image_chunk"
+        | "clipboard_image_paste"
+        | "clipboard_image_set" => {
             let id = value
                 .get("id")
                 .and_then(|value| value.as_u64())
@@ -1453,16 +1702,9 @@ async fn handle_command(
                             .ok_or_else(|| anyhow::anyhow!("no clipboard image transfer"))?
                             .finish(id, step)?;
                         state.backend.clipboard_write_png(&image).await?;
-                        timeout(
-                            Duration::from_millis(500),
-                            state.backend.input().send(InputCommand::Chord {
-                                codes: state.backend.paste_keycodes(
-                                    value.get("shift").and_then(|value| value.as_bool())
-                                        == Some(true),
-                                ),
-                            }),
-                        )
-                        .await??;
+                        if kind == "clipboard_image_paste" {
+                            send_clipboard_paste(state, &value, cancellation).await?;
+                        }
                     }
                 }
                 anyhow::Ok(())
@@ -1482,6 +1724,9 @@ async fn handle_command(
                 json!({"type":"pong","id":id}).to_string().into(),
             )));
         }
+        "clipboard_cancel" => {
+            *clipboard_upload = None;
+        }
         "clipboard_get" => {
             let content = state.backend.clipboard_read().await?;
             return Ok(Some(Message::Text(
@@ -1499,7 +1744,15 @@ async fn handle_command(
                 content.len() <= backend::MAX_CLIPBOARD_BYTES,
                 "clipboard too large"
             );
-            state.backend.clipboard_write(content).await?;
+            let result = state.backend.clipboard_write(content).await;
+            if let Some(id) = value["id"].as_u64() {
+                let mut ack = json!({"type":"clipboard_ack","id":id,"step":value["step"]});
+                if let Err(error) = result {
+                    ack["error"] = error.to_string().into();
+                }
+                return Ok(Some(Message::Text(ack.to_string().into())));
+            }
+            result?;
         }
         "resize" => {
             let width = value.get("width").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -2138,7 +2391,7 @@ mod tests {
                 .into_iter()
                 .map(|message| Ok(Message::Text(message.into()))),
         );
-        receive_commands(reader, input, controls, pacing).await;
+        receive_commands(reader, input, controls, pacing, None).await;
         assert!(matches!(
             received.recv().await,
             Some(InputCommand::Move { .. })
@@ -2164,7 +2417,7 @@ mod tests {
         assert!(state.borrow().waiting());
         let reader =
             futures_util::stream::iter([Ok(Message::Text("{\"type\":\"frame_ack\"}".into()))]);
-        receive_commands(reader, input, controls, pacing).await;
+        receive_commands(reader, input, controls, pacing, None).await;
         assert!(!state.borrow().waiting());
         assert!(state.borrow().enabled());
     }
@@ -2180,12 +2433,19 @@ mod tests {
         let reader = futures_util::stream::iter([Ok(Message::Text(
             "{\"type\":\"frame_ack\",\"id\":1}".into(),
         ))]);
-        receive_commands(reader, input.clone(), controls.clone(), pacing.clone()).await;
+        receive_commands(
+            reader,
+            input.clone(),
+            controls.clone(),
+            pacing.clone(),
+            None,
+        )
+        .await;
         assert!(state.borrow().waiting());
         let reader = futures_util::stream::iter([Ok(Message::Text(
             "{\"type\":\"frame_ack\",\"id\":2}".into(),
         ))]);
-        receive_commands(reader, input, controls, pacing).await;
+        receive_commands(reader, input, controls, pacing, None).await;
         assert!(!state.borrow().waiting());
     }
 

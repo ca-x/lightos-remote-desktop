@@ -487,11 +487,23 @@ fn unwrapped_release(command: InputCommand) -> InputCommand {
     }
 }
 impl DesktopBackend for GuardedBackend {
+    fn clipboard_text_input(&self) -> bool {
+        self.inner.clipboard_text_input()
+    }
+    fn paste_keycodes(&self, shift: bool) -> Vec<u32> {
+        self.inner.paste_keycodes(shift)
+    }
+    fn text_paste_keycodes(&self, shift: bool) -> BoxFuture<'_, Vec<u32>> {
+        self.inner.text_paste_keycodes(shift)
+    }
     fn kind(&self) -> BackendKind {
         self.inner.kind()
     }
     fn cursor_embedded(&self) -> bool {
         self.inner.cursor_embedded()
+    }
+    fn cursor_frames(&self) -> Option<watch::Receiver<Option<Arc<super::CursorFrame>>>> {
+        self.inner.cursor_frames()
     }
     fn begin_cursor(&self, owner: u64) {
         self.inner.begin_cursor(owner);
@@ -513,6 +525,39 @@ impl DesktopBackend for GuardedBackend {
     }
     fn supports_image_clipboard(&self) -> bool {
         self.inner.supports_image_clipboard()
+    }
+    fn supports_clipboard_sync(&self) -> bool {
+        self.inner.supports_clipboard_sync()
+    }
+    fn clipboard_revision(&self) -> BoxFuture<'_, Result<super::ClipboardRevision>> {
+        Box::pin(async {
+            let generation = self.generation.load(Ordering::Acquire);
+            ensure!(!self.paused(), "desktop locked or unavailable");
+            let revision = tokio::select! {
+                result=self.inner.clipboard_revision()=>result?,
+                _=self.wait_for_lock(generation)=>bail!("desktop locked during clipboard read"),
+            };
+            ensure!(
+                self.generation.load(Ordering::Acquire) == generation && !self.paused(),
+                "desktop locked during clipboard read"
+            );
+            Ok(revision)
+        })
+    }
+    fn clipboard_read_png(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>>> {
+        Box::pin(async {
+            let generation = self.generation.load(Ordering::Acquire);
+            ensure!(!self.paused(), "desktop locked or unavailable");
+            let image = tokio::select! {
+                result=self.inner.clipboard_read_png()=>result?,
+                _=self.wait_for_lock(generation)=>bail!("desktop locked during clipboard read"),
+            };
+            ensure!(
+                self.generation.load(Ordering::Acquire) == generation && !self.paused(),
+                "desktop locked during clipboard read"
+            );
+            Ok(image)
+        })
     }
     fn clipboard_write_png<'a>(&'a self, data: &'a [u8]) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {

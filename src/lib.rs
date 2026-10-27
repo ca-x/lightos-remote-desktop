@@ -16,6 +16,8 @@ pub mod handoff;
 mod input_method;
 pub mod install;
 pub mod mcp;
+#[cfg(target_os = "linux")]
+mod owned_wayland;
 pub mod rdp;
 pub mod server;
 #[cfg(target_os = "linux")]

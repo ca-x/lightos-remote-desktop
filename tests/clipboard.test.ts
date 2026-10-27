@@ -40,7 +40,7 @@ it("transfers a clipboard image in bounded acknowledged chunks before requesting
 it("keeps text paste synchronous and reads images in preference to text from the explicit paste button", async () => {
   const h = harness();
   h.clipboard.paste(paste(undefined, "本机中文"));
-  expect(h.text).toHaveBeenCalledWith("本机中文");
+  expect(h.text).toHaveBeenCalledWith("本机中文",false);
   const blob = new NativeBlob([new Uint8Array([1, 2, 3])], { type: "image/png" }) as unknown as Blob;
   vi.stubGlobal("navigator", { clipboard: { read: async () => [{ types: ["text/plain", "image/png"], getType: async () => blob }] } });
   await h.clipboard.read();
@@ -73,4 +73,101 @@ it("rejects oversized images and reports server rejection instead of pasting old
   await operation;
   expect(blocked.sent).toHaveLength(1);
   expect(blocked.message).toHaveBeenLastCalledWith("Clipboard: upload rejected");
+});
+
+function localAuthority(writeError=false) {
+  const h=harness();let local="Search stale local clipboard";
+  vi.stubGlobal("Blob",NativeBlob);
+  vi.stubGlobal("ClipboardItem",class {constructor(public data:Record<string,Blob|Promise<Blob>>) {}});
+  vi.stubGlobal("WebSocket",class {
+    static OPEN=1;readyState=1;bufferedAmount=0;close=vi.fn();
+    constructor(public url:URL){}
+    send=vi.fn();
+  });
+  const write=vi.fn(async(items:{data:Record<string,Blob|Promise<Blob>>}[])=>{
+    const blob=await items[0].data['text/plain'];
+    if(writeError)throw new Error("NotAllowedError");
+    local=await blob.text();
+  });
+  vi.stubGlobal("navigator",{clipboard:{write,writeText:async(text:string)=>{if(writeError)throw new Error("NotAllowedError");local=text;},readText:async()=>local}});
+  h.clipboard.connect('a'.repeat(32),true);
+  return {...h,write,getLocal:()=>local,setLocal:(text:string)=>{local=text;}};
+}
+
+it("keeps committed text on the ordered input connection when the bulk clipboard channel is enabled", () => {
+  const h = localAuthority();
+  h.clipboard.send({ type: "clipboard_paste_text", text: "中文 123", shift: false });
+  expect(h.sent.at(-1)).toMatchObject({ type: "clipboard_paste_text", text: "中文 123", shift: false });
+  h.clipboard.reset();
+});
+
+it("copies fresh remote text into the local clipboard before a rapid paste can consume stale local data",async()=>{
+  const h=localAuthority();
+  expect(h.clipboard.copyKey(46)).toBe(true);
+  const id=h.sent.at(-1)!.id;
+  const pasting=h.clipboard.paste(paste(undefined,h.getLocal()));
+  h.clipboard.receive({type:'clipboard_copy',id,copied:true,text:'远端刚复制的中文'});
+  await pasting;
+  expect(h.getLocal()).toBe('远端刚复制的中文');
+  expect(h.text).toHaveBeenCalledWith('远端刚复制的中文',false);
+  h.clipboard.reset();
+});
+
+it("uses a newer local clipboard value after a completed remote copy instead of a cached remote selection",async()=>{
+  const h=localAuthority();h.clipboard.copyKey(46);
+  h.clipboard.receive({type:'clipboard_copy',id:h.sent.at(-1)!.id,copied:true,text:'remote selection'});
+  await vi.waitFor(()=>expect(h.getLocal()).toBe('remote selection'));
+  h.setLocal('new text copied in another Mac app');
+  await h.clipboard.paste(paste(undefined,h.getLocal()));
+  expect(h.text).toHaveBeenCalledWith('new text copied in another Mac app',false);
+  h.clipboard.reset();
+});
+
+it("does not paste stale content when the local clipboard rejects remote-copy synchronization",async()=>{
+  const h=localAuthority(true);h.clipboard.copyKey(46);
+  const pasting=h.clipboard.paste(paste(undefined,h.getLocal()));
+  h.clipboard.receive({type:'clipboard_copy',id:h.sent.at(-1)!.id,copied:true,text:'fresh remote selection'});
+  await pasting;
+  expect(h.text).not.toHaveBeenCalled();
+  expect(h.getLocal()).toBe('Search stale local clipboard');
+  h.clipboard.reset();
+});
+
+it("preserves local clipboard data when Ctrl+C did not change the remote selection, and ignores late replies after disconnect",async()=>{
+  const h=localAuthority();h.clipboard.copyKey(46);
+  h.clipboard.receive({type:'clipboard_copy',id:h.sent.at(-1)!.id,copied:false});
+  await h.clipboard.paste(paste(undefined,h.getLocal()));
+  expect(h.getLocal()).toBe('Search stale local clipboard');
+  h.clipboard.copyKey(46);const id=h.sent.at(-1)!.id;h.nextSession();
+  h.clipboard.receive({type:'clipboard_copy',id,copied:true,text:'late private selection'});
+  await Promise.resolve();expect(h.getLocal()).toBe('Search stale local clipboard');
+});
+
+it("does not paste a captured native event into a replacement desktop while remote copy is pending",async()=>{
+  const h=localAuthority();h.clipboard.copyKey(46);
+  const pasting=h.clipboard.paste(paste(undefined,'old desktop selection'));
+  h.nextSession();await pasting;
+  expect(h.text).not.toHaveBeenCalled();
+});
+
+it("synchronizes an application-menu copy and blocks stale paste when observation fails",async()=>{
+  const h=localAuthority();
+  // A copy made through a remote application's menu has no local key event.
+  h.clipboard.receive({type:'clipboard_copy_started',id:4_000_000_000_000_001});
+  h.clipboard.receive({type:'clipboard_copy',id:4_000_000_000_000_001,copied:true,text:'menu copy'});
+  // No gesture-reserved write: use the ordinary local clipboard write API.
+  await vi.waitFor(()=>expect(h.getLocal()).toBe('menu copy'));
+  h.clipboard.copyKey(46);
+  h.clipboard.receive({type:'clipboard_copy',id:h.sent.at(-1)!.id,copied:false,error:'observer unavailable'});
+  await h.clipboard.paste(paste(undefined,'stale'));
+  expect(h.text).not.toHaveBeenCalled();
+  h.clipboard.reset();
+});
+
+it("does not overwrite a newer local copy when the user leaves the remote page during synchronization",async()=>{
+  const h=localAuthority();h.clipboard.copyKey(46);const id=h.sent.at(-1)!.id;
+  h.clipboard.localFocusLeft();h.setLocal('copied in another local application');
+  h.clipboard.receive({type:'clipboard_copy',id,copied:true,text:'late remote selection'});
+  await Promise.resolve();expect(h.getLocal()).toBe('copied in another local application');
+  h.clipboard.reset();
 });

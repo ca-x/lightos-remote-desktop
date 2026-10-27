@@ -20,10 +20,16 @@ use tokio_util::sync::CancellationToken;
 
 #[cfg(target_os = "linux")]
 pub mod guarded;
+#[cfg(all(target_os = "linux", feature = "portal"))]
+pub(crate) mod kwin;
+#[cfg(all(target_os = "linux", feature = "portal"))]
+pub(crate) mod mutter;
 #[cfg(target_os = "linux")]
 pub mod portal;
 #[cfg(target_os = "linux")]
 pub mod selector;
+#[cfg(target_os = "linux")]
+pub(crate) mod wayland_clipboard;
 #[cfg(target_os = "linux")]
 pub mod x11;
 
@@ -43,6 +49,28 @@ pub enum BackendKind {
     Macos,
 }
 
+/// A cursor observed in the selected capture's coordinate space. Pixels are
+/// premultiplied BGRA, independent of the video encoder's resolution.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CursorFrame {
+    pub serial: u64,
+    pub visible: bool,
+    pub x: f64,
+    pub y: f64,
+    pub width: u32,
+    pub height: u32,
+    pub hotspot_x: u32,
+    pub hotspot_y: u32,
+    pub units_width: u32,
+    pub units_height: u32,
+    pub pixels: Arc<[u8]>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipboardRevision {
+    pub epoch: u64,
+    pub serial: u64,
+}
+
 pub trait DesktopBackend: Send + Sync {
     fn kind(&self) -> BackendKind;
     fn paste_keycodes(&self, shift: bool) -> Vec<u32> {
@@ -52,6 +80,12 @@ pub trait DesktopBackend: Send + Sync {
             vec![29, 47]
         }
     }
+    fn clipboard_text_input(&self) -> bool {
+        false
+    }
+    fn text_paste_keycodes(&self, shift: bool) -> BoxFuture<'_, Vec<u32>> {
+        Box::pin(async move { self.paste_keycodes(shift) })
+    }
     /// Whether captured pixels already include the pointer cursor.
     fn cursor_embedded(&self) -> bool {
         false
@@ -59,11 +93,23 @@ pub trait DesktopBackend: Send + Sync {
     fn begin_cursor(&self, _owner: u64) {}
     fn separate_cursor(&self, _owner: u64) {}
     fn release_cursor(&self, _owner: u64) {}
+    fn cursor_frames(&self) -> Option<watch::Receiver<Option<Arc<CursorFrame>>>> {
+        None
+    }
     fn cursor_target(&self) -> Result<(std::path::PathBuf, i32, Option<String>)> {
         bail!("independent cursor unavailable for this desktop backend")
     }
     fn supports_image_clipboard(&self) -> bool {
         false
+    }
+    fn supports_clipboard_sync(&self) -> bool {
+        false
+    }
+    fn clipboard_revision(&self) -> BoxFuture<'_, Result<ClipboardRevision>> {
+        Box::pin(async { bail!("clipboard change notifications unavailable") })
+    }
+    fn clipboard_read_png(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>>> {
+        Box::pin(async { Ok(None) })
     }
     fn clipboard_write_png<'a>(&'a self, _data: &'a [u8]) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { bail!("image clipboard unavailable for this desktop backend") })
@@ -389,5 +435,59 @@ impl InputCommand {
             Self::Release | Self::ReleaseSync { .. } => {}
         }
         Ok(())
+    }
+}
+
+/// Standard terminal applications use Ctrl+Shift+V, while ordinary text fields
+/// use Ctrl+V. Never replace PRIMARY merely to guess which paste binding works:
+/// acquiring PRIMARY can clear the destination widget's current selection.
+#[cfg(target_os = "linux")]
+pub(crate) fn terminal_app(app: &str) -> bool {
+    matches!(
+        app.to_ascii_lowercase().trim_end_matches(".desktop"),
+        "foot"
+            | "footclient"
+            | "kitty"
+            | "alacritty"
+            | "ghostty"
+            | "com.mitchellh.ghostty"
+            | "xterm"
+            | "uxterm"
+            | "rxvt"
+            | "urxvt"
+            | "st"
+            | "wezterm"
+            | "org.wezfurlong.wezterm"
+            | "gnome-terminal"
+            | "gnome-terminal-server"
+            | "org.gnome.terminal"
+            | "org.gnome.console"
+            | "org.gnome.ptyxis"
+            | "ptyxis"
+            | "kgx"
+            | "konsole"
+            | "org.kde.konsole"
+            | "yakuake"
+            | "org.kde.yakuake"
+            | "xfce4-terminal"
+            | "org.xfce.terminal"
+            | "mate-terminal"
+            | "tilix"
+            | "com.gexperts.tilix"
+            | "terminator"
+            | "com.raggesilver.blackbox"
+            | "blackbox"
+            | "contour"
+            | "tabby"
+            | "warp"
+            | "dev.warp.warp"
+    )
+}
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_text_paste_keys(shift: bool, terminal: bool) -> Vec<u32> {
+    if shift || terminal {
+        vec![29, 42, 47]
+    } else {
+        vec![29, 47]
     }
 }

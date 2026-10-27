@@ -36,7 +36,7 @@ test("toolbar displays the server version without accepting malformed values", (
   assert.equal(app.nodes["software-version"].textContent, "v0.1.2");
 });
 
-function harness(pathname = "/", storage = new Map(), clientOptions = {}, pixelRatio = 1, touchPoints = 0) {
+function harness(pathname = "/", storage = new Map(), clientOptions = {}, pixelRatio = 1, touchPoints = 0, platform = "") {
   class Target {
     handlers = new Map();
     disabled = false;
@@ -149,7 +149,7 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}, pixelR
     }
   }
   window.AudioContext = AudioContext;
-  const navigator = { maxTouchPoints: touchPoints, clipboard: { readText: async () => "local text" } };
+  const navigator = { platform, maxTouchPoints: touchPoints, clipboard: { readText: async () => "local text" } };
   const context = vm.createContext({ document, window, navigator, AbortController, WebSocket, clientOptions,
     URL, location: { href: `https://desktop.test${pathname}`, pathname, protocol: "https:" },
     ArrayBuffer, Uint8Array, DataView, TextEncoder, Blob, performance: { now: () => now },
@@ -561,7 +561,7 @@ test("remote cursor is shown once and legacy connections retain a local pointer"
   const socket = app.ready();
   assert.equal(app.nodes.desktop.style.values.cursor, "default");
   socket.json({ type: "ready", width: 1280, height: 720, cursor: "embedded" });
-  assert.equal(app.nodes.desktop.style.values.cursor, "none");
+  assert.equal(app.nodes.desktop.style.values.cursor, "default");
   socket.finishClose();
   assert.equal(app.nodes.desktop.style.values.cursor, "default");
   app.tick();
@@ -638,7 +638,7 @@ test("toolbar tap opens without moving, cancelled drag restores location and rel
   assert.equal(handle.hasPointerCapture(2), false);
 });
 
-test("fullscreen requests all-key capture, emergency escape unlocks and disables recapture", async () => {
+test("fullscreen preserves native paste while capturing other keys and emergency escape", async () => {
   const app = harness();
   const requests = [];
   let unlocks = 0;
@@ -646,7 +646,10 @@ test("fullscreen requests all-key capture, emergency escape unlocks and disables
   app.ready();
   app.nodes.fullscreen.fire("click");
   await flush();
-  assert.deepEqual(requests, [[]]);
+  assert.equal(requests.length, 1);
+  assert.ok(requests[0][0].includes("MetaLeft"));
+  assert.ok(requests[0][0].includes("KeyC"));
+  assert.ok(!requests[0][0].includes("KeyV"), "browser must receive trusted paste");
   assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "true");
   app.fireKey("Escape", { ctrlKey: true, altKey: true, shiftKey: true });
   assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "false");
@@ -740,9 +743,7 @@ test("capture sends Super+Enter remotely while Ctrl+V keeps local clipboard past
   socket.sent.length = 0;
   const paste = app.fireKey("KeyV", { ctrlKey: true });
   assert.equal(paste.defaultPrevented, undefined);
-  assert.deepEqual(socket.sent, [
-    { type: "key", code: 29, pressed: true },
-  ]);
+  assert.deepEqual(socket.sent, [{ type: "release" }]);
   app.nodes.desktop.fire("blur");
   assert.equal(socket.sent.at(-1).type, "release");
   assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "false");
@@ -2018,7 +2019,7 @@ test("non-embedded backends retain a local pointer through resize and pause", ()
   app.window.fire("resize");
   assert.equal(app.nodes.desktop.style.values.cursor, "default");
   socket.json({ type: "desktop_state", available: false });
-  assert.equal(app.nodes.desktop.style.values.cursor, "none");
+  assert.equal(app.nodes.desktop.style.values.cursor, "default");
   socket.json({ type: "desktop_state", available: true });
   app.window.fire("resize");
   assert.equal(app.nodes.desktop.style.values.cursor, "default");
@@ -2215,5 +2216,54 @@ test("rotated mobile fullscreen negotiates landscape encoding bounds while contr
   for(const [id,timer] of [...app.timers]) if(timer.delay===250){app.timers.delete(id);timer.callback();}
   assert.equal(app.nodes.viewport.classList.contains("picture-rotated"),true);
   assert.deepEqual(socket.sent.filter(p=>p.type==="video_scale").at(-1).max_size,{width:1688,height:780});
+  app.run("client.destroy()");
+});
+
+test("Command paste never emits a bare remote Super tap, while Super chords and taps still work", () => {
+  const app=harness();const socket=app.ready();app.nodes.desktop.focus();socket.sent.length=0;
+  app.fireKey("MetaLeft",{metaKey:true});
+  assert.equal(socket.sent.some(command=>command.type==="key"&&command.code===125),false);
+  app.fireKey("KeyV",{metaKey:true});
+  app.window.fire("keyup",{code:"KeyV",metaKey:true});
+  app.window.fire("keyup",{code:"MetaLeft",metaKey:false});
+  assert.equal(socket.sent.some(command=>command.type==="key"&&command.code===125),false);
+  socket.sent.length=0;
+  app.fireKey("MetaLeft",{metaKey:true});app.fireKey("Enter",{metaKey:true});
+  assert.deepEqual(socket.sent.filter(command=>command.type==="key"),[{type:"key",code:125,pressed:true},{type:"key",code:28,pressed:true}]);
+  app.window.fire("keyup",{code:"Enter",metaKey:true});app.window.fire("keyup",{code:"MetaLeft",metaKey:false});
+  socket.sent.length=0;
+  app.fireKey("MetaLeft",{metaKey:true});app.window.fire("keyup",{code:"MetaLeft",metaKey:false});
+  assert.deepEqual(socket.sent,[{type:"key",code:125,pressed:true},{type:"key",code:125,pressed:false}]);
+});
+
+test("Apple Command copy requests the remote copy action without leaking Super, and Linux Ctrl+C stays physical", () => {
+  for (const platform of ["MacIntel", "Linux x86_64"]) {
+    const app=harness("/",new Map(),{},1,0,platform),socket=app.ready();
+    socket.json({type:"ready",width:1280,height:720,clipboard_sync:true,clipboard_session:"b".repeat(32)});
+    app.nodes.desktop.focus();socket.sent.length=0;
+    const apple=platform==="MacIntel";
+    app.fireKey(apple?"MetaLeft":"ControlLeft",apple?{metaKey:true}:{ctrlKey:true});
+    app.fireKey("KeyC",apple?{metaKey:true}:{ctrlKey:true});
+    app.window.fire("keyup",{code:"KeyC",...(apple?{metaKey:true}:{ctrlKey:true})});
+    app.window.fire("keyup",{code:apple?"MetaLeft":"ControlLeft"});
+    const copy=socket.sent.find(command=>command.type==="clipboard_copy_key");
+    assert.equal(copy?.semantic,apple?true:undefined);
+    assert.equal(socket.sent.some(command=>command.type==="key"&&command.code===125),false);
+    if(!apple)assert(socket.sent.some(command=>command.type==="key"&&command.code===29&&command.pressed));
+    app.run("client.destroy()");
+  }
+});
+
+test("native Copy menu uses the remote selection and deduplicates only a paired key gesture",()=>{
+  const app=harness("/",new Map(),{},1,0,"MacIntel"),socket=app.ready();
+  socket.json({type:"ready",width:1280,height:720,clipboard_sync:true,clipboard_session:"c".repeat(32)});
+  socket.sent.length=0;
+  app.fireKey("MetaLeft",{metaKey:true});app.fireKey("KeyC",{metaKey:true});
+  const copy=app.nodes["mobile-input"].fire("copy");
+  assert.equal(copy.defaultPrevented,true);
+  assert.equal(socket.sent.filter(command=>command.type==="clipboard_copy_key").length,1);
+  app.nodes["mobile-input"].fire("copy");
+  assert.equal(socket.sent.filter(command=>command.type==="clipboard_copy_key").length,2,"a separate menu invocation must copy again");
+  assert(socket.sent.filter(command=>command.type==="clipboard_copy_key").every(command=>command.semantic));
   app.run("client.destroy()");
 });

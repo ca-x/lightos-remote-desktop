@@ -282,7 +282,7 @@ impl DesktopBackend for NativeBackend {
         self.platform.kind()
     }
     fn cursor_embedded(&self) -> bool {
-        true
+        false
     }
     fn frames(&self) -> watch::Receiver<Option<Arc<Frame>>> {
         self.shared.frames.subscribe()
@@ -542,7 +542,7 @@ fn run_capture(
         }
         if let Some(mut frame) = next {
             validate_frame(&frame)?;
-            frame.cursor_embedded = true;
+            frame.cursor_embedded = false;
             if shared.publish(frame, epoch) {
                 last_frame = Instant::now();
                 if let Some(ready) = ready.take() {

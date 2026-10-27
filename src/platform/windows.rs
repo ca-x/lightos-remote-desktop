@@ -236,7 +236,7 @@ impl NativePlatform for WindowsPlatform {
         let (sender, receiver) = mpsc::sync_channel(1);
         let settings = Settings::new(
             monitor,
-            CursorCaptureSettings::WithCursor,
+            CursorCaptureSettings::WithoutCursor,
             border,
             SecondaryWindowSettings::Default,
             update_interval,
@@ -494,7 +494,7 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         let stride = buffer.row_pitch();
         let pixels = pack_rgba(buffer.as_raw_buffer(), width, height, stride)?;
         let mut frame = Frame::new(width, height, pixels.into());
-        frame.cursor_embedded = true;
+        frame.cursor_embedded = false;
         match self.frames.try_send(Ok(frame)) {
             Ok(()) | Err(mpsc::TrySendError::Full(_)) => Ok(()),
             Err(mpsc::TrySendError::Disconnected(_)) => Err("capture receiver closed".into()),

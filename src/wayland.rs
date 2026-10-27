@@ -1,4 +1,6 @@
 pub mod capabilities;
+mod clipboard;
+mod native_cursor;
 
 use std::{
     collections::BTreeSet,
@@ -109,6 +111,22 @@ use crate::backend::MAX_TEXT_BYTES;
 pub(crate) use crate::backend::TextProbe;
 pub use crate::backend::{Frame, InputCommand, InputGuard};
 
+fn hyprland_compositor(executable: &Path, command: &[u8]) -> bool {
+    let name = executable.file_name().unwrap_or_default().to_string_lossy();
+    if name.eq_ignore_ascii_case("Hyprland") {
+        return true;
+    }
+    // The private Aquamarine launcher executes the ELF loader directly, so
+    // /proc/PID/exe identifies ld-linux rather than the running compositor.
+    (name.starts_with("ld-linux") || name.starts_with("ld-musl"))
+        && command.len() <= 128 * 1024
+        && command.split(|byte| *byte == 0).skip(1).any(|argument| {
+            Path::new(std::ffi::OsStr::from_bytes(argument))
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("Hyprland"))
+        })
+}
+
 fn validated_input(command: InputCommand) -> Option<InputCommand> {
     if let Err(error) = command.validate() {
         tracing::warn!(%error, "ignoring invalid client input");
@@ -136,12 +154,16 @@ pub struct Backend {
     pub input: mpsc::Sender<InputCommand>,
     socket_path: PathBuf,
     clipboard_owner: tokio::sync::Mutex<Option<tokio::process::Child>>,
+    clipboard_observer: Arc<Mutex<Option<clipboard::Observer>>>,
     shared: Arc<Shared>,
     workers: Mutex<Vec<JoinHandle<()>>>,
     input_socket: UnixStream,
     input_done: Mutex<sync_mpsc::Receiver<()>>,
     cursor_socket: PathBuf,
     cursor_output: Option<String>,
+    native_cursor: Mutex<Option<native_cursor::Cursor>>,
+    native_cursor_frames: Option<watch::Receiver<Option<Arc<crate::backend::CursorFrame>>>>,
+    native_clipboard: Option<crate::backend::wayland_clipboard::Clipboard>,
 }
 
 impl Backend {
@@ -201,12 +223,13 @@ impl Backend {
     }
 
     pub fn frame_is_fresh(&self, max_age: Duration) -> bool {
+        // Standard image-copy desktops may stop reporting pixels while idle or
+        // their virtual output sleeps. Socket/worker and compositor lifetimes
+        // establish liveness; an old unchanged image must not kill applications.
         !self.shared.stopped.load(Ordering::Acquire)
-            && self
-                .frames
-                .borrow()
-                .as_ref()
-                .is_some_and(|frame| frame.captured_at.elapsed() <= max_age)
+            && self.frames.borrow().as_ref().is_some_and(|frame| {
+                self.native_cursor_frames.is_some() || frame.captured_at.elapsed() <= max_age
+            })
     }
 
     pub fn start(socket: PathBuf, fps: u32, quality: u8) -> Result<Self> {
@@ -288,6 +311,7 @@ impl Backend {
         let mut backend = Self {
             socket_path: socket.clone(),
             clipboard_owner: tokio::sync::Mutex::new(None),
+            clipboard_observer: Arc::new(Mutex::new(None)),
             frames,
             input,
             shared: shared.clone(),
@@ -296,9 +320,16 @@ impl Backend {
             input_done: Mutex::new(input_done),
             cursor_socket: PathBuf::new(),
             cursor_output: None,
+            native_cursor: Mutex::new(None),
+            native_cursor_frames: None,
+            native_clipboard: None,
         };
         backend.cursor_socket = socket.clone();
         backend.cursor_output = output.clone();
+        let (cursor_runtime, compositor, cursor_output) = backend.cursor_target()?;
+        let executable = std::fs::read_link(format!("/proc/{compositor}/exe"))?;
+        let command = std::fs::read(format!("/proc/{compositor}/cmdline"))?;
+        let hyprland = hyprland_compositor(&executable, &command);
         let input_shared = shared.clone();
         let input_ready = ready_tx.clone();
         let input_output = output.clone();
@@ -326,14 +357,29 @@ impl Backend {
         let capture_worker = thread::Builder::new()
             .name("wayland-capture".into())
             .spawn(move || {
-                let result = run_capture(
-                    capture_stream,
-                    &CaptureTarget { socket, output },
-                    deadline,
-                    fps,
-                    &shared,
-                    &ready_tx,
-                );
+                let result = (|| {
+                    // Hyprland's software cursor can already be present in its
+                    // shared texture despite overlay_cursor=false. Install and
+                    // verify the clean-frame adapter before publishing pixels.
+                    if hyprland {
+                        tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()?
+                            .block_on(crate::cursor::source_for_target(
+                                cursor_runtime,
+                                compositor,
+                                cursor_output,
+                            ))?;
+                    }
+                    run_capture(
+                        capture_stream,
+                        &CaptureTarget { socket, output },
+                        deadline,
+                        fps,
+                        &shared,
+                        &ready_tx,
+                    )
+                })();
                 if let Err(error) = result
                     && !shared.stopped.load(Ordering::Acquire)
                 {
@@ -373,11 +419,38 @@ impl Backend {
             !backend.shared.stopped.load(Ordering::Acquire) && backend.frames.borrow().is_some(),
             "Wayland workers stopped during startup"
         );
+        // Keep Hyprland's verified adapter: some Hyprland builds advertise
+        // image-copy capture but omit native-buffer or wl_surface cursors.
+        if !hyprland
+            && let Some(cursor) =
+                native_cursor::Cursor::start(&backend.socket_path, backend.cursor_output.clone())?
+        {
+            backend.native_cursor_frames = Some(cursor.frames.clone());
+            *backend.native_cursor.get_mut().unwrap() = Some(cursor);
+        }
+        if hyprland || backend.native_cursor_frames.is_some() {
+            // Clipboard ownership is independent of the cursor provider. Use
+            // the protocol acknowledgement on Hyprland too: checking wl-copy
+            // by content cannot distinguish an old owner of identical bytes.
+            backend.native_clipboard = Some(crate::backend::wayland_clipboard::Clipboard::start(
+                &backend.socket_path,
+            )?);
+        }
         Ok(backend)
     }
 
     pub fn stop(&self) {
         self.shared.finish();
+        self.native_cursor
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(clipboard) = &self.native_clipboard {
+            clipboard.stop();
+        }
+        if let Ok(mut observer) = self.clipboard_observer.try_lock() {
+            observer.take();
+        }
         if let Ok(mut owner) = self.clipboard_owner.try_lock()
             && let Some(mut child) = owner.take()
         {
@@ -415,11 +488,41 @@ impl Backend {
 }
 
 impl crate::backend::DesktopBackend for Backend {
+    fn text_paste_keycodes(&self, shift: bool) -> futures_util::future::BoxFuture<'_, Vec<u32>> {
+        Box::pin(async move {
+            if let Some(cursor) = self
+                .native_cursor
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
+                let app = cursor
+                    .focus
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                return crate::backend::linux_text_paste_keys(
+                    shift,
+                    crate::backend::terminal_app(&app),
+                );
+            }
+            let terminal = crate::cursor::focused_app(self)
+                .await
+                .is_ok_and(|app| crate::backend::terminal_app(&app));
+            crate::backend::linux_text_paste_keys(shift, terminal)
+        })
+    }
     fn kind(&self) -> crate::backend::BackendKind {
         crate::backend::BackendKind::Wayland
     }
     fn cursor_embedded(&self) -> bool {
-        true
+        false
+    }
+    fn cursor_frames(&self) -> Option<watch::Receiver<Option<Arc<crate::backend::CursorFrame>>>> {
+        self.native_cursor_frames.clone()
+    }
+    fn clipboard_text_input(&self) -> bool {
+        self.native_clipboard.is_some()
     }
     fn begin_cursor(&self, owner: u64) {
         Backend::begin_cursor(self, owner);
@@ -436,12 +539,74 @@ impl crate::backend::DesktopBackend for Backend {
     fn supports_image_clipboard(&self) -> bool {
         true
     }
+    fn supports_clipboard_sync(&self) -> bool {
+        true
+    }
+    fn clipboard_revision(
+        &self,
+    ) -> futures_util::future::BoxFuture<'_, Result<crate::backend::ClipboardRevision>> {
+        Box::pin(async move {
+            if let Some(clipboard) = &self.native_clipboard {
+                return clipboard.revision().await;
+            }
+            let observers = self.clipboard_observer.clone();
+            let path = self.socket_path.clone();
+            let shared = self.shared.clone();
+            let completed = tokio::task::spawn_blocking(move || -> Result<_> {
+                let mut slot = observers.lock().unwrap_or_else(|e| e.into_inner());
+                if slot.is_none() {
+                    *slot = Some(clipboard::Observer::start(&path, shared)?);
+                }
+                match slot.as_ref().unwrap().probe() {
+                    Ok(probe) => Ok(probe),
+                    Err(error) => {
+                        slot.take();
+                        Err(error)
+                    }
+                }
+            })
+            .await??;
+            completed.await.context("clipboard observer ended")
+        })
+    }
+    fn clipboard_read_png(&self) -> futures_util::future::BoxFuture<'_, Result<Option<Vec<u8>>>> {
+        Box::pin(async move {
+            if let Some(clipboard) = &self.native_clipboard {
+                return clipboard.read(true).await;
+            }
+            use tokio::io::AsyncReadExt;
+            let mut child = clipboard_command(&self.socket_path, "wl-paste")?
+                .args(["--no-newline", "--type", "image/png"])
+                .stdout(std::process::Stdio::piped())
+                .spawn()?;
+            tokio::time::timeout(Duration::from_secs(2), async {
+                let mut bytes = Vec::new();
+                child
+                    .stdout
+                    .take()
+                    .context("clipboard pipe missing")?
+                    .take(8 * 1024 * 1024 + 1)
+                    .read_to_end(&mut bytes)
+                    .await?;
+                ensure!(bytes.len() <= 8 * 1024 * 1024, "clipboard image too large");
+                if !child.wait().await?.success() {
+                    return Ok(None);
+                }
+                Ok(Some(bytes))
+            })
+            .await
+            .context("clipboard image read timed out")?
+        })
+    }
     fn clipboard_write_png<'a>(
         &'a self,
         data: &'a [u8],
     ) -> futures_util::future::BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             ensure!(data.len() <= 8 * 1024 * 1024, "clipboard image too large");
+            if let Some(clipboard) = &self.native_clipboard {
+                return clipboard.write(true, data).await;
+            }
             self.write_clipboard_bytes("image/png", data).await
         })
     }
@@ -465,6 +630,15 @@ impl crate::backend::DesktopBackend for Backend {
     }
     fn clipboard_read(&self) -> futures_util::future::BoxFuture<'_, Result<String>> {
         Box::pin(async move {
+            if let Some(clipboard) = &self.native_clipboard {
+                return String::from_utf8(
+                    clipboard
+                        .read(false)
+                        .await?
+                        .context("clipboard has no text")?,
+                )
+                .context("clipboard is not UTF-8");
+            }
             use tokio::io::AsyncReadExt;
             let mut command = clipboard_command(&self.socket_path, "wl-paste")?;
             let mut child = command
@@ -494,6 +668,9 @@ impl crate::backend::DesktopBackend for Backend {
         text: &'a str,
     ) -> futures_util::future::BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            if let Some(clipboard) = &self.native_clipboard {
+                return clipboard.write(false, text.as_bytes()).await;
+            }
             ensure!(
                 text.len() <= crate::backend::MAX_CLIPBOARD_BYTES,
                 "clipboard too large"
@@ -530,7 +707,8 @@ impl Backend {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 ensure!(child.try_wait()?.is_none(), "clipboard owner exited");
-                let mut reader = clipboard_command(&self.socket_path, "wl-paste")?
+                let mut reader_command = clipboard_command(&self.socket_path, "wl-paste")?;
+                let mut reader = reader_command
                     .args(["--no-newline", "--type", mime])
                     .stdout(std::process::Stdio::piped())
                     .spawn()?;
@@ -737,9 +915,9 @@ fn run_capture(
         }
         let current = batch.as_mut().context("missing capture connection")?;
         let capture = &current.connection;
-        // Preserve compositor/application cursor shapes in both video codecs.
-        // Readiness advertises this so the browser can hide its local cursor.
-        let cursor_embedded = shared.cursor_owner.load(Ordering::Acquire) & 1 == 0;
+        // Cursor shape/position travel independently. Never burn them into
+        // capture, including when the cursor observer is reconnecting.
+        let cursor_embedded = false;
         let captured = if let Some(name) = &target.output {
             let output = capture
                 .get_all_outputs()
@@ -1213,6 +1391,24 @@ fn run_input(
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    #[test]
+    fn hyprland_adapter_is_selected_through_its_private_elf_loader() {
+        assert!(hyprland_compositor(
+            Path::new("/usr/bin/Hyprland"),
+            b"Hyprland\0--config\0session.lua\0"
+        ));
+        let nested=b"ld-linux-x86-64.so.2\0--library-path\0/private/lib\0/usr/bin/Hyprland\0--config\0session.lua\0";
+        assert!(hyprland_compositor(
+            Path::new("/usr/lib/ld-linux-x86-64.so.2"),
+            nested
+        ));
+        assert!(!hyprland_compositor(Path::new("/usr/bin/cage"), nested));
+        assert!(!hyprland_compositor(
+            Path::new("/usr/lib/ld-linux-x86-64.so.2"),
+            b"ld-linux\0/usr/bin/labwc\0"
+        ));
+    }
     use super::*;
 
     #[test]
@@ -1309,6 +1505,7 @@ pub(crate) mod tests {
         Backend {
             socket_path: "/nonexistent".into(),
             clipboard_owner: tokio::sync::Mutex::new(None),
+            clipboard_observer: Arc::new(Mutex::new(None)),
             frames,
             input,
             shared: Arc::new(Shared {
@@ -1322,6 +1519,9 @@ pub(crate) mod tests {
             input_done: Mutex::new(input_done),
             cursor_socket: PathBuf::new(),
             cursor_output: None,
+            native_cursor: Mutex::new(None),
+            native_cursor_frames: None,
+            native_clipboard: None,
         }
     }
 

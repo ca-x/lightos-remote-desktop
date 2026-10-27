@@ -191,7 +191,7 @@ pub struct Config {
     pub width: u32,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_HEIGHT", default_value_t = 720)]
     pub height: u32,
-    #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_FPS", default_value_t = 30)]
+    #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_FPS", default_value_t = 60)]
     pub fps: u32,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_QUALITY", default_value_t = 75)]
     pub quality: u8,
@@ -212,6 +212,9 @@ pub struct Config {
     )]
     #[arg(hide = !cfg!(target_os = "linux"))]
     pub wayland_socket: Option<PathBuf>,
+    /// Attach only to a supported nested Wayland compositor in this service's private runtime.
+    #[arg(long, requires = "wayland_socket", hide = !cfg!(target_os = "linux"))]
+    pub virtual_wayland_server_pid: Option<u32>,
     /// Attach to one local X11 display (for example, :0 or :0.0).
     #[arg(
         long,
@@ -303,6 +306,7 @@ impl Config {
         #[cfg(not(target_os = "linux"))]
         ensure!(
             self.wayland_socket.is_none()
+                && self.virtual_wayland_server_pid.is_none()
                 && self.physical_wayland_socket.is_none()
                 && self.x11_display.is_none()
                 && self.xauthority.is_none()

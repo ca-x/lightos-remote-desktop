@@ -37,14 +37,18 @@ use pw::spa::{
     pod::Pod,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot, watch},
     time::{interval, timeout},
 };
 
 use super::super::{
-    BackendKind, DesktopBackend, Frame, InputCommand, InputGuard, MAX_CLIPBOARD_BYTES,
+    BackendKind, CursorFrame, DesktopBackend, Frame, InputCommand, InputGuard, MAX_CLIPBOARD_BYTES,
 };
+
+#[path = "buffer.rs"]
+mod buffer;
+#[path = "cursor.rs"]
+mod cursor;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const START_TIMEOUT: Duration = Duration::from_secs(28);
@@ -95,8 +99,8 @@ pub fn probe(target: &SessionTarget) -> Result<()> {
             );
             let cursors = cast.available_cursor_modes().await?;
             ensure!(
-                cursors.contains(CursorMode::Embedded),
-                "Portal cannot embed the mouse cursor"
+                cursors.contains(CursorMode::Metadata),
+                "Portal cannot provide independent cursor metadata"
             );
             Ok::<(), anyhow::Error>(())
         })
@@ -112,6 +116,7 @@ enum Control {
 }
 
 pub struct Backend {
+    cursors: watch::Receiver<Option<Arc<CursorFrame>>>,
     frames: watch::Receiver<Option<Arc<Frame>>>,
     input: mpsc::Sender<InputCommand>,
     control: mpsc::UnboundedSender<Control>,
@@ -139,6 +144,7 @@ impl Backend {
             "Portal cannot safely match a selected Wayland output; choose a screen in the consent dialog"
         );
         let (frames_tx, frames) = watch::channel(None);
+        let (cursors_tx, cursors) = watch::channel(None);
         let (input, commands) = mpsc::channel(128);
         let (control, requests) = mpsc::unbounded_channel();
         let (ready, initialized) = sync_mpsc::sync_channel(1);
@@ -155,6 +161,7 @@ impl Backend {
                     let result = runtime.block_on(run(
                         target,
                         frames_tx,
+                        cursors_tx,
                         commands,
                         requests,
                         cancelled,
@@ -173,6 +180,7 @@ impl Backend {
         let started = initialized.recv_timeout(START_TOTAL_TIMEOUT);
         match started {
             Ok(Ok(())) => Ok(Self {
+                cursors,
                 frames,
                 input,
                 control,
@@ -203,8 +211,11 @@ impl DesktopBackend for Backend {
     fn kind(&self) -> BackendKind {
         BackendKind::Portal
     }
+    fn cursor_frames(&self) -> Option<watch::Receiver<Option<Arc<CursorFrame>>>> {
+        Some(self.cursors.clone())
+    }
     fn cursor_embedded(&self) -> bool {
-        true
+        false
     }
     fn frames(&self) -> watch::Receiver<Option<Arc<Frame>>> {
         self.frames.clone()
@@ -272,9 +283,11 @@ async fn cancelled(flag: Arc<AtomicBool>, stopped: Arc<AtomicBool>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Capture and cursor streams share one Portal session.
 async fn run(
     target: SessionTarget,
     frames: watch::Sender<Option<Arc<Frame>>>,
+    cursors: watch::Sender<Option<Arc<CursorFrame>>>,
     mut input: mpsc::Receiver<InputCommand>,
     mut control: mpsc::UnboundedReceiver<Control>,
     cancelled_flag: Arc<AtomicBool>,
@@ -305,7 +318,7 @@ async fn run(
     let mut held_keys = BTreeSet::new();
     let mut held_buttons = BTreeSet::new();
     let result = tokio::select! {
-        result = open_and_serve(bus, &identity, &desktop, &cast, &session, frames.clone(), &mut input, &mut control, stopped.clone(), &mut capture, &mut held_keys, &mut held_buttons, ready) => result,
+        result = open_and_serve(bus, &identity, &desktop, &cast, &session, frames.clone(), cursors, &mut input, &mut control, stopped.clone(), &mut capture, &mut held_keys, &mut held_buttons, ready) => result,
         _ = cancelled(cancelled_flag, stopped.clone()) => Err(anyhow::anyhow!("Portal session cancelled")),
     };
     stop_capture_worker(&stopped, &mut capture, &frames);
@@ -342,6 +355,7 @@ async fn open_and_serve(
     cast: &Screencast,
     session: &Session<RemoteDesktop>,
     frames: watch::Sender<Option<Arc<Frame>>>,
+    cursors: watch::Sender<Option<Arc<CursorFrame>>>,
     input: &mut mpsc::Receiver<InputCommand>,
     control: &mut mpsc::UnboundedReceiver<Control>,
     stopped: Arc<AtomicBool>,
@@ -370,7 +384,7 @@ async fn open_and_serve(
             session,
             SelectSourcesOptions::default()
                 .set_sources(Some(SourceType::Monitor.into()))
-                .set_cursor_mode(CursorMode::Embedded)
+                .set_cursor_mode(CursorMode::Metadata)
                 .set_multiple(false),
         )
         .await?
@@ -445,6 +459,7 @@ async fn open_and_serve(
                         fd,
                         node,
                         captured.clone(),
+                        cursors,
                         failed_tx.clone(),
                         capture_stopped,
                     ) {
@@ -822,18 +837,11 @@ async fn read_clipboard(
 ) -> Result<String> {
     let mime = mime.context("Portal clipboard does not advertise UTF-8 text")?;
     let fd: OwnedFd = clipboard.selection_read(session, mime).await?.into();
-    let file = tokio::fs::File::from_std(fd.into());
-    let mut bytes = Vec::new();
-    timeout(
+    let bytes = timeout(
         Duration::from_secs(2),
-        file.take((MAX_CLIPBOARD_BYTES + 1) as u64)
-            .read_to_end(&mut bytes),
+        crate::clipboard::read_fd(fd, MAX_CLIPBOARD_BYTES),
     )
     .await??;
-    ensure!(
-        bytes.len() <= MAX_CLIPBOARD_BYTES,
-        "Portal clipboard exceeds 64 KiB"
-    );
     String::from_utf8(bytes).context("Portal clipboard is not UTF-8")
 }
 
@@ -845,9 +853,11 @@ async fn write_clipboard(
 ) -> Result<()> {
     let result = timeout(CALL_TIMEOUT, async {
         let fd: OwnedFd = clipboard.selection_write(session, serial).await?.into();
-        let mut file = tokio::fs::File::from_std(fd.into());
-        timeout(Duration::from_secs(2), file.write_all(text.as_bytes())).await??;
-        file.flush().await?;
+        timeout(
+            Duration::from_secs(2),
+            crate::clipboard::write_fd(fd, text.as_bytes()),
+        )
+        .await??;
         Ok::<(), anyhow::Error>(())
     })
     .await
@@ -975,10 +985,11 @@ fn newest_buffer<T>(mut dequeue: impl FnMut() -> Option<T>) -> Option<T> {
     Some(newest)
 }
 
-fn capture_pipewire(
+pub(crate) fn capture_pipewire(
     fd: OwnedFd,
     node: u32,
     frames: watch::Sender<Option<Arc<Frame>>>,
+    cursors: watch::Sender<Option<Arc<CursorFrame>>>,
     failed: watch::Sender<Option<String>>,
     stopped: Arc<AtomicBool>,
 ) -> Result<()> {
@@ -986,8 +997,17 @@ fn capture_pipewire(
     let loop_ = pw::main_loop::MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(&loop_, None)?;
     let core = context.connect_fd_rc(fd, None)?;
+    let core_failed = failed.clone();
+    let _core_listener = core
+        .add_listener_local()
+        .error(move |id, _seq, result, message| {
+            core_failed.send_replace(Some(format!(
+                "PipeWire core {id} error {result}: {message}"
+            )));
+        })
+        .register();
     let stream = pw::stream::StreamRc::new(
-        core,
+        core.clone(),
         "lightos-portal",
         pw::properties::properties! {
             *pw::keys::MEDIA_TYPE => "Video",
@@ -999,15 +1019,17 @@ fn capture_pipewire(
     let video_format = state.clone();
     let video_frames = frames.clone();
     let video_failed = failed.clone();
+    let metadata_failed = failed.clone();
     let mut converter = FrameConverter::default();
     let _listener = stream
         .add_local_listener::<()>()
         .state_changed(move |_, _, _, new| {
+            tracing::info!(?new, "PipeWire capture state");
             if let pw::stream::StreamState::Error(reason) = new {
                 let _ = video_failed.send(Some(reason));
             }
         })
-        .param_changed(move |_, _, id, param| {
+        .param_changed(move |stream, _, id, param| {
             if id != spa::param::ParamType::Format.as_raw() {
                 return;
             }
@@ -1021,10 +1043,49 @@ fn capture_pipewire(
             let mut info = VideoInfoRaw::default();
             if info.parse(param).is_ok() {
                 *video_format.lock().unwrap() = info;
+                let bytes = cursor::parameters();
+                if let Ok(bytes) = bytes {
+                    let mut params: Vec<_> = bytes
+                        .iter()
+                        .filter_map(|value| Pod::from_bytes(value))
+                        .collect();
+                    if let Err(error) = stream.update_params(&mut params) {
+                        metadata_failed.send_replace(Some(format!(
+                            "PipeWire cursor metadata negotiation failed: {error}"
+                        )));
+                    }
+                }
             }
         })
         .process(move |stream, _| {
-            let Some(mut buffer) = newest_buffer(|| stream.dequeue_buffer()) else {
+            let format = *state.lock().unwrap();
+            // Shape metadata may occur only in a buffer superseded by a newer
+            // video frame. Consume every cursor update before returning buffers.
+            let Some(mut buffer) = newest_buffer(|| {
+                loop {
+                    let mut buffer = buffer::Buffer::dequeue(stream)?;
+                    if let Some(metadata) = buffer.cursor() {
+                        let previous = cursors.borrow().clone();
+                        if let Ok(Some(cursor)) =
+                            cursor::decode(metadata, format.size(), previous.as_deref())
+                        {
+                            cursors.send_replace(Some(Arc::new(cursor)));
+                        }
+                    }
+                    // A cursor-only packet can follow the newest video packet.
+                    // Consume its metadata without replacing the valid video with
+                    // empty/corrupt pixels (KWin uses CORRUPTED for cursor-only).
+                    if buffer.datas_mut().first().is_some_and(|data| {
+                        data.chunk().size() > 0
+                            && !data
+                                .chunk()
+                                .flags()
+                                .contains(spa::buffer::ChunkFlags::CORRUPTED)
+                    }) {
+                        return Some(buffer);
+                    }
+                }
+            }) else {
                 return;
             };
             let Some(data) = buffer.datas_mut().first_mut() else {
@@ -1059,7 +1120,15 @@ fn capture_pipewire(
                 (size.width, size.height),
                 pixel_format,
             ) {
-                video_frames.send_replace(Some(Arc::new(frame)));
+                video_frames.send_if_modified(|current| {
+                    let changed = current.as_ref().is_none_or(|old| {
+                        old.width != frame.width
+                            || old.height != frame.height
+                            || old.pixels != frame.pixels
+                    });
+                    *current = Some(Arc::new(frame));
+                    changed
+                });
             }
         })
         .register()?;

@@ -18,6 +18,7 @@ use wayland_protocols_wlr::output_management::v1::client::{
 
 pub struct WlrootsDisplay {
     socket: PathBuf,
+    owned: bool,
 }
 #[derive(Default)]
 struct Head {
@@ -230,6 +231,7 @@ impl State {
         name: &str,
         mode: DisplayMode,
         fps: u32,
+        owned: bool,
     ) -> Result<ZwlrOutputConfigurationV1> {
         // Resolve and validate everything before creating a protocol configuration.
         let mut heads = Vec::new();
@@ -256,8 +258,11 @@ impl State {
                     })
             } else {
                 h.current.as_ref()
-            }
-            .context("requested wlroots mode is unavailable")?;
+            };
+            ensure!(
+                selected.is_some() || owned && h.name == name,
+                "requested wlroots mode is unavailable"
+            );
             heads.push((h, selected, transform));
         }
         let config =
@@ -267,7 +272,16 @@ impl State {
         }
         for (h, selected, transform) in heads {
             let settings = config.enable_head(h.object.as_ref().context("missing head")?, qh, ());
-            settings.set_mode(selected);
+            if let Some(selected) = selected {
+                settings.set_mode(selected);
+            } else {
+                let (width, height) = if rotated(transform) {
+                    (mode.height, mode.width)
+                } else {
+                    (mode.width, mode.height)
+                };
+                settings.set_custom_mode(width as i32, height as i32, fps as i32 * 1000);
+            }
             settings.set_position(h.x, h.y);
             settings.set_transform(transform);
             settings.set_scale(if h.name == name { mode.scale } else { h.scale });
@@ -277,7 +291,16 @@ impl State {
 }
 impl WlrootsDisplay {
     pub fn new(socket: PathBuf) -> Self {
-        Self { socket }
+        Self {
+            socket,
+            owned: false,
+        }
+    }
+    pub fn virtual_display(socket: PathBuf) -> Self {
+        Self {
+            socket,
+            owned: true,
+        }
     }
     fn operate(
         &self,
@@ -302,7 +325,7 @@ impl WlrootsDisplay {
                 let name = selected.name.clone();
                 for test in [true, false] {
                     state.result = None;
-                    let config = state.configure(&manager, &qh, &name, mode, fps)?;
+                    let config = state.configure(&manager, &qh, &name, mode, fps, self.owned)?;
                     if test {
                         config.test();
                     } else {
@@ -358,9 +381,10 @@ impl DisplayController for WlrootsDisplay {
     ) -> BoxFuture<'a, Result<DisplayMode>> {
         let socket = self.socket.clone();
         let name = name.map(str::to_owned);
+        let owned = self.owned;
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                Self::new(socket).operate(Some((name.as_deref(), mode, fps)))
+                Self { socket, owned }.operate(Some((name.as_deref(), mode, fps)))
             })
             .await??;
             Ok(mode)

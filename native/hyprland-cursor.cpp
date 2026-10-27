@@ -1,5 +1,4 @@
-// Read-only cursor export for Hyprland builds whose cursor capture protocol
-// does not expose both native-buffer and wl_surface cursors correctly.
+// Cursor export and cursor-free capture for the exact matching Hyprland ABI.
 #include <hyprland/src/plugins/PluginAPI.hpp>
 #include <hyprland/src/pointer/PointerManager.hpp>
 #include <hyprland/src/desktop/view/WLSurface.hpp>
@@ -9,14 +8,143 @@
 #include <hyprland/src/state/MonitorState.hpp>
 #include <hyprland/src/output/Monitor.hpp>
 #include <hyprland/src/render/Renderer.hpp>
+#include <hyprland/src/render/OpenGL.hpp>
+#include <hyprland/src/output/MonitorResources.hpp>
+#include <hyprland/src/managers/screenshare/ScreenshareManager.hpp>
+#include <hyprland/src/event/EventBus.hpp>
 #include <cmath>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
+#include <bit>
+#include <dlfcn.h>
 
 static HANDLE handle;
 static SP<SHyprCtlCommand> command;
 static CHyprSignalListener changed;
+static CHyprSignalListener renderStage;
 static uint64_t serial = 1;
+static CFunctionHook *cursorHook = nullptr, *captureHook = nullptr, *mirrorHook = nullptr;
+static unsigned captureDepth = 0;
+static bool cleanCapture = false;
+static bool snapshotQueued = false;
+
+struct CleanFrame {
+    PHLMONITORREF monitor;
+    SP<Render::IFramebuffer> framebuffer;
+    bool valid = false;
+};
+static std::unordered_map<Monitor::CMonitorResources*, CleanFrame> cleanFrames;
+
+// Hyprland 0.56 copies its normal render target, including software cursors,
+// into the screenshare texture. overlay_cursor=false only prevents a second
+// cursor draw. Save actual pixels before that first draw; never reconstruct or
+// erase cursor-shaped pixels from an already composited image.
+class CleanFrameElement : public IPassElement {
+    PHLMONITORREF monitor;
+  public:
+    explicit CleanFrameElement(PHLMONITOR value) : monitor(value) {}
+    bool needsLiveBlur() override { return false; }
+    bool needsPrecomputeBlur() override { return false; }
+    bool undiscardable() override { return true; }
+    const char* passName() override { return "LightOSCursorFreeFrame"; }
+    ePassElementType type() override { return EK_CUSTOM; }
+    std::vector<UP<IPassElement>> draw() override {
+        const auto output = monitor.lock();
+        if (!output || g_pHyprRenderer->type() != Render::IHyprRenderer::RT_GL)
+            return {};
+        const auto source = g_pHyprRenderer->m_renderData.currentFB;
+        if (!source || !source->isAllocated())
+            return {};
+        std::erase_if(cleanFrames, [](const auto& entry) { return entry.second.monitor.expired(); });
+        auto& frame = cleanFrames[output->resources().get()];
+        frame.monitor = monitor;
+        frame.valid = false;
+        GLint read = 0, draw = 0;
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
+        const bool scissor = glIsEnabled(GL_SCISSOR_TEST);
+        const auto restore = Render::CScopeGuard([&] {
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, read);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
+            if (scissor) glEnable(GL_SCISSOR_TEST);
+        });
+        if (!frame.framebuffer)
+            frame.framebuffer = g_pHyprRenderer->createFB("LightOS cursor-free capture");
+        if (!frame.framebuffer->alloc(source->m_size.x, source->m_size.y, source->m_drmFormat))
+            return {};
+        frame.framebuffer->setImageDescription(source->imageDescription());
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<Render::GL::CGLFramebuffer*>(source.get())->getFBID());
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<Render::GL::CGLFramebuffer*>(frame.framebuffer.get())->getFBID());
+        glDisable(GL_SCISSOR_TEST);
+        glBlitFramebuffer(0, 0, source->m_size.x, source->m_size.y,
+                          0, 0, source->m_size.x, source->m_size.y,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        frame.valid = true;
+        return {};
+    }
+};
+
+using CursorRender = void (*)(Pointer::CPointerManager*, PHLMONITOR, const Time::steady_tp&,
+                              CRegion&, std::optional<Vector2D>, bool, bool);
+static void renderCursor(Pointer::CPointerManager* manager, PHLMONITOR monitor, const Time::steady_tp& now,
+                         CRegion& damage, std::optional<Vector2D> position, bool screencopy, bool force) {
+    if (!screencopy && monitor && monitor->needsACopyFB()) {
+        g_pHyprRenderer->addPassElement(makeUnique<CleanFrameElement>(monitor));
+        snapshotQueued = true;
+    }
+    // A cursor-inclusive screenshot still needs exactly one pointer: the
+    // replacement texture no longer contains the monitor's software cursor.
+    reinterpret_cast<CursorRender>(cursorHook->m_original)(manager, monitor, now, damage, position,
+                                                          screencopy, force || (screencopy && cleanCapture));
+}
+
+static void renderCapture(Screenshare::CScreenshareFrame* frame) {
+    const auto previous = cleanCapture;
+    ++captureDepth;
+    cleanCapture = false;
+    const auto restore = Render::CScopeGuard([&] { --captureDepth; cleanCapture = previous; });
+    reinterpret_cast<void (*)(Screenshare::CScreenshareFrame*)>(captureHook->m_original)(frame);
+}
+
+static SP<Render::ITexture> mirrorTexture(Monitor::CMonitorResources* resources) {
+    if (captureDepth) {
+        const auto found = cleanFrames.find(resources);
+        cleanCapture = found != cleanFrames.end() && found->second.valid && !found->second.monitor.expired();
+        // Until a clean frame exists, omit the image instead of leaking a
+        // cursor-containing texture into an independent-cursor connection.
+        return cleanCapture ? found->second.framebuffer->getTexture() : nullptr;
+    }
+    return reinterpret_cast<SP<Render::ITexture> (*)(Monitor::CMonitorResources*)>(mirrorHook->m_original)(resources);
+}
+
+template <typename Method> static void* methodAddress(Method method) {
+    // Nonvirtual methods in the matching Itanium C++ ABI. Resolving the actual
+    // method also works when Hyprland is launched through a private ELF loader;
+    // searching /proc/self/exe would search ld-linux in that installation.
+    struct Address { void* function; std::ptrdiff_t adjustment; };
+    const auto address = std::bit_cast<Address>(method);
+    if (address.adjustment != 0) throw std::runtime_error("Unsupported Hyprland method ABI");
+    return address.function;
+}
+
+static void installCaptureHooks() {
+    const auto install = [](const char* name, const void* address, const void* replacement) {
+        auto* hook = address ? HyprlandAPI::createFunctionHook(handle, address, replacement) : nullptr;
+        if (!hook || !hook->hook()) throw std::runtime_error(std::string("Cannot install LightOS capture hook: ") + name);
+        return hook;
+    };
+    try {
+        mirrorHook = install("getMirrorTexture", methodAddress(&Monitor::CMonitorResources::getMirrorTexture), reinterpret_cast<const void*>(mirrorTexture));
+        captureHook = install("renderMonitor", dlsym(RTLD_DEFAULT, "_ZN11Screenshare17CScreenshareFrame13renderMonitorEv"), reinterpret_cast<const void*>(renderCapture));
+        cursorHook = install("renderSoftwareCursorsFor", methodAddress(&Pointer::CPointerManager::renderSoftwareCursorsFor), reinterpret_cast<const void*>(renderCursor));
+    } catch (...) {
+        for (auto* hook : {cursorHook, captureHook, mirrorHook})
+            if (hook) HyprlandAPI::removeFunctionHook(handle, hook);
+        cursorHook = captureHook = mirrorHook = nullptr;
+        throw;
+    }
+}
 
 static std::string quoted(const std::string& value) {
     static constexpr char hex[] = "0123456789abcdef";
@@ -47,7 +175,7 @@ static std::string snapshot(eHyprCtlOutputFormat, std::string request) {
             throw std::runtime_error("invalid cursor geometry");
         std::ostringstream result;
         result.imbue(std::locale::classic());
-        result << "{\"version\":1,\"serial\":" << serial << ",\"available\":true,\"visible\":"
+        result << "{\"version\":1,\"cursor_free_capture\":true,\"serial\":" << serial << ",\"available\":true,\"visible\":"
             << ((image.pBuffer || image.surface) && g_pHyprRenderer->shouldRenderCursor() ? "true" : "false")
             << ",\"x\":" << position.x << ",\"y\":" << position.y
             << ",\"hotspot_x\":" << image.hotspot.x << ",\"hotspot_y\":" << image.hotspot.y
@@ -110,8 +238,8 @@ static std::string snapshot(eHyprCtlOutputFormat, std::string request) {
         }
         result << '}';
         return result.str();
-    } catch (const std::exception& error) { return "{\"version\":1,\"available\":false,\"reason\":" + quoted(error.what()) + "}"; }
-    catch (...) { return R"({"version":1,"available":false})"; }
+    } catch (const std::exception& error) { return "{\"version\":1,\"cursor_free_capture\":true,\"available\":false,\"reason\":" + quoted(error.what()) + "}"; }
+    catch (...) { return R"({"version":1,"cursor_free_capture":true,"available":false})"; }
 }
 
 APICALL EXPORT std::string PLUGIN_API_VERSION() { return HYPRLAND_API_VERSION; }
@@ -119,13 +247,30 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE plugin) {
     if (std::string(__hyprland_api_get_hash()) != __hyprland_api_get_client_hash())
         throw std::runtime_error("LightOS cursor adapter requires matching Hyprland headers");
     handle = plugin;
+    installCaptureHooks();
+    renderStage = Event::bus()->m_events.render.stage.listen([](eRenderStage stage) {
+        if (stage == RENDER_BEGIN) snapshotQueued = false;
+        // Hidden cursors skip renderSoftwareCursorsFor entirely. Their desktop
+        // content must still update rather than reusing the last visible image.
+        const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
+        if (stage == RENDER_LAST_MOMENT && !snapshotQueued && monitor && monitor->needsACopyFB())
+            g_pHyprRenderer->addPassElement(makeUnique<CleanFrameElement>(monitor));
+    });
     changed = Pointer::mgr()->m_events.cursorChanged.listen([] { if (++serial == 0) serial = 1; });
-    command = HyprlandAPI::registerHyprCtlCommand(handle, SHyprCtlCommand{"lightoscursor", false, snapshot});
+    // Old observers registered "lightoscursor" as a prefix command. Use a
+    // distinct name so an already loaded v1 cannot intercept the capability probe.
+    command = HyprlandAPI::registerHyprCtlCommand(handle, SHyprCtlCommand{"lightosindependentcursor", false, snapshot});
     if (!command) throw std::runtime_error("Cannot register LightOS cursor observer");
-    return {"lightos-cursor", "Read-only cursor image, hotspot, scale and position", "LightOS", "1"};
+    return {"lightos-cursor-v2", "Independent cursor and cursor-free screenshare", "LightOS", "2"};
 }
 APICALL EXPORT void PLUGIN_EXIT() {
+    g_pHyprRenderer->m_renderPass.removeAllOfType("LightOSCursorFreeFrame");
+    renderStage.reset();
     changed.reset();
     if (command) HyprlandAPI::unregisterHyprCtlCommand(handle, command);
     command.reset();
+    for (auto* hook : {cursorHook, captureHook, mirrorHook})
+        if (hook) HyprlandAPI::removeFunctionHook(handle, hook);
+    cursorHook = captureHook = mirrorHook = nullptr;
+    cleanFrames.clear();
 }

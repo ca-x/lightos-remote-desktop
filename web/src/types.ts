@@ -116,7 +116,7 @@ export interface Elements {
 declare global {
   interface Navigator {
     audioSession?: { type: string };
-    keyboard?: { lock: () => Promise<void>; unlock: () => void };
+    keyboard?: { lock: (keyCodes?: string[]) => Promise<void>; unlock: () => void };
   }
   interface Window {
     webkitAudioContext?: typeof AudioContext;

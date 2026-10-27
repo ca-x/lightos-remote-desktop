@@ -92,7 +92,7 @@ impl NativePlatform for MacosPlatform {
             .with_width(output.width)
             .with_height(output.height)
             .with_pixel_format(PixelFormat::BGRA)
-            .with_shows_cursor(true)
+            .with_shows_cursor(false)
             .with_scales_to_fit(false)
             .with_queue_depth(3)
             .with_fps(fps);
@@ -251,7 +251,7 @@ fn copy_frame(
     let mut state = events.state.lock().unwrap_or_else(|e| e.into_inner());
     if state.error.is_none() {
         let mut frame = Frame::new(width, height, pixels.into());
-        frame.cursor_embedded = true;
+        frame.cursor_embedded = false;
         state.frame = Some(frame);
         events.ready.notify_one();
     }

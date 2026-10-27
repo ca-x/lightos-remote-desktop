@@ -8,6 +8,15 @@ use x11rb::protocol::{
     shm::{ConnectionExt as _, SegWrapper},
 };
 
+pub(super) fn resize_race(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<x11rb::errors::ReplyError>()
+        .is_some_and(|error| {
+            matches!(error, x11rb::errors::ReplyError::X11Error(reply)
+            if reply.error_kind == x11rb::protocol::ErrorKind::Match)
+        })
+}
+
 struct SharedImage<'a> {
     segment: SegWrapper<&'a XConnection>,
     mapping: Mmap,
@@ -108,6 +117,21 @@ pub(super) struct Capture<'a> {
     shm_available: bool,
     shared: Option<SharedImage<'a>>,
     previous: Option<(Rect, Arc<[u8]>)>,
+    resize_until: Option<Instant>,
+}
+fn create_damage(connection: &XConnection, root: u32) -> Option<DamageWrapper<&XConnection>> {
+    (|| -> Result<_> {
+        connection.damage_query_version(1, 1)?.reply()?;
+        let id = connection.generate_id()?;
+        connection
+            .damage_create(id, root, ReportLevel::NON_EMPTY)?
+            .check()?;
+        Ok(DamageWrapper::for_damage(connection, id))
+    })()
+    .map_err(
+        |error| tracing::debug!(%error, "XDamage unavailable; polling capture remains enabled"),
+    )
+    .ok()
 }
 impl<'a> Capture<'a> {
     pub(super) fn new(
@@ -116,18 +140,7 @@ impl<'a> Capture<'a> {
         output: Option<&'a str>,
     ) -> Self {
         let root = connection.setup().roots[target.screen].root;
-        let damage = (|| -> Result<_> {
-            connection.damage_query_version(1, 1)?.reply()?;
-            let id = connection.generate_id()?;
-            connection
-                .damage_create(id, root, ReportLevel::NON_EMPTY)?
-                .check()?;
-            Ok(DamageWrapper::for_damage(connection, id))
-        })()
-        .map_err(
-            |error| tracing::debug!(%error, "XDamage unavailable; polling capture remains enabled"),
-        )
-        .ok();
+        let damage = create_damage(connection, root);
         let shm_available = connection
             .shm_query_version()
             .ok()
@@ -141,6 +154,7 @@ impl<'a> Capture<'a> {
             shm_available,
             shared: None,
             previous: None,
+            resize_until: None,
         }
     }
     #[cfg(test)]
@@ -153,7 +167,27 @@ impl<'a> Capture<'a> {
             Some(name) => output_rect(self.connection, self.target.screen, name, root_rect)?,
             None => root_rect,
         };
+        if self
+            .previous
+            .as_ref()
+            .is_some_and(|(previous, _)| *previous != rect)
+        {
+            // RandR completes before the compositor and applications resize
+            // their backing surfaces. Re-arm damage for the new drawable and
+            // briefly read through its transition; the early frame may still
+            // contain old-sized windows, with no later root damage notification.
+            self.resize_until = Some(Instant::now() + Duration::from_secs(1));
+            if self.damage.take().is_some() {
+                self.damage = create_damage(
+                    self.connection,
+                    self.connection.setup().roots[self.target.screen].root,
+                );
+            }
+        }
         let mut dirty = self.damage.is_none()
+            || self
+                .resize_until
+                .is_some_and(|until| Instant::now() < until)
             || self
                 .previous
                 .as_ref()
@@ -204,6 +238,9 @@ impl<'a> Capture<'a> {
         });
         let (rect, pixels) = match pixels {
             Some(Ok(pixels)) => (rect, pixels),
+            // A RandR resize between GetGeometry and ShmGetImage is temporary;
+            // retain SHM capability and retry using the new dimensions.
+            Some(Err(error)) if resize_race(&error) => return Err(error),
             result => {
                 if let Some(Err(error)) = result {
                     tracing::debug!(%error, "MIT-SHM readback failed; reverting to GetImage");

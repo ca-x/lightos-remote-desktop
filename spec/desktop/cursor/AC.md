@@ -16,11 +16,20 @@ When 用户移动指针而视频未产生新帧
 Then 本机指针立即移动且后续形状更新无需等待视频绘制
 And 远端隐藏光标时本机同步隐藏
 
-# 场景 3：切换与回退
-ID: SC-CURSOR-SESSION-FALLBACK
+# 场景 3：切换与通道恢复
+ID: SC-CURSOR-SESSION-RECOVERY
 Profile: draft
 Gate: required
 Given 用户正在使用独立光标
 When 切换桌面、断开连接或独立光标通道失效
 Then 旧图片及旧连接的清理不能覆盖新桌面的光标状态
-And 按实际显示的视频帧切换光标显示方式且不出现双光标
+And 采集画面始终不包含光标，通道失效时保持独立光标并自动恢复同步，不出现双光标
+
+# 场景 4：光标变化不制造桌面画面更新
+ID: SC-CURSOR-NO-VIDEO-REPAINT
+Profile: draft
+Gate: required
+Given 用户连接的桌面内容保持静止，指针区域没有悬停高亮或其他内容变化
+When 用户连续移动指针并切换真实光标形状
+Then 光标图层跟随指针并更新形状
+And 桌面画面的像素保持不变，光标变化不触发额外画面重绘或编码

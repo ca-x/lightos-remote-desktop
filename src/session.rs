@@ -136,6 +136,29 @@ impl Session {
             unsafe { libc::geteuid() } != 0,
             "desktop service must run as a non-root user"
         );
+        if let Some(pid) = config.virtual_wayland_server_pid {
+            let socket = config
+                .wayland_socket
+                .as_ref()
+                .context("owned Wayland socket missing")?;
+            let (target, lifetime) = crate::owned_wayland::verify(socket, pid)?;
+            let runtime = target.runtime.clone();
+            let (pulse_server, audio_source) = physical_audio(&runtime, config.audio);
+            return Ok(Self {
+                socket: socket.clone(),
+                runtime,
+                signature: None,
+                pulse_server,
+                pulse_client_config: None,
+                audio_source,
+                target: Some(target),
+                owned: true,
+                children: Vec::new(),
+                temporary: None,
+                lock: Some(lifetime),
+                cancelled,
+            });
+        }
         if config.x11_display.is_some() {
             let target = Self::physical_target(config)?;
             let (pulse_server, audio_source) = physical_audio(&target.runtime, config.audio);
@@ -312,7 +335,10 @@ impl Session {
             )
             .env("WLR_BACKENDS", "headless")
             .env("WLR_HEADLESS_OUTPUTS", "1")
-            .env("WLR_RENDERER", "gles2")
+            .env(
+                "WLR_RENDERER",
+                std::env::var_os("WLR_RENDERER").unwrap_or_else(|| "gles2".into()),
+            )
             .env("WLR_RENDER_DRM_DEVICE", "/dev/dri/renderD128")
             .env("XDG_CURRENT_DESKTOP", "Hyprland")
             .env("XDG_SESSION_TYPE", "wayland");
@@ -373,6 +399,19 @@ impl Session {
             session.omarchy_environment(&mut shell, path)?;
             session.spawn(shell, "omarchy-shell.log")?;
         }
+        // A nested compositor exposes its socket before its first output is
+        // configured. Do not classify that transient state as a missing capture
+        // protocol and switch to an unrelated Portal authorization path.
+        let socket = session.socket.clone();
+        let cancelled = session.cancelled.clone();
+        session.wait_for(Duration::from_secs(10), || {
+            crate::wayland::capabilities::probe(
+                &socket,
+                Duration::from_millis(250),
+                Some(&cancelled),
+            )
+            .is_ok_and(|capabilities| capabilities.capture)
+        })?;
         tracing::info!(socket = %session.socket.display(), "native desktop session ready");
         Ok(session)
     }
@@ -468,18 +507,24 @@ impl Session {
 
     fn log_tail(&self) -> String {
         use std::io::{Read, Seek, SeekFrom};
-        ["desktop.log", "dbus.log"]
-            .into_iter()
-            .filter_map(|name| {
-                let mut file = File::open(self.runtime.join(name)).ok()?;
-                let size = file.metadata().ok()?.len();
-                file.seek(SeekFrom::Start(size.saturating_sub(8192))).ok()?;
-                let mut bytes = Vec::new();
-                file.take(8192).read_to_end(&mut bytes).ok()?;
-                Some(format!("{name}: {}", String::from_utf8_lossy(&bytes)))
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        [
+            "desktop.log",
+            "dbus.log",
+            "pipewire.log",
+            "pipewire-pulse.log",
+            "wireplumber.log",
+        ]
+        .into_iter()
+        .filter_map(|name| {
+            let mut file = File::open(self.runtime.join(name)).ok()?;
+            let size = file.metadata().ok()?.len();
+            file.seek(SeekFrom::Start(size.saturating_sub(8192))).ok()?;
+            let mut bytes = Vec::new();
+            file.take(8192).read_to_end(&mut bytes).ok()?;
+            Some(format!("{name}: {}", String::from_utf8_lossy(&bytes)))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
     }
 
     fn setup_audio(&mut self) -> Result<()> {
@@ -557,6 +602,15 @@ impl Session {
     }
 
     pub fn healthy(&mut self) -> bool {
+        if self.owned
+            && self.signature.is_none()
+            && self
+                .target
+                .as_ref()
+                .is_some_and(|target| target.wayland_socket.is_some())
+        {
+            return self.lock.as_ref().is_some_and(crate::owned_wayland::alive);
+        }
         self.children
             .iter()
             .all(|child| matches!(child_exited(child), Ok(false)))

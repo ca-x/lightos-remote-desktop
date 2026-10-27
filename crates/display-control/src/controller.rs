@@ -74,11 +74,16 @@ impl DisplayBackend {
             )?),
             Self::Mutter => Arc::new(MutterDisplay::new(target)),
             Self::Kscreen => Arc::new(KScreenDisplay::new(target)),
-            Self::Wlroots => Arc::new(WlrootsDisplay::new(
-                target
+            Self::Wlroots => {
+                let socket = target
                     .wayland_socket
-                    .ok_or_else(|| anyhow::anyhow!("missing Wayland socket"))?,
-            )),
+                    .ok_or_else(|| anyhow::anyhow!("missing Wayland socket"))?;
+                Arc::new(if owned {
+                    WlrootsDisplay::virtual_display(socket)
+                } else {
+                    WlrootsDisplay::new(socket)
+                })
+            }
             Self::X11 => Arc::new(X11Display::new(target)),
             Self::Wayland => Arc::new(WaylandDisplay::new(
                 target

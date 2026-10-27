@@ -11,6 +11,7 @@ use image::{
 use serde::Deserialize;
 use serde_json::json;
 use std::{
+    fmt::Write as _,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -34,6 +35,10 @@ struct Session {
     backend: Arc<dyn DesktopBackend>,
     connected: AtomicBool,
     stop: CancellationToken,
+    clipboard_connected: AtomicBool,
+    clipboard_gate: Arc<crate::clipboard::Gate>,
+    clipboard_tx: tokio::sync::mpsc::Sender<crate::clipboard::CopyRequest>,
+    clipboard_rx: Mutex<Option<tokio::sync::mpsc::Receiver<crate::clipboard::CopyRequest>>>,
 }
 pub(crate) struct Scope {
     hub: Arc<Hub>,
@@ -42,9 +47,52 @@ pub(crate) struct Scope {
 pub(crate) struct Lease {
     session: Arc<Session>,
 }
+pub(crate) struct ClipboardLease {
+    session: Arc<Session>,
+    pub(crate) requests: Option<tokio::sync::mpsc::Receiver<crate::clipboard::CopyRequest>>,
+}
+impl ClipboardLease {
+    pub(crate) fn gate(&self) -> Arc<crate::clipboard::Gate> {
+        self.session.clipboard_gate.clone()
+    }
+    pub(crate) fn backend(&self) -> Arc<dyn DesktopBackend> {
+        self.session.backend.clone()
+    }
+    pub(crate) fn cancellation(&self) -> CancellationToken {
+        self.session.stop.clone()
+    }
+}
+impl Drop for ClipboardLease {
+    fn drop(&mut self) {
+        if let Some(requests) = self.requests.take() {
+            *self
+                .session
+                .clipboard_rx
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(requests);
+        }
+        self.session
+            .clipboard_connected
+            .store(false, Ordering::Release);
+    }
+}
 impl Scope {
+    pub(crate) fn clipboard_gate(&self) -> Arc<crate::clipboard::Gate> {
+        self.session.clipboard_gate.clone()
+    }
     pub(crate) fn token(&self) -> &str {
         &self.session.token
+    }
+    pub(crate) fn clipboard_sender(
+        &self,
+    ) -> tokio::sync::mpsc::Sender<crate::clipboard::CopyRequest> {
+        self.session.clipboard_tx.clone()
+    }
+    pub(crate) fn cancellation(&self) -> CancellationToken {
+        self.session.stop.clone()
+    }
+    pub(crate) fn cancel(&self) {
+        self.session.stop.cancel();
     }
 }
 impl Drop for Scope {
@@ -71,12 +119,17 @@ impl Hub {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect();
+        let (clipboard_tx, clipboard_rx) = tokio::sync::mpsc::channel(8);
         let session = Arc::new(Session {
             id,
             token,
             backend,
             connected: AtomicBool::new(false),
             stop: CancellationToken::new(),
+            clipboard_connected: AtomicBool::new(false),
+            clipboard_gate: Arc::default(),
+            clipboard_tx,
+            clipboard_rx: Mutex::new(Some(clipboard_rx)),
         });
         if let Some(previous) = self
             .current
@@ -108,6 +161,37 @@ impl Hub {
             session: session.clone(),
         })
     }
+    pub(crate) fn attach_clipboard(&self, token: &str) -> Option<ClipboardLease> {
+        let current = self.current.lock().ok()?;
+        let session = current.as_ref()?;
+        if session.token != token
+            || session.stop.is_cancelled()
+            || session.backend.paused()
+            || session.backend.is_stopped()
+            || session
+                .clipboard_connected
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return None;
+        }
+        let requests = match session
+            .clipboard_rx
+            .lock()
+            .ok()
+            .and_then(|mut requests| requests.take())
+        {
+            Some(requests) => requests,
+            None => {
+                session.clipboard_connected.store(false, Ordering::Release);
+                return None;
+            }
+        };
+        Some(ClipboardLease {
+            session: session.clone(),
+            requests: Some(requests),
+        })
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -136,20 +220,46 @@ async fn request(path: &Path, pid: i32, text: &str) -> Result<Vec<u8>> {
 }
 #[cfg(not(target_os = "linux"))]
 async fn request(_: &Path, _: i32, _: &str) -> Result<Vec<u8>> {
-    anyhow::bail!("independent cursor metadata unavailable; cursor is embedded in native video")
+    anyhow::bail!("independent cursor metadata unavailable on this backend")
 }
+pub(crate) async fn focused_app(backend: &dyn DesktopBackend) -> Result<String> {
+    let (runtime, pid, _) = backend.cursor_target()?;
+    let mut entries = tokio::fs::read_dir(runtime.join("hypr")).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path().join(".socket.sock");
+        if let Ok(bytes) = request(&path, pid, "j/activewindow").await {
+            let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+            return Ok(value["class"]
+                .as_str()
+                .unwrap_or_default()
+                .chars()
+                .take(256)
+                .collect());
+        }
+    }
+    anyhow::bail!("focused application metadata unavailable")
+}
+
 async fn source(backend: &dyn DesktopBackend) -> Result<(PathBuf, i32, Option<String>)> {
     let (runtime, pid, output) = backend.cursor_target()?;
+    source_for_target(runtime, pid, output).await
+}
+
+pub(crate) async fn source_for_target(
+    runtime: PathBuf,
+    pid: i32,
+    output: Option<String>,
+) -> Result<(PathBuf, i32, Option<String>)> {
     let mut entries = tokio::fs::read_dir(runtime.join("hypr")).await?;
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path().join(".socket.sock");
         if request(&path, pid, "j/version").await.is_err() {
             continue;
         }
-        let reply = request(&path, pid, "j/lightoscursor 0").await?;
+        let reply = request(&path, pid, "j/lightosindependentcursor 0").await?;
         if serde_json::from_slice::<serde_json::Value>(&reply)
             .ok()
-            .is_some_and(|value| value["version"] == 1)
+            .is_some_and(|value| value["version"] == 1 && value["cursor_free_capture"] == true)
         {
             return Ok((path, pid, output));
         }
@@ -172,6 +282,12 @@ async fn source(backend: &dyn DesktopBackend) -> Result<(PathBuf, i32, Option<St
             std::str::from_utf8(&result)?.trim() == "ok",
             "cursor adapter rejected: {}",
             String::from_utf8_lossy(&result)
+        );
+        let reply = request(&path, pid, "j/lightosindependentcursor 0").await?;
+        let capabilities: serde_json::Value = serde_json::from_slice(&reply)?;
+        ensure!(
+            capabilities["version"] == 1 && capabilities["cursor_free_capture"] == true,
+            "cursor adapter cannot provide cursor-free capture"
         );
         return Ok((path, pid, output));
     }
@@ -203,6 +319,39 @@ struct Snapshot {
     format: u32,
     pixels: Option<String>,
     outputs: Vec<Output>,
+}
+impl Snapshot {
+    fn native(frame: &crate::backend::CursorFrame, previous: u64) -> Self {
+        let pixels = (frame.serial != previous && frame.width > 0 && frame.height > 0).then(|| {
+            let mut hex = String::with_capacity(frame.pixels.len() * 2);
+            for byte in frame.pixels.iter() {
+                let _ = write!(hex, "{byte:02x}");
+            }
+            hex
+        });
+        Self {
+            version: 1,
+            available: true,
+            visible: frame.visible,
+            serial: frame.serial,
+            x: frame.x * f64::from(frame.units_width),
+            y: frame.y * f64::from(frame.units_height),
+            hotspot_x: f64::from(frame.hotspot_x),
+            hotspot_y: f64::from(frame.hotspot_y),
+            scale: 1.,
+            width: frame.width,
+            height: frame.height,
+            format: 0,
+            pixels,
+            outputs: vec![Output {
+                name: String::new(),
+                x: 0.,
+                y: 0.,
+                width: f64::from(frame.units_width),
+                height: f64::from(frame.units_height),
+            }],
+        }
+    }
 }
 fn png(snapshot: &Snapshot) -> Result<String> {
     ensure!(
@@ -284,7 +433,12 @@ pub(crate) async fn connection(socket: WebSocket, lease: Lease) {
             Ok(())
         };
         check_privacy()?;
-        let (path, pid, output) = source(session.backend.as_ref()).await?;
+        let native = session.backend.cursor_frames();
+        let (path, pid, output) = if native.is_some() {
+            (PathBuf::new(), 0, None)
+        } else {
+            source(session.backend.as_ref()).await?
+        };
         let mut tick = tokio::time::interval(Duration::from_millis(16));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut previous = 0;
@@ -293,9 +447,24 @@ pub(crate) async fn connection(socket: WebSocket, lease: Lease) {
         loop {
             tick.tick().await;
             check_privacy()?;
-            let bytes = request(&path, pid, &format!("j/lightoscursor {previous}")).await?;
+            let snapshot: Snapshot = if let Some(frames) = &native {
+                match frames.borrow().as_deref() {
+                    Some(frame) => Snapshot::native(frame, previous),
+                    None => Snapshot {
+                        version: 1,
+                        ..Snapshot::default()
+                    },
+                }
+            } else {
+                let bytes = request(
+                    &path,
+                    pid,
+                    &format!("j/lightosindependentcursor {previous}"),
+                )
+                .await?;
+                serde_json::from_slice(&bytes)?
+            };
             check_privacy()?;
-            let snapshot: Snapshot = serde_json::from_slice(&bytes)?;
             ensure!(snapshot.version == 1, "unsupported cursor observer version");
             if !snapshot.available {
                 session.backend.release_cursor(session.id);
@@ -381,11 +550,89 @@ pub(crate) async fn connection(socket: WebSocket, lease: Lease) {
         _ = receive => {},
         result = work => { if let Err(error)=result { tracing::debug!(%error,"cursor channel ended"); } },
     }
+    // Flush the peer's close reply (or initiate our own close). A raw TCP EOF
+    // can leave a proxied browser socket CLOSING until its timeout, preventing
+    // the independent cursor from reconnecting while video already fell back.
+    let _ = timeout(Duration::from_millis(500), writer.close()).await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn peer_close_receives_a_close_frame_without_waiting_for_tcp_eof() -> Result<()> {
+        struct CursorBackend;
+        impl crate::backend::DesktopBackend for CursorBackend {
+            fn kind(&self) -> crate::backend::BackendKind {
+                crate::backend::BackendKind::X11
+            }
+            fn stop(&self) {}
+            fn frames(&self) -> tokio::sync::watch::Receiver<Option<Arc<crate::backend::Frame>>> {
+                tokio::sync::watch::channel(None).1
+            }
+            fn input(&self) -> tokio::sync::mpsc::Sender<crate::backend::InputCommand> {
+                tokio::sync::mpsc::channel(1).0
+            }
+            fn cursor_frames(
+                &self,
+            ) -> Option<tokio::sync::watch::Receiver<Option<Arc<crate::backend::CursorFrame>>>>
+            {
+                Some(
+                    tokio::sync::watch::channel(Some(Arc::new(crate::backend::CursorFrame {
+                        serial: 1,
+                        visible: true,
+                        x: 0.5,
+                        y: 0.5,
+                        width: 1,
+                        height: 1,
+                        hotspot_x: 0,
+                        hotspot_y: 0,
+                        units_width: 10,
+                        units_height: 10,
+                        pixels: vec![0, 0, 255, 255].into(),
+                    })))
+                    .1,
+                )
+            }
+        }
+        let hub = Arc::new(Hub::default());
+        let scope = hub.start(Arc::new(CursorBackend));
+        let token = scope.token().to_owned();
+        let router = axum::Router::new().route(
+            "/cursor",
+            axum::routing::get(move |upgrade: axum::extract::ws::WebSocketUpgrade| {
+                let lease = hub.attach(&token).unwrap();
+                async move { upgrade.on_upgrade(move |socket| connection(socket, lease)) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let stop = CancellationToken::new();
+        let cancelled = stop.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(cancelled.cancelled_owned())
+                .await
+        });
+        let (mut client, _) =
+            tokio_tungstenite::connect_async(format!("ws://{address}/cursor")).await?;
+        assert!(matches!(
+            timeout(Duration::from_secs(1), client.next()).await?,
+            Some(Ok(tokio_tungstenite::tungstenite::Message::Text(_)))
+        ));
+        client.close(None).await?;
+        let reply = timeout(Duration::from_secs(1), client.next()).await?;
+        stop.cancel();
+        server.await??;
+        assert!(
+            matches!(
+                reply,
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)))
+            ),
+            "cursor close reply: {reply:?}"
+        );
+        Ok(())
+    }
     #[test]
     fn cursor_png_preserves_transparency_and_unpremultiplies_bgra() {
         let source = Snapshot {
