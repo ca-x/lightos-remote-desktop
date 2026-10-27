@@ -1,7 +1,7 @@
 manifest: ./lzc-manifest.yml
 contentdir: ./content
 pkgout: ./dist
-icon: ./docs/assets/logo.png
+icon: ./manager/web/icon.png
 buildscript: |
   set -eu
   mkdir -p content dist

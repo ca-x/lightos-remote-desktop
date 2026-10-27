@@ -1,4 +1,6 @@
 application:
   subdomain: remote-desktop
+  environment:
+    REMOTE_DESKTOP_SOURCES: '[{"app_id":"cloud.lazycat.lightos.entry","name":"容器桌面","path":"/api/list"}]'
   routes:
     - /=exec://8080,/lzcapp/pkg/content/remote-desktop-manager

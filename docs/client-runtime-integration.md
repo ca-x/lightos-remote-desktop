@@ -13,11 +13,11 @@ LPK 的管理页与管理服务由 `manager/` 维护，根目录 `lzc-build.yml`
 lzc-cli project build
 ```
 
-输出 `dist/cloud.lazycat.lightos.remote-desktop-v0.1.19.lpk`。管理服务内嵌自己的页面，
-不从 LightOS 或桌面客户端复制源码。LPK 通过平台的 `lightosctl system admin-info`
-发现 LightOS，使用当前登录凭据调用其公开目标接口；LightOS 提供容器与客户端
-的目标发现和连接授权。管理页点击目标后进入已授权的运行时，支持分类、搜索、
-刷新与错误提示。LightOS 未安装或版本不支持接口时明确显示不可用。
+输出到 `dist/`，显示名称为“远程桌面”。管理服务内嵌自己的页面和专用图标，
+不从其他管理应用或桌面客户端复制源码。桌面来源接口返回已授权连接 URL，
+当前用户通过平台委托访问这些既有接口。物理机直接向本应用登记，不依赖
+LightOS 增加接口、保存远程桌面字段或升级。页面只展示可连接选项，
+详细接入方式见[独立应用说明](management-lpk.md)。
 
 ## 运行时交付
 
@@ -26,9 +26,9 @@ lzc-cli project build
 Windows x64、Linux x64、macOS x64/arm64 的程序与浏览器资源一同发布；macOS
 保留 `.app` 的可执行程序与 Info.plist，作为稳定的系统权限授权身份。
 
-集成方只携带对应平台二进制、必要的 bundle 文件、摘要清单与一份合并许可声明。
+集成方只携带对应平台二进制、必要的 bundle 文件和摘要清单。
 不携带本项目的开发文档、研究记录、测试证书或完整发布压缩包。升级时同时更新
-二进制、摘要及许可声明。若安装包签名改变了可执行程序，签名后刷新安装包中的
+二进制与摘要。若安装包签名改变了可执行程序，签名后刷新安装包中的
 程序摘要；原始发布包摘要继续用于追溯来源。
 
 Linux 发布包依赖系统的 PipeWire、PulseAudio、Wayland 与 xkbcommon 等运行库，
