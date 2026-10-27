@@ -5,7 +5,7 @@ pkgrel=1
 pkgdesc='Optional Arch-native FFmpeg hardware H.264 worker for LightOS remote desktop'
 arch=('x86_64')
 url='https://github.com/ca-x/lightos-remote-desktop'
-license=('MIT' 'BSD-2-Clause' 'BSD-3-Clause' 'IJG' 'Zlib' 'WTFPL')
+license=('PolyForm-Noncommercial-1.0.0' 'MIT' 'BSD-2-Clause' 'BSD-3-Clause' 'IJG' 'Zlib' 'WTFPL')
 depends=('glibc' 'libgcc' 'libstdc++' 'ffmpeg' 'libavcodec.so=63-64'
          'libavutil.so=61-64' 'libswscale.so=10-64')
 makedepends=('python' 'binutils')

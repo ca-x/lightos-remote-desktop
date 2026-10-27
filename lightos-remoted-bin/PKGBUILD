@@ -5,7 +5,7 @@ pkgrel=1
 pkgdesc='Cross-platform Rust remote desktop host for browser clients (Linux binary)'
 arch=('x86_64')
 url='https://github.com/ca-x/lightos-remote-desktop'
-license=('MIT' 'BSD-3-Clause')
+license=('PolyForm-Noncommercial-1.0.0' 'MIT' 'BSD-3-Clause')
 depends=('glibc' 'libgcc' 'libstdc++' 'wayland' 'libxkbcommon' 'libpulse'
          'hyprland' 'aquamarine=0.15.1' 'hyprutils' 'libdisplay-info' 'libdrm'
          'libglvnd' 'libhyprutils.so' 'libdisplay-info.so' 'libinput' 'mesa' 'pixman' 'seatd' 'systemd-libs'

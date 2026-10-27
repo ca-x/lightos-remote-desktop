@@ -88,6 +88,7 @@ jobs:
           package=lightos-remoted-linux-x86_64
           mkdir -p "dist/$package/licenses"
           cp target/release/lightos-remoted README.md README.en.md LICENSE "dist/$package/"
+          cp docs/licenses/lightos-remote-desktop-mit.txt "dist/$package/licenses/lightos-remote-desktop-mit.txt"
           cp -r docs "dist/$package/"
           registry="${CARGO_HOME:-$HOME/.cargo}/registry/src"
           jpeg_license=$(find "$registry" -path '*/turbojpeg-sys-1.2.0/libjpeg-turbo/LICENSE.md' -print -quit)
@@ -154,6 +155,7 @@ jobs:
           package=lightos-codec-ffmpeg-linux-x86_64-ubuntu-24.04
           mkdir -p "dist/$package/licenses"
           cp target/release/lightos-codec-ffmpeg LICENSE "dist/$package/"
+          cp docs/licenses/lightos-remote-desktop-mit.txt "dist/$package/licenses/lightos-remote-desktop-mit.txt"
           cp docs/hardware-encoding.md "dist/$package/README.md"
           registry="${CARGO_HOME:-$HOME/.cargo}/registry/src"
           wrapper_license=$(find "$registry" -path '*/ffmpeg-next-9.0.0/LICENSE' -print -quit)

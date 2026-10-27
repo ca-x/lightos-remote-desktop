@@ -53,6 +53,7 @@ def main():
     shutil.copytree(repo / "docs", staging / "docs")
     licenses = staging / "licenses"
     licenses.mkdir()
+    shutil.copy2(repo / "docs/licenses/lightos-remote-desktop-mit.txt", licenses / "lightos-remote-desktop-mit.txt")
     shutil.copy2(args.notices, licenses / "native-runtime.txt")
     shutil.copy2(repo / "web/dist/NOTICE.frontend.txt", licenses / "frontend.txt")
     # These bundled C libraries include notices below the crate's top level.

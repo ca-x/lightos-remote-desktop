@@ -7,26 +7,22 @@
 [简体中文](README.md) | English
 
 A cross-platform remote desktop host written in Rust. Connect to and control
-Linux, Windows and macOS computers from a browser. The runtime does not embed
-CPython or invoke the original Selkies Python launcher.
+Linux, Windows and macOS computers from a browser.
 
 Experimental Windows/macOS physical-desktop hosts share the browser protocol and
 provide foreground `serve` and one-command `install-service` execution. Linux
 retains its existing virtual desktops and systemd services. See
 [native host installation, permissions and acceptance limits](docs/cross-platform-host.md).
 
-Fit and fullscreen modes can downscale video to the visible device pixels using FIR SIMD and reusable buffers. Quality-first and actual-size modes keep native video. Encoding size remains separate from capture resolution, display modes, normalized input, and cursor coordinates; see the [scaling behavior and measured limits](docs/encoder-scaling.md).
+## Features
 
-## Current implementation
-
-- Embedded React/TypeScript frontend with Radix UI menus, Headless UI dialogs and Lucide React icons.
-  A compact action toolbar opens contextual display, keyboard, clipboard and
+- A compact action toolbar opens contextual display, keyboard, clipboard and
   connection menus; a separate tabbed Settings dialog holds resolution,
   encoding, appearance, MCP and RDP preferences. Its final About tab shows the
-  application version, MIT license and project links. The appearance tab offers Chinese/English/browser language and
+  application version, license and project links. The appearance tab offers Chinese/English/browser language and
   light/dark/system theme preferences, stored locally without reconnecting.
   These themes affect only the controls, not the captured desktop.
-- Authenticated same-origin WebSocket client with canvas display and reconnect.
+- View and control the desktop from a browser, with authentication and automatic reconnect.
 - Enable/disable TLS RDP and set its port in Settings → RDP, using the same
   owned virtual desktop as the browser. It is off by default and retains the
   loopback bind policy; use SSH forwarding for remote access. Settings shows the
@@ -65,63 +61,22 @@ Fit and fullscreen modes can downscale video to the visible device pixels using 
   See [Chrome's Keyboard Lock requirements](https://developer.chrome.com/docs/capabilities/web-apis/keyboard-lock)
   and [Chromium's Wayland implementation](https://chromium.googlesource.com/chromium/src/+/main/ui/ozone/platform/wayland/host/wayland_keyboard.cc).
 - The toolbar’s Connection information menu shows actual drawn FPS, codec/resolution and application
-  WebSocket RTT (latest and P95 of the last 30 replies). RTT includes queueing,
-  not input-to-display latency. Static desktops skip duplicate frames, so low
-  idle FPS is normal. Measurements use the browser's monotonic clock.
-- A shared `DesktopBackend` trait for capture, input and text clipboard, with
-  automatic capability-based selection on a trusted session: native Wayland,
-  Portal or X11. GNOME/KDE can use a shared RemoteDesktop/ScreenCast grant and
-  PipeWire when one actual Portal implementation and its compositor can be
-  verified against the selected socket; X11 uses x11rb, enigo and arboard with isolated display/authority.
-  Discovery never opens consent; connecting may request Portal permission, and
-  denial does not trigger another authorization path. Native X11 has isolated
-  Xvfb acceptance coverage; GNOME/KDE hardware and fractional scaling remain
-  unverified. See [runtime boundaries](docs/runtime-platforms.md).
-- Native Wayland capture and virtual keyboard/pointer through libwayshot and
-  standard Wayland protocols; Unicode text injection and held-input cleanup.
-  Supported Hyprland sessions stream the actual cursor image, hotspot, scale
-  and visibility separately. Native browser cursor motion does not wait for video;
-  text, links, resizing, dragging and custom images retain their remote shapes.
-  Unsupported sessions retain the compositor-embedded cursor fallback.
-- Isolated Cage/wlroots host with nested Hyprland, a private D-Bus, and owned
-  process-group cleanup. No UWSM source modification.
+  connection RTT (latest and P95 of the last 30 replies). RTT is not
+  input-to-display latency.
+- Responsive remote cursor with actual shapes, hotspots, scaling and visibility,
+  including text fields, links, window edges, dragging and custom cursor images.
 - Persistent encoding (Auto/H.264/JPEG) and scheduling (Auto/Low latency/Smooth/Quality first)
-  choices. Independent display-control, media-codec and stream-scheduler crates;
-  see [runtime platform boundaries](docs/runtime-platforms.md) for desktop backends,
-  real capability probes and current platform limits.
+  choices. Browser H.264 requires a secure context such as HTTPS or localhost;
+  JPEG remains available when H.264 cannot be used.
+- Fit-to-window and fullscreen adjust the picture size automatically;
+  quality-first and actual-size modes keep native dimensions.
 - Dynamic resolution, text/image clipboard and optional private PipeWire/Pulse sink
   with browser audio playback.
-- Independent audio WebSocket and sender, so video encoding and render ACKs do
-  not hold audio delivery. See `docs/audio-channel.md` for lifecycle and limits.
-- Applications launched from the desktop receive its actual Xwayland display;
-  D-Bus activation is initialized from the compositor's final environment on
-  the private bus only, without importing it into the host user systemd manager.
 - Supervised health/readiness checks and transactional migration/rollback of
   an existing `lightos-remote-desktop.service`.
 
-**This is an initial native implementation, not complete Selkies parity.**
-Video negotiates H.264 through in-process OpenH264 and browser WebCodecs,
-with SIMD JPEG fallback when WebCodecs/encoding is unavailable. WebCodecs needs
-a secure browser context (HTTPS or localhost); H.264 requires even dimensions.
-The default capture cap is 30 FPS. Software H.264 is built in; an optional native
-worker adds probed VA-API/NVENC/AMF/VideoToolbox H.264 encoding with software
-fallback. Capture still uses CPU buffers, without DMA-BUF zero-copy. Audio uses
-stereo Opus with PCM fallback. Microphone uplink, file transfer, gamepads and simultaneous multi-monitor control
-are not implemented.
-Do not assume equivalent bandwidth or latency; benchmark your deployment.
-Capture reuses a connection for at most eight frames / 250 ms between captures,
-amortizing AF_UNIX and Wayland setup while still bounding libwayshot 0.9
-protocol-object retention and refreshing output information. JPEG is generated
-only when requested; H.264 shares the capture allocation with its worker.
-Unchanged images are not repeatedly encoded or transmitted. Each browser
-acknowledges rendered frames; input is processed independently of video writes.
-Sequenced clients use a render-ACK-timed window of one to three frames; codec
-changes and new H.264 encoders wait for their first rendered frame before expanding.
-H.264 samples the latest raw frame only when video credit is available, so it
-does not discard predictive frames after encoding. Reconnect and resolution
-changes create a fresh encoder/keyframe. Automatic, low-latency, smooth and
-quality-first policies adjust pacing and supported encoder bitrate from bounded
-ACK feedback. GPU capture is not implemented in this build.
+Microphone uplink, file transfer, gamepads and simultaneous multi-monitor control
+are not yet supported.
 
 ## Linux: AUR installation and updates
 
@@ -282,8 +237,8 @@ sudo ./lightos-remoted rollback-service
 `install-service` uses the new layout by default: it installs the executable,
 command entry and both complete systemd units, initializes a nonroot account and
 authentication, and enables the services. It preserves existing values in
-`/etc/lightos/remote-desktop.env`. It needs neither an existing Python service
-nor a source checkout. Desktop dependencies and any required private Aquamarine
+`/etc/lightos/remote-desktop.env`. No source checkout is required.
+Desktop dependencies and any required private Aquamarine
 library must already be installed; it does not download packages.
 
 `--dry-run` only shows the installation plan. `--stage-only` installs files
@@ -337,18 +292,9 @@ desktop does not start these components. Native Wayland text clipboard uses
 optional wl-clipboard helpers; X11 requires xauth and usable XTest input.
 `doctor` distinguishes required and optional dependencies for the selected
 startup mode; installed programs do not prove capture/input availability.
-Audio requires libpulse, pactl, pipewire, pipewire-pulse and WirePlumber 0.5+. A private audio graph is
-created per desktop; no host PulseAudio cookies or default sink are changed.
-The WirePlumber profile disables physical audio/Bluetooth/video monitors.
-Video encoding and audio capture/encoding do not spawn FFmpeg. Audio uses a
-cancellable native Pulse stream and negotiates 128 kbit/s Opus with compatible
-browsers, decoded in a Worker and played by an AudioWorklet. PCM remains a
-compatibility path. The native four-packet queue bounds backlog to 40 ms for PCM
-or 80 ms for Opus; browser transfer and playback queues are also bounded. Hover
-FPS/RTT for video-stage P95 timings and audio-buffer diagnostics. See
-`docs/audio-channel.md` for protocol, fallbacks and measurement limits.
-The current standalone
-desktop backend requires access to `/dev/dri/renderD128` for GLES rendering.
+Audio requires libpulse, pactl, pipewire, pipewire-pulse and WirePlumber 0.5+.
+Standalone desktops need access to `/dev/dri/renderD128`.
+See [audio configuration](docs/audio-channel.md) for details.
 
 ```sh
 npm ci
@@ -383,41 +329,26 @@ For an already-running compositor, use `--wayland-socket /absolute/socket`.
 It must expose the required capture, seat and virtual-input protocols. Attach
 mode does not own that desktop and cannot resize it.
 
-The default `--desktop-shell auto` detects the installed desktop independently
-of the distribution. On Omarchy 4.x it loads the user's native
-`~/.config/hypr/hyprland.lua`, or the installed Lua entry if the user has none.
-Only when no Lua entry exists does it try the native `.conf` configuration.
-Lua validation errors are reported; they do not select a different profile.
-Keybindings, themes and window rules come from that native configuration, rather
-than a bundled subset. The generated private entry skips the standard physical
-monitor/autostart and NVIDIA modules, isolates runtime/state/audio, and restores
-the session-local PATH after native settings. Host configs are never rewritten.
-Custom commands embedded directly in native Lua remain user-controlled code.
+The default `--desktop-shell auto` detects the installed desktop. On Omarchy 4.x,
+it uses the user's or system's Hyprland configuration, including keybindings,
+themes and window rules. Configuration errors are reported directly.
 
 Use `--desktop-shell minimal` for a generic terminal desktop, or
 `--desktop-shell omarchy` to require Omarchy. The generic profile checks for an
 installed terminal launcher and reports missing prerequisites. An explicit
 `--desktop-config FILE` or attached Wayland socket bypasses automatic shell
 startup. This is a separate desktop; theme and application data belong to the
-same user. Remote app launch uses a private `uwsm-app -- command [args...]`
-adapter and browser launcher, without importing the remote environment into the
-host user systemd manager.
+same user.
 
-Installed services separate the long-lived
-`lightos-remote-desktop-session.service` (Hyprland, Shell, D-Bus, Xwayland and
-audio) from `lightos-remote-desktop.service` (HTTP, capture and input).
-Transport updates and restarts reconnect to a private, versioned session
-descriptor, preserving GUI windows. The first upgrade from the old combined
-service rebuilds the desktop once. Explicitly restarting the session service,
-a compositor crash, logout or reboot can still close applications.
+Updating or restarting `lightos-remote-desktop.service` preserves the desktop
+and its applications. The first upgrade from an older version rebuilds the
+desktop once. Restarting `lightos-remote-desktop-session.service`, a compositor
+crash, logout or reboot can still close applications.
 See [installation and session lifecycle](docs/install.md#persistent-desktop-session).
 
 ### Aquamarine compatibility
 
-The tested LightOS image uses Aquamarine 0.15.1. Its nested Wayland backend
-overbinds protocol versions and does not flush its initial output commit.
-The pinned, reviewable private build fixes these issues without replacing
-`/usr/lib/libaquamarine.so.14`:
+For environments using Aquamarine 0.15.1, build and use the compatibility library:
 
 ```sh
 bash scripts/build-aquamarine.sh
@@ -433,7 +364,7 @@ include cmake, ninja and the matching native development dependencies.
 
 Read [docs/install.md](docs/install.md) before touching the live service. The
 installer preserves `/etc/lightos/remote-desktop.env`, the original unit and
-Python payload. Native-only settings live in a separate optional env file.
+existing platform files. Native-only settings live in a separate optional env file.
 The migration installer requires an existing service; it is not a distro
 provisioner. It does not install packages or download executable dependencies.
 
@@ -462,38 +393,8 @@ Use HTTPS/WSS at the trusted gateway; raw HTTP is for localhost or protected
 networks. Preserve Host and the configured URL prefix through the proxy. No
 cross-origin WebSocket connections are accepted.
 
-## Provenance
-
-This implementation uses libwayshot, Wayland client protocols, xkbcommon, Tokio
-and Axum. The separate Aquamarine patch builds exact official commit
-`f31c47a1b9d300847d8fc3108ad959448103dfc1` (v0.15.1). Its upstream license applies
-to that library; see `docs/third-party.md`. It is not bundled into the Rust
-executable. No pixelflux/pcmflux source or Python wheel is copied into this repo.
-
-Optional hardware H.264 encoders (VA-API/NVENC/AMF/VideoToolbox) use a separate
-ABI-specific native worker. The portable core retains software fallback and does
-not link FFmpeg; see [hardware encoding](docs/hardware-encoding.md) for build,
-runtime dependencies and device-validation limits.
-
 ## License
 
-LightOS Remote Desktop is licensed under [MIT](LICENSE). Third-party components
+LightOS Remote Desktop uses the [PolyForm Noncommercial License 1.0.0](LICENSE)
+(`PolyForm-Noncommercial-1.0.0`) for the noncommercial uses permitted by its terms. Third-party components
 retain their own licenses; see [third-party notices](docs/third-party.md).
-
-### Independent cursor adapter
-
-An optional read-only Hyprland adapter exports the actual cursor. Build it with a
-C++23 compiler and development headers matching the running compositor:
-
-```sh
-./scripts/build-hyprland-cursor.sh ./target/release/lightos-cursor.so
-```
-
-Place the adapter beside the core before installation. Install/update and rollback
-keep it with that payload; existing legacy installations retain the `--legacy`
-update path. The service checks compositor ownership before loading the adapter
-through its IPC. An ABI mismatch or unavailable image keeps the embedded-cursor
-fallback. Rebuild the adapter after a Hyprland upgrade.
-
-Cursor response is measured separately from desktop content FPS. Moving the
-pointer over a static desktop does not require new video frames.

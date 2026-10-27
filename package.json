@@ -1,7 +1,7 @@
 {
   "name": "lightos-remote-desktop-web",
   "private": true,
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "engines": {
     "node": "^24.15.0 || >=26.0.0"

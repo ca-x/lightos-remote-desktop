@@ -183,7 +183,7 @@ describe("React shell, menus and dialog lifecycle", () => {
     expect(image.getAttribute("width")).toBe("48");
     expect(image.getAttribute("height")).toBe("48");
     expect(within(settings).getByRole("link", { name: "Release notes" }).getAttribute("href")).toContain("/releases");
-    expect(within(settings).getByText("MIT")).toBeTruthy();
+    expect(within(settings).getByText("PolyForm Noncommercial License 1.0.0")).toBeTruthy();
   });
 
 });

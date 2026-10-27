@@ -10,6 +10,9 @@ trap 'rm -rf -- "$staging"' EXIT
 mkdir -p "$staging/$package/licenses" "$destination"
 install -m755 "$source_root/target/release/lightos-codec-ffmpeg" "$staging/$package/"
 install -m644 "$source_root/LICENSE" "$staging/$package/"
+if [[ -f $source_root/docs/licenses/lightos-remote-desktop-mit.txt ]]; then
+    install -m644 "$source_root/docs/licenses/lightos-remote-desktop-mit.txt" "$staging/$package/licenses/"
+fi
 install -m644 "$source_root/docs/hardware-encoding.md" "$staging/$package/README.md"
 install -m644 "$source_root/docs/licenses/ffmpeg-runtime.txt" "$staging/$package/licenses/"
 python3 "$tooling_root/scripts/codec-worker-notices.py" "$source_root" "$staging/$package/licenses/dependencies.txt"

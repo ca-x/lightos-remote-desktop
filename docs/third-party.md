@@ -1,5 +1,11 @@
 # Third-party components
 
+The current project license is [PolyForm Noncommercial License 1.0.0](../LICENSE).
+The original MIT notice for project code distributed through commit `0e31fb2`
+is retained in [lightos-remote-desktop-mit.txt](licenses/lightos-remote-desktop-mit.txt)
+and accompanies release packages. Third-party licenses and notices below remain
+unchanged.
+
 Cargo.lock pins Rust dependency resolution. Crate licenses remain their own;
 inventory the exact resolved graph before distributing a release.
 

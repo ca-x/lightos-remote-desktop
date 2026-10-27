@@ -342,7 +342,7 @@ function Workspace() {
               <TabPanel unmount={false}>
                 <section className="settings-section about-section" aria-label={t("about")}>
                   <div className="about-brand"><img src={logo} width="48" height="48" alt="" /><div><h3>LightOS Remote Desktop</h3><p>{t("aboutDescription")}</p></div></div>
-                  <dl className="about-details"><div><dt>{t("version")}</dt><dd id="software-version">{view.version || (version && version !== "__LIGHTOS_VERSION__" ? `v${version}` : t("developmentBuild"))}</dd></div><div><dt>{t("license")}</dt><dd>MIT</dd></div></dl>
+                  <dl className="about-details"><div><dt>{t("version")}</dt><dd id="software-version">{view.version || (version && version !== "__LIGHTOS_VERSION__" ? `v${version}` : t("developmentBuild"))}</dd></div><div><dt>{t("license")}</dt><dd>PolyForm Noncommercial License 1.0.0</dd></div></dl>
                   <div className="about-links"><a href="https://github.com/ca-x/lightos-remote-desktop" target="_blank" rel="noreferrer">{t("projectRepository")}</a><a href="https://github.com/ca-x/lightos-remote-desktop/releases" target="_blank" rel="noreferrer">{t("releaseNotes")}</a><a href="https://github.com/ca-x/lightos-remote-desktop/issues" target="_blank" rel="noreferrer">{t("reportIssue")}</a><a href="https://github.com/ca-x/lightos-remote-desktop/blob/main/LICENSE" target="_blank" rel="noreferrer">{t("license")}</a></div>
                   <p id="help">{t("help")}</p><p>{t("metrics")}</p><p className="mobile-help">{t("touchHelp")}</p>
                 </section>
