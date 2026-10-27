@@ -1,31 +1,31 @@
 {
   "repository": "https://github.com/ca-x/lightos-remote-desktop",
-  "tag": "v0.1.19",
+  "tag": "v0.1.20",
   "targets": {
     "linux-x64": {
       "binary": "lightos-remoted",
-      "sha256": "5701481b6dc5cf089ab7b49dc71044f1b7760856bba3eb466f02fbd0619d7ea4",
+      "sha256": "743c4486b47b915de81211b13164ac0db31f77d6b67f7b4e441c4d2c04cf5a49",
       "archive": "lightos-remoted-linux-x86_64.tar.gz",
-      "archive_sha256": "31406d19b842b071c538539d1d3219a3dec934f6ea521be1ec1a22ba8bac55d3"
+      "archive_sha256": "bf3f4d9a6442049136bf7b9683da7382867e46b5b49f6cf82dbd9b9f41f1ebf4"
     },
     "win32-x64": {
       "binary": "lightos-remoted.exe",
-      "sha256": "9b221fa51a014c5c97f892fec953ebb513fcf7501a5be0536976b5f2f35650ca",
+      "sha256": "733d5418bf5c3dc40f1cad6b54473faedad341c0852501d410c9e13ea93212ad",
       "archive": "lightos-remoted-windows-x86_64.zip",
-      "archive_sha256": "96335481ee2abf7967af9c4762686abcb7cc99aa5db611f78c3773330b9d42a9"
+      "archive_sha256": "d4dc249e4a508afefe9c4a269aecca77d4c355dc087e57bc8f5e55720e2476e6"
     },
     "darwin-x64": {
       "binary": "LightOS Remote Desktop.app/Contents/MacOS/lightos-remoted",
-      "sha256": "47202060e4509ce3de0ab986fb7bb57b8098eea3a81c686b70fc3b133f19a9b0",
+      "sha256": "973ae1d14293bd5193406727d7a2b81d178133d9e384319ff0f27475a06fecbb",
       "archive": "lightos-remoted-macos-x86_64.tar.gz",
-      "archive_sha256": "90b0223afaa41f9dbcc27e4372156f75153bd80f5a73556d94f9e48233167fdb"
+      "archive_sha256": "13a300e9e3cba06a16bf6c5cf37f1c4ad88bb241afe040c91e2f68eb2ae07da1"
     },
     "darwin-arm64": {
       "binary": "LightOS Remote Desktop.app/Contents/MacOS/lightos-remoted",
-      "sha256": "167d2a83614d854d1dd63c87b1aab500a983e5180557bc9a6afa6da12c0af91f",
+      "sha256": "9c9e391c707d216f1dd840897243d216f8d6d58c80065e89361fa0eb353b2b82",
       "archive": "lightos-remoted-macos-aarch64.tar.gz",
-      "archive_sha256": "74286aa46f36cba0cc143db6c7012b5ab0bcbc6010e8cd918813b0e54c0a99e5"
+      "archive_sha256": "c90aee521a898e01cf1ed9cb9739ae605100e46b997e9d2396d7c252df657740"
     }
   },
-  "revision": "c845001e83856305f65922c2a238519febb14526"
+  "revision": "52a019280e2e7f07eda3f5f08cead7a35f7a9ca0"
 }
