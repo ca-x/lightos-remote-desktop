@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -20,15 +21,16 @@ import (
 )
 
 type hostRegistration struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Platform string `json:"platform"`
-	DeviceID string `json:"device_id"`
-	Service  string `json:"terminal_service_name"`
-	Epoch    string `json:"terminal_epoch"`
-	Secret   string `json:"terminal_secret"`
-	BoxID    string `json:"box_id"`
-	Desktop  struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Platform       string `json:"platform"`
+	DeviceID       string `json:"device_id"`
+	Service        string `json:"terminal_service_name"`
+	DesktopService string `json:"desktop_service_name"`
+	Epoch          string `json:"terminal_epoch"`
+	Secret         string `json:"terminal_secret"`
+	BoxID          string `json:"box_id"`
+	Desktop        struct {
 		Enabled         bool   `json:"enabled"`
 		Ready           bool   `json:"ready"`
 		Port            int    `json:"port"`
@@ -106,17 +108,34 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 	id := hostID(owner(r), registration.ID)
 	if !registration.Desktop.Enabled || !registration.Desktop.Ready {
 		h.mu.Lock()
-		delete(h.hosts, id)
+		// Late cleanup from a previous runtime must not withdraw its replacement.
+		if current, ok := h.hosts[id]; ok && (registration.DesktopService == "" || current.registration.DesktopService == registration.DesktopService) {
+			delete(h.hosts, id)
+		}
 		h.mu.Unlock()
 		w.WriteHeader(204)
 		return
 	}
 	d := registration.Desktop
-	if registration.Service != "cloud.lazycat.lightos.client-terminal.managed."+registration.ID+"."+registration.Epoch || d.Epoch != registration.Epoch || d.Port < 1 || d.Port > 65535 || len(d.Password) < 32 || len(d.Password) > 256 || len(registration.Secret) < 32 || len(registration.Secret) > 256 || len(registration.Name) > 256 {
+	direct := registration.DesktopService != ""
+	if direct {
+		if registration.DesktopService != "cloud.lazycat.remote-desktop.managed."+registration.ID+"."+d.Epoch || d.Epoch == "" || strings.ContainsAny(registration.DesktopService, "/\\\r\n?#") {
+			writeFailure(w, 400, "invalid_registration")
+			return
+		}
+	} else if registration.Service != "cloud.lazycat.lightos.client-terminal.managed."+registration.ID+"."+registration.Epoch || d.Epoch != registration.Epoch || len(registration.Secret) < 32 || len(registration.Secret) > 256 {
 		writeFailure(w, 400, "invalid_registration")
 		return
 	}
-	for _, value := range []string{registration.Epoch, registration.Secret, registration.Service, registration.DeviceID, registration.BoxID, d.Password} {
+	if d.Port < 1 || d.Port > 65535 || len(d.Password) < 32 || len(d.Password) > 256 || len(registration.Name) > 256 {
+		writeFailure(w, 400, "invalid_registration")
+		return
+	}
+	values := []string{d.Epoch, registration.DeviceID, registration.BoxID, d.Password}
+	if !direct {
+		values = append(values, registration.Epoch, registration.Secret, registration.Service)
+	}
+	for _, value := range values {
 		if value == "" || strings.ContainsAny(value, "\r\n") {
 			writeFailure(w, 400, "invalid_registration")
 			return
@@ -137,6 +156,10 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *hostRegistry) proxy(w http.ResponseWriter, r *http.Request) {
+	if origin := r.Header.Get("Origin"); origin != "" && origin != "https://"+r.Host && origin != "http://"+r.Host {
+		writeFailure(w, http.StatusForbidden, "invalid_desktop_origin")
+		return
+	}
 	id, path, found := strings.Cut(strings.TrimPrefix(r.URL.Path, "/desktop/"), "/")
 	if !found {
 		http.NotFound(w, r)
@@ -171,16 +194,27 @@ func (h *hostRegistry) proxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	host := record.registration
-	target := tunnel.Target{InstanceID: host.ID, AccountID: record.owner, BoxID: host.BoxID, DeviceID: host.DeviceID, Epoch: host.Epoch, Secret: host.Secret, Service: host.Service, DeviceURL: device.GetDeviceApiUrl(), DeviceToken: token.Token}
-	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return tunnel.Dial(ctx, target, "remote-desktop", "127.0.0.1", host.Desktop.Port)
-	}, ResponseHeaderTimeout: 15 * time.Second}
+	transport := &http.Transport{ResponseHeaderTimeout: 15 * time.Second}
+	upstream := &url.URL{Scheme: "http", Host: "physical-desktop", Path: "/"}
+	if host.DesktopService != "" {
+		upstream, err = url.Parse(device.GetDeviceApiUrl())
+		if err != nil || upstream.Scheme != "https" || upstream.Host == "" || upstream.User != nil || upstream.RawQuery != "" || upstream.Fragment != "" {
+			writeFailure(w, 503, "device_unavailable")
+			return
+		}
+		upstream.Path = strings.TrimRight(upstream.Path, "/") + "/s/" + host.DesktopService + "/"
+	} else {
+		target := tunnel.Target{InstanceID: host.ID, AccountID: record.owner, BoxID: host.BoxID, DeviceID: host.DeviceID, Epoch: host.Epoch, Secret: host.Secret, Service: host.Service, DeviceURL: device.GetDeviceApiUrl(), DeviceToken: token.Token}
+		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return tunnel.Dial(ctx, target, "remote-desktop", "127.0.0.1", host.Desktop.Port)
+		}
+	}
 	defer transport.CloseIdleConnections()
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
-			req.URL.Scheme = "http"
-			req.URL.Host = "physical-desktop"
-			req.URL.Path = "/" + path
+			req.URL.Scheme = upstream.Scheme
+			req.URL.Host = upstream.Host
+			req.URL.Path = upstream.Path + path
 			req.URL.RawPath = ""
 			req.Host = r.Host
 			for key := range req.Header {
@@ -188,6 +222,16 @@ func (h *hostRegistry) proxy(w http.ResponseWriter, r *http.Request) {
 				if strings.HasPrefix(lower, "x-hc-") || lower == "cookie" || lower == "lzc-auth-token" || lower == "lzc-api-auth-token" {
 					req.Header.Del(key)
 				}
+			}
+			if host.DesktopService != "" {
+				req.Host = upstream.Host
+				if req.Header.Get("Origin") != "" {
+					req.Header.Set("Origin", "https://"+upstream.Host)
+				}
+				query := req.URL.Query()
+				query.Del("lzc_dapi_auth_token")
+				req.URL.RawQuery = query.Encode()
+				req.Header.Set("lzc_dapi_auth_token", token.Token)
 			}
 			req.SetBasicAuth("lightos", host.Desktop.Password)
 		}, Transport: transport, FlushInterval: -1,
