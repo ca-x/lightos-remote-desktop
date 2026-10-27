@@ -141,7 +141,7 @@ pub(super) fn permission_report(request: bool) -> Result<super::permissions::Per
         .unwrap_or(false)
     {
         access = GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Programmatic)
-            .and_then(|operation| operation.get())
+            .and_then(|operation| operation.join())
             .ok()
             .or(access);
     }
