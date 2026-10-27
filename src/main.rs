@@ -23,6 +23,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
+    #[cfg(target_os = "macos")]
+    #[command(
+        about = "Read screen recording and accessibility permissions; optionally request consent"
+    )]
+    Permissions {
+        #[arg(long, help = "Request missing permissions from the current GUI user")]
+        request: bool,
+    },
     #[command(about = "Install the native desktop service, or manage its lifecycle")]
     InstallService(lightos_remote_desktop::install::ServiceOptions),
     #[command(about = "Restore the previous standalone service installation")]
@@ -77,6 +85,16 @@ async fn main() -> Result<()> {
         _ => {}
     }
     match cli.command {
+        #[cfg(target_os = "macos")]
+        Action::Permissions { request } => {
+            println!(
+                "{}",
+                serde_json::to_string(&lightos_remote_desktop::platform::macos::permissions(
+                    request
+                )?)?
+            );
+            Ok(())
+        }
         Action::InstallService(options) => lightos_remote_desktop::install::service(options, false),
         Action::RollbackService(options) => lightos_remote_desktop::install::service(options, true),
         #[cfg(target_os = "windows")]

@@ -83,6 +83,19 @@ Developer ID signed or notarized.
 只读取授权状态，不自动弹窗或授予权限。未使用 Developer ID 签名、公证的更新可能
 需要重新授权；发布包不声称具备这类签名或公证。
 
+Integrations can run `lightos-remoted permissions` for a read-only JSON report,
+and `lightos-remoted permissions --request` to request missing Screen Recording
+and Accessibility consent from the actual host identity. Request mode requires
+an unlocked GUI session and waits at most 90 seconds; the caller may cancel it.
+These commands do not capture a frame or grant access themselves. A client should
+request once at startup or on an explicit user action, then use read-only checks
+to detect approval. Normal doctor/capability probes remain read-only.
+
+集成客户端可用 `permissions` 读取 JSON 权限状态，用 `permissions --request`
+由实际运行时请求缺少的屏幕录制与辅助功能授权。请求需要已解锁的 GUI 会话，
+最多等待 90 秒，调用方可取消。客户端启动时请求一次，之后只读检查；用户也可
+从设置页主动重新请求或直达系统设置。系统授权完成后再启动被控服务。
+
 ```bash
 "./LightOS Remote Desktop.app/Contents/MacOS/lightos-remoted" install-service --dry-run
 "./LightOS Remote Desktop.app/Contents/MacOS/lightos-remoted" install-service

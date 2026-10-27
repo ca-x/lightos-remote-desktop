@@ -31,6 +31,68 @@ pub fn provider() -> Arc<dyn NativePlatform> {
 
 struct MacosPlatform;
 
+/// Explicit consent entry point for desktop integrations. Capability probes and
+/// the doctor command continue to call the read-only PermissionProvider method.
+pub fn permissions(request: bool) -> Result<Permissions> {
+    use core_foundation_sys::{
+        base::{CFRelease, kCFAllocatorDefault},
+        dictionary::{
+            CFDictionaryCreate, kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks,
+        },
+        number::kCFBooleanTrue,
+    };
+    let platform = MacosPlatform;
+    let before = platform.permissions()?;
+    if request {
+        ensure!(
+            GuiSession::current()?.active,
+            "permission requests require an unlocked GUI session"
+        );
+        if !matches!(before.screen, PermissionState::Granted) {
+            unsafe { CGRequestScreenCaptureAccess() };
+        }
+        if !matches!(before.input, PermissionState::Granted) {
+            // Both keys and values are retained with the CoreFoundation callbacks.
+            let key = unsafe { kAXTrustedCheckOptionPrompt };
+            let value = unsafe { kCFBooleanTrue } as *const c_void;
+            let options = unsafe {
+                CFDictionaryCreate(
+                    kCFAllocatorDefault,
+                    &key,
+                    &value,
+                    1,
+                    &raw const kCFTypeDictionaryKeyCallBacks,
+                    &raw const kCFTypeDictionaryValueCallBacks,
+                )
+            };
+            ensure!(
+                !options.is_null(),
+                "cannot create accessibility consent options"
+            );
+            unsafe {
+                AXIsProcessTrustedWithOptions(options.cast());
+                CFRelease(options.cast());
+            }
+        }
+        // Accessibility consent is asynchronous. Keep the requesting process
+        // alive while the user grants access; callers may cancel this process.
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while Instant::now() < deadline {
+            let current = platform.permissions()?;
+            if matches!(current.screen, PermissionState::Granted)
+                && matches!(current.input, PermissionState::Granted)
+            {
+                return Ok(current);
+            }
+            if !GuiSession::current()?.active {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+    platform.permissions()
+}
+
 impl PermissionProvider for MacosPlatform {
     fn permissions(&self) -> Result<Permissions> {
         let screen = unsafe { CGPreflightScreenCaptureAccess() };
@@ -789,11 +851,14 @@ fn dictionary_bool(dictionary: *const c_void, key: &str) -> Option<bool> {
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
     fn CGSessionCopyCurrentDictionary() -> *const c_void;
 }
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     fn AXIsProcessTrusted() -> bool;
+    fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+    static kAXTrustedCheckOptionPrompt: *const c_void;
 }
 #[link(name = "SystemConfiguration", kind = "framework")]
 unsafe extern "C" {
