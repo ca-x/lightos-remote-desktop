@@ -81,7 +81,10 @@ func ownedDevice(ctx context.Context, uid, id string) (*sdk.APIGateway, *common.
 	devices, err := api.Devices.ListEndDevices(ctx, &common.ListEndDeviceRequest{Uid: uid})
 	if err == nil {
 		for _, d := range devices.GetDevices() {
-			if d.GetUniqueDeivceId() == id && d.GetIsOnline() && strings.HasPrefix(d.GetDeviceApiUrl(), "https://") {
+			// ShellCoreInfo.id is the client's network peer ID. Resolve it only
+			// within this user's verified devices, then store the platform ID.
+			matches := d.GetUniqueDeivceId() == id || d.GetAvoidUseThisPeerId() == id
+			if matches && d.GetUniqueDeivceId() != "" && d.GetIsOnline() && strings.HasPrefix(d.GetDeviceApiUrl(), "https://") {
 				return api, d, nil
 			}
 		}
@@ -143,12 +146,13 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
 	defer cancel()
-	api, _, err := ownedDevice(ctx, owner(r), registration.DeviceID)
+	api, device, err := ownedDevice(ctx, owner(r), registration.DeviceID)
 	if err != nil {
 		writeFailure(w, 403, "device_unavailable")
 		return
 	}
 	api.Close()
+	registration.DeviceID = device.GetUniqueDeivceId()
 	h.mu.Lock()
 	h.hosts[id] = hostRecord{registration: registration, owner: owner(r), until: time.Now().Add(35 * time.Second)}
 	h.mu.Unlock()
