@@ -83,6 +83,112 @@ pub fn provider() -> Arc<dyn NativePlatform> {
 
 struct WindowsPlatform;
 
+pub(super) fn permission_report(request: bool) -> Result<super::permissions::PermissionReport> {
+    use windows::{
+        Foundation::Metadata::ApiInformation,
+        Graphics::Capture::{GraphicsCaptureAccess, GraphicsCaptureAccessKind},
+        Security::Authorization::AppCapabilityAccess::{AppCapability, AppCapabilityAccessStatus},
+        Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
+        core::HSTRING,
+    };
+    struct Apartment(bool);
+    impl Drop for Apartment {
+        fn drop(&mut self) {
+            if self.0 {
+                unsafe { RoUninitialize() };
+            }
+        }
+    }
+    let _apartment = Apartment(unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_ok());
+    let platform = WindowsPlatform;
+    let permissions = match platform.permissions() {
+        Ok(permissions) => permissions,
+        Err(error) => {
+            return Ok(super::permissions::PermissionReport::unavailable(
+                error.to_string(),
+                "permission_check_failed",
+            ));
+        }
+    };
+    if !matches!(permissions.input, PermissionState::Granted) {
+        return Ok(super::permissions::PermissionReport::unavailable(
+            permissions.reason.unwrap_or_default(),
+            "session_unavailable",
+        ));
+    }
+    if !matches!(permissions.screen, PermissionState::Granted) {
+        let code = if permissions
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("display"))
+        {
+            "display_unavailable"
+        } else {
+            "capture_unsupported"
+        };
+        return Ok(super::permissions::PermissionReport::unavailable(
+            permissions.reason.unwrap_or_default(),
+            code,
+        ));
+    }
+    let mut access = AppCapability::Create(&HSTRING::from("graphicsCaptureProgrammatic"))
+        .and_then(|capability| capability.CheckAccess())
+        .ok();
+    if request
+        && ApiInformation::IsTypePresent(&HSTRING::from(
+            "Windows.Graphics.Capture.GraphicsCaptureAccess",
+        ))
+        .unwrap_or(false)
+    {
+        access = GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Programmatic)
+            .and_then(|operation| operation.get())
+            .ok()
+            .or(access);
+    }
+    // Traditional unpackaged Win32 hosts use CreateForMonitor; NotDeclared is
+    // not a denial of that interop API. Real policy/user denials remain visible.
+    match access {
+        Some(AppCapabilityAccessStatus::UserPromptRequired) => {
+            Ok(super::permissions::PermissionReport::windows(
+                Permissions {
+                    screen: PermissionState::NeedsUserAction,
+                    input: PermissionState::Granted,
+                    reason: Some("Windows requires approval for screen capture".into()),
+                },
+                "system",
+                "permission_required",
+            ))
+        }
+        Some(AppCapabilityAccessStatus::DeniedByUser) => {
+            Ok(super::permissions::PermissionReport::windows(
+                Permissions {
+                    screen: PermissionState::Denied,
+                    input: PermissionState::Granted,
+                    reason: Some("Screen capture is disabled in Windows privacy settings".into()),
+                },
+                "settings",
+                "permission_required",
+            ))
+        }
+        Some(AppCapabilityAccessStatus::DeniedBySystem) => {
+            Ok(super::permissions::PermissionReport::windows(
+                Permissions {
+                    screen: PermissionState::Denied,
+                    input: PermissionState::Granted,
+                    reason: Some("Screen capture is disabled by system policy".into()),
+                },
+                "none",
+                "system_policy_denied",
+            ))
+        }
+        _ => Ok(super::permissions::PermissionReport::windows(
+            permissions,
+            "none",
+            "ready",
+        )),
+    }
+}
+
 impl PermissionProvider for WindowsPlatform {
     fn permissions(&self) -> Result<Permissions> {
         process_dpi_ready()?;

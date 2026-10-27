@@ -222,6 +222,7 @@ async fn request(path: &Path, pid: i32, text: &str) -> Result<Vec<u8>> {
 async fn request(_: &Path, _: i32, _: &str) -> Result<Vec<u8>> {
     anyhow::bail!("independent cursor metadata unavailable on this backend")
 }
+#[cfg(target_os = "linux")]
 pub(crate) async fn focused_app(backend: &dyn DesktopBackend) -> Result<String> {
     let (runtime, pid, _) = backend.cursor_target()?;
     let mut entries = tokio::fs::read_dir(runtime.join("hypr")).await?;

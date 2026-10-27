@@ -20,6 +20,8 @@ pub mod native;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+pub mod permissions;
+
 pub trait SessionLifecycle: Send {
     fn healthy(&mut self) -> bool;
     fn is_owned(&self) -> bool;

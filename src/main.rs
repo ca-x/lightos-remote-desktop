@@ -23,13 +23,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
-    #[cfg(target_os = "macos")]
     #[command(
-        about = "Read screen recording and accessibility permissions; optionally request consent"
+        about = "Check native screen and input permissions; optionally request system consent"
     )]
     Permissions {
         #[arg(long, help = "Request missing permissions from the current GUI user")]
         request: bool,
+        #[command(flatten)]
+        config: Config,
     },
     #[command(about = "Install the native desktop service, or manage its lifecycle")]
     InstallService(lightos_remote_desktop::install::ServiceOptions),
@@ -85,14 +86,15 @@ async fn main() -> Result<()> {
         _ => {}
     }
     match cli.command {
-        #[cfg(target_os = "macos")]
-        Action::Permissions { request } => {
-            println!(
-                "{}",
-                serde_json::to_string(&lightos_remote_desktop::platform::macos::permissions(
-                    request
-                )?)?
-            );
+        Action::Permissions { request, config } => {
+            #[cfg(target_os = "linux")]
+            let report = tokio::task::spawn_blocking(move || {
+                lightos_remote_desktop::platform::permissions::report(&config, request)
+            })
+            .await??;
+            #[cfg(not(target_os = "linux"))]
+            let report = lightos_remote_desktop::platform::permissions::report(&config, request)?;
+            println!("{}", serde_json::to_string(&report)?);
             Ok(())
         }
         Action::InstallService(options) => lightos_remote_desktop::install::service(options, false),

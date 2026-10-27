@@ -91,6 +91,16 @@ These commands do not capture a frame or grant access themselves. A client shoul
 request once at startup or on an explicit user action, then use read-only checks
 to detect approval. Normal doctor/capability probes remain read-only.
 
+The `permissions` command is available on all three host platforms. Its JSON
+includes `can_start`, `request_mode`, `reason_code` and supported settings links.
+Windows checks the interactive session, WGC/display support and programmatic
+capture capability; user-consent requests use the Windows API where supported.
+Locked sessions, missing displays, unsupported APIs and system-policy denials
+are reported separately. Linux probes the exact X11/Wayland target without
+capturing or injecting input; Portal consent is requested by the real connection
+session, not by a discarded startup probe. `can_start` allows that deferred
+transport to start while the screen/input fields still require local consent.
+
 集成客户端可用 `permissions` 读取 JSON 权限状态，用 `permissions --request`
 由实际运行时请求缺少的屏幕录制与辅助功能授权。请求需要已解锁的 GUI 会话，
 最多等待 90 秒，调用方可取消。客户端启动时请求一次，之后只读检查；用户也可

@@ -79,6 +79,7 @@ impl Clipboard {
             }
         }
     }
+    #[cfg(feature = "portal")]
     pub(crate) fn stopped(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
     }

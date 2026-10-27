@@ -902,6 +902,7 @@ impl Backend {
         Self::start_pipeline(target, fps, quality, output, cancelled, executable, true)
     }
 
+    #[cfg(feature = "portal")]
     pub(crate) fn clipboard_only(
         target: SessionTarget,
         cancelled: Arc<AtomicBool>,

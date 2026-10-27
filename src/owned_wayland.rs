@@ -156,6 +156,7 @@ pub(crate) fn alive(lifetime: &File) -> bool {
 
 /// Resolve only an XWayland child of the admitted compositor. This is used for
 /// clipboard and focus compatibility; capture/input stay on the Wayland session.
+#[cfg(feature = "portal")]
 pub(crate) fn xwayland_target(compositor: u32, runtime: &Path) -> Result<SessionTarget> {
     let uid = unsafe { libc::geteuid() };
     let tasks = fs::read_dir(format!("/proc/{compositor}/task"))?;
@@ -230,6 +231,7 @@ pub(crate) fn xwayland_target(compositor: u32, runtime: &Path) -> Result<Session
 
 /// The session-local GNOME adapter exports application IDs only, never titles
 /// or document contents. Reject stale files and files outside its owner scope.
+#[cfg(feature = "portal")]
 pub(crate) fn focused_app(runtime: &Path, compositor: u32) -> Option<String> {
     use std::{io::Read, os::unix::fs::OpenOptionsExt};
     let mut file = fs::OpenOptions::new()
@@ -264,6 +266,7 @@ pub(crate) fn focused_app(runtime: &Path, compositor: u32) -> Option<String> {
 
 // KWin's wrapper opens both sockets before exec/spawning its compositor. This
 // exception only accepts that exact same-user parent in the same service.
+#[cfg(feature = "portal")]
 fn kwin_wrapper_parent(compositor: u32) -> Option<u32> {
     let process = PathBuf::from(format!("/proc/{compositor}"));
     if fs::read_link(process.join("exe")).ok()?.file_name()? != "kwin_wayland" {
