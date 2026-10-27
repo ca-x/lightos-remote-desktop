@@ -733,6 +733,15 @@ impl GuiSession {
             uid != 0,
             "macOS desktop host must run as the logged-in GUI user, not root"
         );
+        // CGSession's public dictionary does not expose a session ID key.
+        // AuthSession.h provides the caller's stable session ID and attributes.
+        let mut id = 0_u32;
+        let mut attributes = 0_u32;
+        let status = unsafe { SessionGetInfo(u32::MAX, &raw mut id, &raw mut attributes) };
+        ensure!(
+            status == 0 && id != 0 && id != u32::MAX,
+            "cannot read macOS security session: OSStatus {status}"
+        );
         let mut console_uid = u32::MAX;
         let mut console_gid = u32::MAX;
         let user = unsafe {
@@ -747,11 +756,11 @@ impl GuiSession {
         let dictionary = unsafe { CGSessionCopyCurrentDictionary() };
         ensure!(!dictionary.is_null(), "no current macOS GUI session");
         let session = (|| -> Result<Self> {
-            let id = dictionary_number(dictionary, "kCGSessionIDKey")
-                .context("macOS GUI session has no session ID")?;
-            let session_uid = dictionary_number(dictionary, "kCGSessionUserIDKey")
+            // CGSession.h macro names differ from the actual dictionary keys.
+            let session_uid = dictionary_number(dictionary, "kCGSSessionUserIDKey")
                 .context("macOS GUI session has no user ID")?;
-            let on_console = dictionary_bool(dictionary, "kCGSessionOnConsoleKey").unwrap_or(false);
+            let on_console =
+                dictionary_bool(dictionary, "kCGSSessionOnConsoleKey").unwrap_or(false);
             let logged_in = dictionary_bool(dictionary, "kCGSessionLoginDoneKey").unwrap_or(false);
             // Both keys are undocumented. A positive lock from either source
             // vetoes access; absence alone never proves the console unlocked.
@@ -759,16 +768,18 @@ impl GuiSession {
             let console_lock = io_console_locked();
             Ok(Self {
                 uid,
-                id,
-                active: gui_session_active(
-                    uid,
-                    console_uid,
-                    session_uid,
-                    on_console,
-                    logged_in,
-                    quartz_lock,
-                    console_lock,
-                ),
+                id: i64::from(id),
+                // sessionHasGraphicAccess from Security/AuthSession.h.
+                active: attributes & 0x0010 != 0
+                    && gui_session_active(
+                        uid,
+                        console_uid,
+                        session_uid,
+                        on_console,
+                        logged_in,
+                        quartz_lock,
+                        console_lock,
+                    ),
             })
         })();
         unsafe { CFRelease(dictionary) };
@@ -853,6 +864,10 @@ unsafe extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
     fn CGSessionCopyCurrentDictionary() -> *const c_void;
+}
+#[link(name = "Security", kind = "framework")]
+unsafe extern "C" {
+    fn SessionGetInfo(session: u32, id: *mut u32, attributes: *mut u32) -> i32;
 }
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
