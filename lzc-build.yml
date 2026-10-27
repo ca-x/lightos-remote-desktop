@@ -1,0 +1,9 @@
+manifest: ./lzc-manifest.yml
+contentdir: ./content
+pkgout: ./dist
+icon: ./docs/assets/logo.png
+buildscript: |
+  set -eu
+  mkdir -p content dist
+  cd manager
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o ../content/remote-desktop-manager .

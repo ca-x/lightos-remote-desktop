@@ -1,0 +1,14 @@
+package: cloud.lazycat.lightos.remote-desktop
+version: 0.1.19
+name: LightOS 远程桌面
+description: 查看和连接自己的容器及物理机远程桌面
+min_os_version: v1.5.2
+admin_only: false
+permissions:
+  required:
+    - lightos.manage
+locales:
+  zh:
+    name: LightOS 远程桌面
+  en:
+    name: LightOS Remote Desktop

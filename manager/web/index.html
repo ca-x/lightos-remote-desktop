@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <title>LightOS 远程桌面</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script src="./manager.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div><p class="eyebrow">LIGHTOS</p><h1 data-text="title">远程桌面</h1><p class="subtitle" data-text="subtitle">连接你的容器实例和电脑。</p></div>
+        <button id="refresh" type="button" data-text="refresh">刷新</button>
+      </header>
+      <div class="toolbar">
+        <div class="filters" role="group" aria-label="Desktop type">
+          <button type="button" data-filter="all" aria-pressed="true" data-text="all">全部</button>
+          <button type="button" data-filter="container" aria-pressed="false" data-text="container">容器实例</button>
+          <button type="button" data-filter="physical" aria-pressed="false" data-text="physical">物理机</button>
+        </div>
+        <input id="search" type="search" autocomplete="off" placeholder="搜索桌面" aria-label="Search desktops" />
+      </div>
+      <p id="status" role="status" aria-live="polite"></p>
+      <p id="warning" role="alert" hidden></p>
+      <section id="desktops" aria-label="Remote desktops"></section>
+      <section id="empty" hidden><div class="empty-icon" aria-hidden="true">▣</div><h2 data-text="empty">暂无可连接的桌面</h2><p data-text="help">容器实例：在 LightOS 实例设置中安装并开启远程桌面。物理机：在客户端设置中开启“接入 LightOS”和“远程桌面”。</p></section>
+      <footer><a id="lightos" href="/" data-text="lightos">打开 LightOS</a><span data-text="scope">仅显示当前账号有权访问且已就绪的桌面。</span></footer>
+    </main>
+  </body>
+</html>

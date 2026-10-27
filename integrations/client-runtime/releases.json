@@ -1,0 +1,31 @@
+{
+  "repository": "https://github.com/ca-x/lightos-remote-desktop",
+  "tag": "v0.1.19",
+  "targets": {
+    "linux-x64": {
+      "binary": "lightos-remoted",
+      "sha256": "5701481b6dc5cf089ab7b49dc71044f1b7760856bba3eb466f02fbd0619d7ea4",
+      "archive": "lightos-remoted-linux-x86_64.tar.gz",
+      "archive_sha256": "31406d19b842b071c538539d1d3219a3dec934f6ea521be1ec1a22ba8bac55d3"
+    },
+    "win32-x64": {
+      "binary": "lightos-remoted.exe",
+      "sha256": "9b221fa51a014c5c97f892fec953ebb513fcf7501a5be0536976b5f2f35650ca",
+      "archive": "lightos-remoted-windows-x86_64.zip",
+      "archive_sha256": "96335481ee2abf7967af9c4762686abcb7cc99aa5db611f78c3773330b9d42a9"
+    },
+    "darwin-x64": {
+      "binary": "LightOS Remote Desktop.app/Contents/MacOS/lightos-remoted",
+      "sha256": "47202060e4509ce3de0ab986fb7bb57b8098eea3a81c686b70fc3b133f19a9b0",
+      "archive": "lightos-remoted-macos-x86_64.tar.gz",
+      "archive_sha256": "90b0223afaa41f9dbcc27e4372156f75153bd80f5a73556d94f9e48233167fdb"
+    },
+    "darwin-arm64": {
+      "binary": "LightOS Remote Desktop.app/Contents/MacOS/lightos-remoted",
+      "sha256": "167d2a83614d854d1dd63c87b1aab500a983e5180557bc9a6afa6da12c0af91f",
+      "archive": "lightos-remoted-macos-aarch64.tar.gz",
+      "archive_sha256": "74286aa46f36cba0cc143db6c7012b5ab0bcbc6010e8cd918813b0e54c0a99e5"
+    }
+  },
+  "revision": "c845001e83856305f65922c2a238519febb14526"
+}

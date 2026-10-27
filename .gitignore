@@ -4,3 +4,7 @@
 /.local/
 *.env
 !config/example.env
+/content/
+/dist/
+*.lpk
+/manager/manager

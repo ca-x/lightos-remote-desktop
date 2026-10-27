@@ -1,0 +1,4 @@
+application:
+  subdomain: remote-desktop
+  routes:
+    - /=exec://8080,/lzcapp/pkg/content/remote-desktop-manager
