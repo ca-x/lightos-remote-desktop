@@ -121,9 +121,28 @@ fn clipboard_client(socket: &Path, program: &str) -> tokio::process::Command {
     command
 }
 
+async fn await_clipboard_write(
+    write: impl std::future::Future<Output = anyhow::Result<()>>,
+) -> anyhow::Result<()> {
+    write.await
+}
+
+#[tokio::test]
+async fn clipboard_probe_bounds_a_stalled_write() {
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        await_clipboard_write(std::future::pending()),
+    )
+    .await
+    .expect("clipboard probe writes must have their own deadline");
+    assert!(result.is_err());
+}
+
 async fn verify_text_clipboard(backend: &Backend, socket: &Path) {
     let from_transport = "From remoted: 猫与 Pond 🦋\nsecond line\n";
-    backend.clipboard_write(from_transport).await.unwrap();
+    await_clipboard_write(backend.clipboard_write(from_transport))
+        .await
+        .unwrap();
     let mut paste = clipboard_client(socket, "/usr/bin/wl-paste");
     paste
         .args(["--no-newline", "--type", "text"])

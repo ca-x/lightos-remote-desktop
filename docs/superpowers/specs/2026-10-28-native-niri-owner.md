@@ -65,6 +65,8 @@ owned runtime. Update activation environment on that private D-Bus only, using
 explicit arguments and no shell or `--systemd`. The parent verifies that both
 connected socket peers belong to the same selected Niri before accepting the
 record. Old records must not make a new startup ready.
+Publish successful readiness only after private-bus activation succeeds; do
+not publish first and complete activation asynchronously.
 
 Application launchers retain their isolated Chromium profile and private bus.
 The Niri path does not execute the Hyprland IPC/session-environment script and

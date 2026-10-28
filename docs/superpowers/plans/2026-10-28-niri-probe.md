@@ -92,3 +92,9 @@ No production code or the immutable v0.1.22 release source changes in this phase
   drop; reads and final owner shutdown are bounded. Image/notification
   clipboard acceptance stays false. This new feasibility check changes no
   production behavior and does not manufacture a failing test.
+- Clipboard review found one P2: the test directly awaited its initial
+  production write and could hang until job timeout. Extract that wait without
+  changing its behavior, then pass an honestly stalled dependency to the same
+  test policy boundary. An outer five-second test supervisor must observe this
+  regression fail before the probe gains its own three-second write deadline.
+  No local executable validation or fake production failure is introduced.
