@@ -109,6 +109,10 @@ Files: `src/session.rs`, `src/session/niri.rs`,
 
 ## Evidence
 
+- Task-3 fixture 5ad6ad6/40789753777 stops at three rustfmt changes before
+  behavior runs. Apply the exact GitHub output and observe the publisher's
+  actual missing-action RED, not a formatting failure.
+
 - Task 2 interface GREEN 40787218608/2f43e31: Linux test job succeeds including
   169 default unit cases, real CLI subprocess environment/precedence cases,
   bundled-jpeg and bundled-jpeg/rdp/portal tests and all-target clippy. Windows

@@ -112,12 +112,18 @@ fn publishes_only_private_display_values_after_activation_without_importing_auth
     let metadata = fs::symlink_metadata(fixture.record()).unwrap();
     assert!(metadata.is_file());
     assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
-    assert_eq!(metadata.uid(), fs::metadata(&fixture.runtime).unwrap().uid());
+    assert_eq!(
+        metadata.uid(),
+        fs::metadata(&fixture.runtime).unwrap().uid()
+    );
     let bytes = fs::read(fixture.record()).unwrap();
     let document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(document.as_object().unwrap().len(), 3);
     assert_eq!(document["wayland_display"], "wayland-7");
-    assert_eq!(document["niri_socket"], fixture.runtime.join("niri.control.sock").to_str().unwrap());
+    assert_eq!(
+        document["niri_socket"],
+        fixture.runtime.join("niri.control.sock").to_str().unwrap()
+    );
     assert_eq!(document["display"], ":93");
     let content = String::from_utf8(bytes).unwrap();
     assert!(!content.contains("fixture-auth-sentinel"));
@@ -133,7 +139,10 @@ fn publishes_only_private_display_values_after_activation_without_importing_auth
 fn rejects_a_foreign_bus_before_activating_or_writing_readiness() {
     let fixture = Fixture::new();
     let mut command = fixture.command();
-    command.env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/tmp/not-this-runtime");
+    command.env(
+        "DBUS_SESSION_BUS_ADDRESS",
+        "unix:path=/tmp/not-this-runtime",
+    );
     let output = run(command);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("private session bus"));
