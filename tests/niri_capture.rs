@@ -253,24 +253,32 @@ async fn niri_native_capabilities_and_first_frame() {
     .expect("Niri did not produce a nonuniform frame containing its client");
     assert!(frame.width >= 320 && frame.height >= 200);
     assert!(backend.frame_is_fresh(Duration::from_secs(5)));
+    backend
+        .input
+        .send(InputCommand::Move { x: 0.25, y: 0.5 })
+        .await
+        .unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     let offset = loop {
         let observed = fs::read_to_string(&wev_log).unwrap_or_default();
         if observed
             .lines()
             .any(|line| wev_event(line, "wl_keyboard", "enter").is_some())
+            && observed
+                .lines()
+                .any(|line| wev_event(line, "wl_pointer", "enter").is_some())
         {
             break observed.len();
         }
         assert!(
             Instant::now() < deadline,
-            "wev did not acquire keyboard focus: {observed}; {}",
+            "wev did not acquire keyboard and pointer focus: {observed}; {}",
             fs::read_to_string(&log).unwrap_or_default()
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     for command in [
-        InputCommand::Move { x: 0.25, y: 0.5 },
+        InputCommand::Move { x: 0.35, y: 0.5 },
         InputCommand::Button {
             button: 0,
             pressed: true,

@@ -72,3 +72,11 @@ No production code or the immutable v0.1.22 release source changes in this phase
 - Retain the observed old key-300 failure and independently mutate the valid
   key-38 fixture to key 380 or button 2720, so a wrong keyboard field cannot mask
   a pointer-prefix regression in future implementations.
+- Re-review of `0114c31..9d1b57a` closed both old P2 findings with no new
+  blocking P1/P2. Probe `40695810183` at `9d1b57a` passed all four receipt
+  regressions, then failed the real gate: its actual log contains XKB-38
+  press/release and left-button press/release, but the first absolute pointer
+  movement produced `enter`, not `motion`. Preserve the strict motion check:
+  establish pointer plus keyboard focus first, take the offset, then inject a
+  distinct second movement inside the client. This is another fixture fix,
+  not a production backend failure or an input-delivery pass.
