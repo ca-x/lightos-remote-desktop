@@ -1,7 +1,8 @@
 # Native Niri owner implementation plan
 
-Status: deferred at the user's request on 2026-10-28. Preserve this research,
-but do not implement it while finishing oci-kit and the Pond recipe.
+Status: resumed narrowly on 2026-10-29 after the kit and real Pond payload
+initialization/frame gates passed. Implement only the native owner seam needed
+by the current image goal; no codec/AUR research or unrelated refactoring.
 
 > For agentic workers: use the executing-plans skill task by task. Do not start
 > implementation before the real capture/input/text-clipboard prerequisite.
@@ -41,22 +42,22 @@ Files: `tests/niri_capture.rs`, `.github/workflows/niri-probe.yml`,
 
 - [x] Preserve exact wev receipt regressions and observe real motion/key/button
   success after establishing focus, without accepting `enter` as `motion`.
-- [ ] Exercise production `DesktopBackend::clipboard_write` against an
+- [x] Exercise production `DesktopBackend::clipboard_write` against an
   independent `wl-paste`, then independent foreground `wl-copy` against
   `DesktopBackend::clipboard_read`, using distinct Unicode/multiline fixture
   text and the exact private Niri socket. Bound waits and kill owned helpers.
-- [ ] Record exact reports, full CI, independent review and SSH-pushed evidence.
+- [x] Record exact reports, full CI, independent review and SSH-pushed evidence.
 
 ### Task 2: Explicit configuration and dependency boundary
 
 Files: `src/config.rs`, `src/diagnostics.rs`, `src/desktop/mod.rs`,
-`src/main.rs`; adjacent unit tests.
+`src/session.rs`; adjacent unit tests.
 
 Interface: `Compositor::{Hyprland, Niri}`, `Config::compositor`; preserve
 `Config::desktop_config` as the native config path.
 
 - [ ] Add tests for default compatibility, explicit Niri selection, missing
-  native config, relative paths, Omarchy/Aquamarine conflicts and non-Linux
+  native config, native HOME defaults, relative paths, shell/Aquamarine conflicts and non-Linux
   rejection. Observe actual remote RED.
 - [ ] Implement validation and Niri doctor dependencies without traversing the
   generic/Omarchy Hyprland initializer. Native includes remain at their source.
@@ -93,7 +94,25 @@ Files: `src/session.rs`, `src/session/niri.rs`,
 - [ ] Run full GitHub CI, independently review, SSH commit/push. Only then
   plan package/version changes and the separate real Pond shell/device gates.
 
+## Resumption rulings
+
+- Ruling: use only an existing native config, explicit or under the non-root
+  owner's absolute HOME. The image cannot know the platform-created username
+  at build time; requiring a baked /home/name path would break initialization.
+  No missing-file generation or rewritten include tree is allowed.
+- Ruling: persistent transport attachment does not revalidate an owner's
+  startup config. A live owner must survive transport upgrades even if its
+  original config is subsequently moved. Explicit supplied paths remain absolute.
+- Ruling: while task 2 exposes selection/doctor only, fail native startup
+  closed before spawning anything. Never silently launch Hyprland for Niri.
+  Remove this temporary guard only when the real native owner is implemented.
+
 ## Evidence
+
+- Feasibility clipboard probe 40699256007 and later full source CI40708400112
+  are accepted predecessors. The real Pond init/frame probe40738943260 passes;
+  probe40782166125 additionally verifies same-peer Wayland selection and an
+  actual Quickshell IPC query with exit0. These do not prove persistence.
 
 - Read-only owner audit identifies the existing Hyprland dependencies in
   config/doctor, desktop socket discovery, environment IPC and persistent

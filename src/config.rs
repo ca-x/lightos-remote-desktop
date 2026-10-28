@@ -7,6 +7,68 @@ mod tests {
         Config::try_parse_from(arguments).unwrap()
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn selects_niri_with_an_existing_native_configuration() {
+        let native = tempfile::NamedTempFile::new().unwrap();
+        let settings = Config::try_parse_from([
+            "test",
+            "--password",
+            "some-long-secret",
+            "--compositor",
+            "niri",
+            "--desktop-config",
+            native.path().to_str().unwrap(),
+        ]);
+        assert!(settings.is_ok(), "{:?}", settings.as_ref().err());
+        let settings = settings.unwrap();
+        assert!(settings.validate().is_ok());
+        assert!(settings.omarchy_path().unwrap().is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn niri_rejects_foreign_shells_aquamarine_and_attachment_modes() {
+        let native = tempfile::NamedTempFile::new().unwrap();
+        for extra in [
+            ["--shell", "omarchy"],
+            ["--shell", "minimal"],
+            ["--aquamarine-dir", "/private/aquamarine"],
+            ["--wayland-socket", "/private/wayland-0"],
+            ["--x11-display", ":0"],
+        ] {
+            let mut arguments = vec![
+                "test",
+                "--password",
+                "some-long-secret",
+                "--compositor",
+                "niri",
+                "--desktop-config",
+                native.path().to_str().unwrap(),
+            ];
+            arguments.extend(extra);
+            let settings = config(&arguments);
+            assert!(settings.validate().is_err(), "{extra:?}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn niri_rejects_relative_or_missing_explicit_configurations() {
+        for path in ["relative.kdl", "/nonexistent/lightos-niri-native/config.kdl"] {
+            let settings = config(&[
+                "test",
+                "--password",
+                "some-long-secret",
+                "--compositor",
+                "niri",
+                "--desktop-config",
+                path,
+            ]);
+            assert!(settings.validate().is_err(), "{path}");
+        }
+    }
+
     #[test]
     fn rejects_missing_or_default_password() {
         for password in ["", "changeme", "password", "lightos"] {

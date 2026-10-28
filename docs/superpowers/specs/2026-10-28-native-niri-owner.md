@@ -1,8 +1,11 @@
 # Native Niri persistent owner
 
-Status: deferred at the user's request on 2026-10-28; not implemented or
-accepted. Capture, real input and text clipboard feasibility succeeded.
-Return to oci-kit and the Pond recipe instead of expanding this owner project.
+Status: resumed narrowly on 2026-10-29 as a direct Pond image dependency.
+The earlier deferral avoided unrelated remoted research while finishing kit
+and real payload gates. Those gates now include actual Pond initialization,
+native sidebar/frame success in 40738943260 and display-bound IPC query success
+in 40782166125. Native owner startup itself is not implemented or accepted.
+Do not expand codec, cursor, AUR or unrelated platform work.
 
 ## Goal
 
@@ -32,12 +35,16 @@ Add Linux owned-session `--compositor` /
 Hyprland remains the default. Reuse `--desktop-config` for the selected
 compositor's native configuration; do not introduce another Niri config flag.
 
-The initial Niri owner requires an explicit, existing absolute configuration
-path. Preserve that file and all relative includes instead of copying it into a
-different directory. Reject an explicit Omarchy shell or private Aquamarine
+The initial Niri owner requires an existing absolute configuration path.
+An explicit desktop-config path is used unchanged. Otherwise resolve only the
+ordinary HOME/.config/niri/config.kdl of the non-root owner; require an absolute
+HOME and an existing file. This avoids baking a platform-created username into
+the image. Preserve that file and all relative includes instead of copying it
+into a different directory. Reject Hyprland shell selectors or private Aquamarine
 override for Niri. Do not infer Niri from distribution labels, auto-generate a
 Hyprland fallback, rewrite the user's home or silently substitute another shell.
 Attaching a transport to an already-published owner never starts or replaces it.
+Such attachment does not require the owner's startup config to still exist.
 
 ## Owned process graph and identity
 

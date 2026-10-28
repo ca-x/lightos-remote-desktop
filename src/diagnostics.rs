@@ -184,6 +184,35 @@ mod tests {
     }
 
     #[test]
+    fn niri_startup_requires_native_tools_without_hyprland_or_omarchy() {
+        let config = Config::try_parse_from([
+            "test",
+            "--compositor",
+            "niri",
+            "--desktop-config",
+            "/private/native/config.kdl",
+            "--audio",
+            "false",
+        ])
+        .unwrap();
+        let report = dependencies(&config, true, |_| None);
+        let names: Vec<_> = report
+            .required
+            .iter()
+            .map(|dependency| dependency.program.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "cage",
+                "niri",
+                "dbus-daemon",
+                "dbus-update-activation-environment"
+            ]
+        );
+    }
+
+    #[test]
     fn owned_startup_requires_its_tools_and_only_enabled_audio_tools() {
         let mut config = Config::try_parse_from(["test", "--audio", "false"]).unwrap();
         let report = dependencies(&config, false, |_| None);

@@ -51,3 +51,37 @@ fn configuration_directory(runtime: &Path) -> Result<PathBuf> {
         .tempdir_in(runtime)?
         .keep())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn native_niri_preserves_the_supplied_path_and_never_generates_a_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("original.kdl");
+        let linked = directory.path().join("config.kdl");
+        let runtime = directory.path().join("runtime");
+        std::fs::write(&original, "include \"personal.kdl\"\n").unwrap();
+        std::os::unix::fs::symlink(&original, &linked).unwrap();
+        std::fs::create_dir(&runtime).unwrap();
+        let config = Config::try_parse_from([
+            "test",
+            "--compositor",
+            "niri",
+            "--desktop-config",
+            linked.to_str().unwrap(),
+        ])
+        .unwrap();
+        let prepared = prepare(&config, &runtime).unwrap();
+        assert_eq!(prepared.configuration, linked);
+        assert!(prepared.omarchy.is_none());
+        assert!(prepared.environment.is_empty());
+        assert!(std::fs::read_dir(&runtime).unwrap().next().is_none());
+        assert_eq!(
+            std::fs::read_to_string(&original).unwrap(),
+            "include \"personal.kdl\"\n"
+        );
+    }
+}
