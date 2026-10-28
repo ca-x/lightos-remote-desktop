@@ -100,6 +100,22 @@ install-service --remove
 install-service --remove
 EXPECTED
 check cmp "$temporary/expected-hooks" "$temporary/hooks.log"
+: > "$temporary/hooks.log"
+export LIGHTOS_REMOTED_PACKAGE_STAGE_ONLY=1
+for hook in pre_upgrade post_install post_upgrade pre_remove; do "$hook"; done
+printf 'install-service --package-managed --stage-only\ninstall-service --package-managed --stage-only\n' > "$temporary/expected-offline-hooks"
+check cmp "$temporary/expected-offline-hooks" "$temporary/hooks.log"
+export HOOK_STATUS=23
+check pre_upgrade
+reject post_install
+reject post_upgrade
+check pre_remove
+unset HOOK_STATUS
+: > "$temporary/hooks.log"
+export LIGHTOS_REMOTED_PACKAGE_STAGE_ONLY=invalid
+for hook in pre_upgrade post_install post_upgrade pre_remove; do reject "$hook"; done
+check test ! -s "$temporary/hooks.log"
+unset LIGHTOS_REMOTED_PACKAGE_STAGE_ONLY
 # The source assets and workflow must both use only the hook and ABI patch.
 for asset in "${source[@]:1}"; do
     check test -f "$repository/lightos-remoted-bin/$asset"

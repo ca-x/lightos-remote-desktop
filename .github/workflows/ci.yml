@@ -6,6 +6,12 @@ on:
 permissions:
   contents: read
 jobs:
+  package-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: bash tests/aur-package.sh
+      - run: bash tests/aur-codec-package.sh
   test:
     runs-on: ubuntu-latest
     env:

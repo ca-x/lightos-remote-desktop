@@ -131,6 +131,14 @@ check grep -Fxq 'try-restart lightos-remote-desktop.service' "$AUR_CODEC_ROOT/ev
 fixture restart-fails
 touch "$AUR_CODEC_ROOT/fail-restart"
 check post_upgrade
+fixture offline
+export LIGHTOS_REMOTED_PACKAGE_STAGE_ONLY=1
+for hook in post_install post_upgrade post_remove; do check "$hook"; done
+check test ! -s "$AUR_CODEC_ROOT/events"
+export LIGHTOS_REMOTED_PACKAGE_STAGE_ONLY=invalid
+for hook in post_install post_upgrade post_remove; do reject "$hook"; done
+check test ! -s "$AUR_CODEC_ROOT/events"
+unset LIGHTOS_REMOTED_PACKAGE_STAGE_ONLY
 python3 - "$repository" <<'PY'
 from pathlib import Path
 import sys
