@@ -38,3 +38,8 @@ No production code or the immutable v0.1.22 release source changes in this phase
 - Main run `40686718003` stopped at three rustfmt differences in the new probe.
   Apply only the runner's diff and rebuild remotely. No Niri runtime result is
   inferred from this format failure; tag v0.1.22 uses separate immutable source.
+- Run `40687440648` compiled the probe and passed the initial workspace tests,
+  then feature clippy reported `chunks_exact_to_as_chunks` on Rust 1.99. Replace
+  the fixed-size pixel iterator with typed `as_chunks::<4>()`, not a lint allow.
+  Independent review found no execution/isolation/cleanup P1/P2; dispatch the
+  real probe after this correction. No runtime result is claimed beforehand.

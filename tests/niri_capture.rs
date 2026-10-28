@@ -132,7 +132,9 @@ async fn niri_native_capabilities_and_first_frame() {
                 && frame.pixels.len() >= 4
                 && frame
                     .pixels
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .any(|pixel| pixel[..3] != frame.pixels[..3])
             {
                 break frame;
