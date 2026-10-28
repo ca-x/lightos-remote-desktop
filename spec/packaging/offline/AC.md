@@ -1,5 +1,8 @@
 # Offline staging acceptance
 
+- Special executable/unit files are rejected before any data open. A FIFO plus
+  inotify observes the real CLI without using dangerous device nodes. Validated
+  regular inodes are pinned before reopening through Linux procfs for reading.
 - The real Linux CLI accepts `--package-managed --stage-only` against an isolated
   package tree, with an unusable PATH, and changes no files.
 - Both package units must exactly equal the executable's exported units. Missing,

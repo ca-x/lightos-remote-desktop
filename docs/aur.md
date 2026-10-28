@@ -83,6 +83,8 @@ LIGHTOS_REMOTED_PACKAGE_STAGE_ONLY=1 pacman -U ./lightos-remoted-bin-*.pkg.tar.z
 The package hooks call the binary's read-only
 `install-service --package-managed --stage-only` validator. It checks the
 installed executable and that both packaged units match its embedded definitions.
+It uses O_PATH to reject non-regular inodes before any data open, then reads
+the pinned regular inode through Linux procfs; procfs is required for staging.
 It does not create an account, credentials, recovery state or a service enablement,
 and never invokes systemctl or starts a desktop. The optional codec hook also
 skips transport refresh. Unset/`0` keeps normal activation; invalid values fail.

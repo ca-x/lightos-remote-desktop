@@ -56,3 +56,9 @@ authentication ownership and ordinary AUR activation behavior unchanged.
 - Test-first run `40680539681` stopped at the single rustfmt difference in the
   inotify assertion. Apply the exact runner output and rerun before changing
   package-file opening; no special-file behavioral RED is claimed yet.
+- After formatting, run `40681505758`, test job `122793079700`, observed the
+  intended RED: three existing staging tests passed and the new test recorded
+  a 16-byte IN_OPEN event before refusal. Commit `7b11b03` uses O_PATH to reject
+  non-regular inodes, then reopens the pinned regular inode through procfs; no
+  device-driver data-open is involved. A fresh candidate run and independent
+  closure remain required before the release tag.
