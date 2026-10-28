@@ -1,6 +1,7 @@
 import { pictureScrollDelta } from "./picture-geometry";
 import { createTouchPair, type TouchPairSample } from "./touch-pair";
 import { captureResolution, LEGACY_SCALES } from "./resolution";
+import { isMobilePlatform } from "./platform";
 
 export interface MobileShortcut {
   label: string;
@@ -93,7 +94,7 @@ export function createMobileControls(options: MobileOptions) {
   const floating = viewport.querySelector?.<HTMLButtonElement>("#tools-toggle");
   const lifecycle = new AbortController();
   const coarse = window.matchMedia?.("(any-pointer: coarse)");
-  let touch = coarse?.matches || (navigator.maxTouchPoints ?? 0) > 0;
+  let touch = isMobilePlatform();
   let disposed = false;
   let fullscreen = false;
   let fullscreenTimer: ReturnType<typeof setTimeout> | null = null;
@@ -249,7 +250,7 @@ export function createMobileControls(options: MobileOptions) {
 
   function showKeyboard() {
     if (!options.ready()) return;
-    touch = true;
+    touch = isMobilePlatform();
     update();
     options.tools(false);
     if (options.lightBook?.()) options.composition?.();
@@ -474,7 +475,7 @@ export function createMobileControls(options: MobileOptions) {
     if (event.pointerType !== "touch") return false;
     event.preventDefault();
     if (!options.ready()) { cancelTouches(); return true; }
-    touch = true;
+    touch = isMobilePlatform();
     update();
     if (phase === "cancel") {
       if (nativePair.active()) activeTouches.delete(event.pointerId);
@@ -571,7 +572,7 @@ export function createMobileControls(options: MobileOptions) {
   listen(window, "orientationchange", requestLayout);
   listen(window, "blur", () => { cancelTouches(); cancelRepeat(); sticky.clear(); update(); });
   listen(document, "visibilitychange", () => { if (document.hidden) { reset(); hideFullscreenExit(); } });
-  listen(coarse, "change", () => { touch = !!coarse?.matches || (navigator.maxTouchPoints ?? 0) > 0; update(); requestLayout(); });
+  listen(coarse, "change", () => { touch = isMobilePlatform(); update(); requestLayout(); });
   const observer = window.ResizeObserver ? new window.ResizeObserver(requestLayout) : null;
   observer?.observe(bar);
   // Host-injected safe areas can change without a window resize. Observing
