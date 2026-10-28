@@ -53,3 +53,6 @@ authentication ownership and ordinary AUR activation behavior unchanged.
   Add an inotify-observed FIFO regression for the actual CLI before the fix;
   it must reject the payload without even data-opening it. No real device node
   or host service is used. The release remains untagged pending this gate.
+- Test-first run `40680539681` stopped at the single rustfmt difference in the
+  inotify assertion. Apply the exact runner output and rerun before changing
+  package-file opening; no special-file behavioral RED is claimed yet.

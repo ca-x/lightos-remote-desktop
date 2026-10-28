@@ -147,9 +147,10 @@ fn package_staging_rejects_special_files_without_data_opening_them() {
         let descriptor = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
         assert!(descriptor >= 0);
         let mut watcher = unsafe { fs::File::from_raw_fd(descriptor) };
-        assert!(unsafe {
-            libc::inotify_add_watch(watcher.as_raw_fd(), name.as_ptr(), libc::IN_OPEN)
-        } >= 0);
+        assert!(
+            unsafe { libc::inotify_add_watch(watcher.as_raw_fd(), name.as_ptr(), libc::IN_OPEN) }
+                >= 0
+        );
         let output = stage(directory.path());
         assert!(!output.status.success(), "accepted special file {relative}");
         assert!(String::from_utf8_lossy(&output.stderr).contains("must be regular"));
