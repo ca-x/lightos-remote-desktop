@@ -51,3 +51,10 @@ No production code or the immutable v0.1.22 release source changes in this phase
   This proves software-rendered capture without a physical VT, not input
   delivery or the Pond shell. Extend the same fixture with real wev-observed
   motion/button/key transitions next; production code remains unchanged.
+- Input probe `40691441191` at `d07e36b` failed with an empty observed log
+  suffix. Independent review found that Niri's spawn path discards client
+  stdout/stderr, so `stdbuf` alone cannot connect wev to the observer. This is
+  an observation-chain failure, not evidence of undelivered input. Review also
+  found numeric-prefix false positives in the receipt predicate. Add regression
+  cases before changing it; upstream wev prints XKB `evdev + 8`, hence key 38
+  is the receipt for injected evdev 30. All execution remains in GitHub.

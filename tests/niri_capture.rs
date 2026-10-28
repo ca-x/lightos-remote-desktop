@@ -61,6 +61,79 @@ fn niri_socket(runtime: &Path) -> Option<PathBuf> {
         })
 }
 
+fn wev_reports_input(log: &str, offset: usize) -> bool {
+    let Some(observed) = log.get(offset..) else {
+        return false;
+    };
+    let delivered = [
+        ("wl_keyboard", "key: 30", "state: 1"),
+        ("wl_keyboard", "key: 30", "state: 0"),
+        ("wl_pointer", "button: 272", "state: 1"),
+        ("wl_pointer", "button: 272", "state: 0"),
+    ]
+    .iter()
+    .all(|(interface, event, state)| {
+        observed.lines().any(|line| {
+            line.contains(interface) && line.contains(event) && line.contains(state)
+        })
+    });
+    delivered
+        && observed
+            .lines()
+            .any(|line| line.contains("wl_pointer") && line.contains("motion:"))
+}
+
+const WEV_INPUT: &str = "[        17:      wl_pointer] motion: time: 100; x, y: 100.0, 200.0\n\
+[        17:      wl_pointer] button: serial: 4; time: 101; button: 272 (left), state: 1 (pressed)\n\
+[        17:      wl_pointer] button: serial: 5; time: 102; button: 272 (left), state: 0 (released)\n\
+[        18:     wl_keyboard] key: serial: 6; time: 103; key: 38; state: 1 (pressed)\n\
+[        18:     wl_keyboard] key: serial: 7; time: 104; key: 38; state: 0 (released)\n";
+
+#[test]
+fn wev_receipt_accepts_xkb_keycode_for_evdev_30() {
+    assert!(wev_reports_input(WEV_INPUT, 0));
+}
+
+#[test]
+fn wev_receipt_rejects_numeric_prefix_collisions() {
+    for invalid in [
+        WEV_INPUT.replace("key: 38", "key: 300"),
+        WEV_INPUT
+            .replace("key: 38", "key: 30")
+            .replace("button: 272", "button: 2720"),
+        WEV_INPUT.replace("state: 1", "state: 10"),
+    ] {
+        assert!(!wev_reports_input(&invalid, 0), "{invalid}");
+    }
+}
+
+#[test]
+fn wev_receipt_rejects_incomplete_or_stale_events() {
+    for omitted in ["motion:", "state: 0 (released)", "state: 1 (pressed)"] {
+        let incomplete = WEV_INPUT
+            .lines()
+            .filter(|line| !line.contains(omitted))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!wev_reports_input(&incomplete, 0));
+    }
+    assert!(!wev_reports_input(WEV_INPUT, WEV_INPUT.len()));
+    assert!(!wev_reports_input(WEV_INPUT, WEV_INPUT.len() + 1));
+    let old_then_new = format!("{WEV_INPUT}unrelated new line\n");
+    assert!(!wev_reports_input(&old_then_new, WEV_INPUT.len()));
+}
+
+#[test]
+fn wev_receipt_rejects_lookalike_interfaces_and_events() {
+    for invalid in [
+        WEV_INPUT.replace("wl_keyboard", "not_wl_keyboard"),
+        WEV_INPUT.replace("] key:", "] not_key:"),
+        WEV_INPUT.replace("] motion:", "] not_motion:"),
+    ] {
+        assert!(!wev_reports_input(&invalid, 0));
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires an isolated non-root GitHub Niri/Cage software-rendered candidate"]
 async fn niri_native_capabilities_and_first_frame() {
@@ -175,23 +248,7 @@ async fn niri_native_capabilities_and_first_frame() {
     loop {
         let bytes = fs::read(&log).unwrap();
         let observed = String::from_utf8_lossy(&bytes[offset.min(bytes.len())..]);
-        let delivered = [
-            ("wl_keyboard", "key: 30", "state: 1"),
-            ("wl_keyboard", "key: 30", "state: 0"),
-            ("wl_pointer", "button: 272", "state: 1"),
-            ("wl_pointer", "button: 272", "state: 0"),
-        ]
-        .iter()
-        .all(|(interface, event, state)| {
-            observed.lines().any(|line| {
-                line.contains(interface) && line.contains(event) && line.contains(state)
-            })
-        });
-        if delivered
-            && observed
-                .lines()
-                .any(|line| line.contains("wl_pointer") && line.contains("motion:"))
-        {
+        if wev_reports_input(&observed, 0) {
             break;
         }
         assert!(
