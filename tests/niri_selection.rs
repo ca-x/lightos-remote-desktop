@@ -7,7 +7,10 @@ fn doctor(directory: &Path) -> Command {
     command
         .env_clear()
         .env("PATH", "")
-        .env("LIGHTOS_REMOTE_DESKTOP_AUTH_PASSWORD", "test-native-long-secret")
+        .env(
+            "LIGHTOS_REMOTE_DESKTOP_AUTH_PASSWORD",
+            "test-native-long-secret",
+        )
         .env("LIGHTOS_REMOTE_DESKTOP_COMPOSITOR", "niri")
         .current_dir(directory)
         .args(["doctor", "--audio", "false"]);
@@ -56,7 +59,11 @@ fn persistent_attachment_needs_no_home_or_startup_config_and_creates_no_runtime(
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["ok"], true);
     assert_eq!(report["desktop_smoke_test"], false);
-    assert!(!String::from_utf8(output.stdout).unwrap().contains("test-native-long-secret"));
+    assert!(
+        !String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("test-native-long-secret")
+    );
     assert!(!runtime.exists());
 }
 
@@ -71,6 +78,10 @@ fn persistent_attachment_still_rejects_an_explicit_relative_startup_path() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8(output.stderr).unwrap().contains("absolute"));
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("absolute")
+    );
     assert!(!runtime.exists());
 }

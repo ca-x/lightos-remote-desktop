@@ -109,6 +109,10 @@ Files: `src/session.rs`, `src/session/niri.rs`,
 
 ## Evidence
 
+- 43901e3/40786446538 reports only three formatting changes in the new
+  subprocess test. Apply the exact runner rustfmt output; no local formatter
+  or tests run. No configuration-interface GREEN is claimed before execution.
+
 - Candidate 8d5f19e/40785414507 stops at one remotely reported rustfmt
   assertion collapse; apply the exact diff. Readonly task-2 review finds no
   confirmed P1/P2, but identifies missing boundary coverage. Add default-native
