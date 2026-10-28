@@ -36,7 +36,7 @@ GitHub Actions Arch runners.
 Files: `tests/niri_capture.rs`, `.github/workflows/niri-probe.yml`,
 `docs/superpowers/plans/2026-10-28-niri-probe.md`.
 
-- [ ] Preserve exact wev receipt regressions and observe real motion/key/button
+- [x] Preserve exact wev receipt regressions and observe real motion/key/button
   success after establishing focus, without accepting `enter` as `motion`.
 - [ ] Exercise production `DesktopBackend::clipboard_write` against an
   independent `wl-paste`, then independent foreground `wl-copy` against
@@ -98,3 +98,6 @@ Files: `src/session.rs`, `src/session/niri.rs`,
 - Baseline capture succeeded at `72f5239`/`40689971420`. Receipt predicate RED
   is `0114c31`/`40694410495`; actual focus/motion fixture RED is
   `9d1b57a`/`40695810183`. Current candidate `ab28c28` is not yet accepted.
+- `ab28c28` real probe `40697001655` succeeded: actual motion, left-button and
+  keyboard delivery plus four regression cases. Text clipboard is the current
+  feasibility increment; owner implementation remains gated.

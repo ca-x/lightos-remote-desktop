@@ -17,7 +17,10 @@ No production code or the immutable v0.1.22 release source changes in this phase
   press/release commands. Require the independent wev client to observe every
   transition after injection, not only protocol globals or successful sends.
 - Clipboard, Pond/Quickshell, persistent-owner recovery and platform
-  proxy/physical VT acceptance remain explicitly untested.
+  proxy/physical VT acceptance remain explicitly untested until each receives
+  its own execution evidence. The next increment checks production clipboard
+  write with independent wl-paste, and independent foreground wl-copy with
+  production clipboard read. Use distinct Unicode/multiline selections.
 
 ## Execution
 
@@ -80,3 +83,12 @@ No production code or the immutable v0.1.22 release source changes in this phase
   establish pointer plus keyboard focus first, take the offset, then inject a
   distinct second movement inside the client. This is another fixture fix,
   not a production backend failure or an input-delivery pass.
+- GREEN: `ab28c28` probe `40697001655`/job `122846361301` succeeded, including
+  all four predicate regressions and actual motion, left press/release and
+  XKB-38 press/release after the focus boundary. Report remains 1272x688 and
+  explicitly keeps Pond shell, platform proxy and physical VT false.
+- Extend the same isolated socket with two-way text clipboard. Independent
+  helpers clear inherited environment, use foreground ownership and kill on
+  drop; reads and final owner shutdown are bounded. Image/notification
+  clipboard acceptance stays false. This new feasibility check changes no
+  production behavior and does not manufacture a failing test.

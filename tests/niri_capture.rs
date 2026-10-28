@@ -10,9 +10,10 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use lightos_remote_desktop::{
-    backend::InputCommand,
+    backend::{DesktopBackend, InputCommand},
     wayland::{Backend, capabilities},
 };
+use tokio::io::AsyncWriteExt;
 
 struct Candidate(Child);
 
@@ -102,6 +103,73 @@ fn wev_reports_input(log: &str, offset: usize) -> bool {
         && observed
             .lines()
             .any(|line| wev_event(line, "wl_pointer", "motion").is_some())
+}
+
+fn clipboard_client(socket: &Path, program: &str) -> tokio::process::Command {
+    let runtime = socket.parent().unwrap();
+    let mut command = tokio::process::Command::new(program);
+    command
+        .env_clear()
+        .env("PATH", "/usr/bin")
+        .env("HOME", runtime.join("home"))
+        .env("XDG_RUNTIME_DIR", runtime)
+        .env("WAYLAND_DISPLAY", socket)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    command
+}
+
+async fn verify_text_clipboard(backend: &Backend, socket: &Path) {
+    let from_transport = "From remoted: 猫与 Pond 🦋\nsecond line\n";
+    backend.clipboard_write(from_transport).await.unwrap();
+    let mut paste = clipboard_client(socket, "/usr/bin/wl-paste");
+    paste
+        .args(["--no-newline", "--type", "text"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let observed = tokio::time::timeout(Duration::from_secs(3), paste.output())
+        .await
+        .expect("independent clipboard reader timed out")
+        .unwrap();
+    assert!(
+        observed.status.success(),
+        "independent clipboard reader failed: {}",
+        String::from_utf8_lossy(&observed.stderr)
+    );
+    assert_eq!(observed.stdout, from_transport.as_bytes());
+
+    let from_desktop = "From Niri client: 蝴蝶 🦋\nnew selection\n";
+    let mut copy = clipboard_client(socket, "/usr/bin/wl-copy");
+    let mut owner = copy
+        .args(["--foreground", "--type", "text/plain;charset=utf-8"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = owner.stdin.take().unwrap();
+    input.write_all(from_desktop.as_bytes()).await.unwrap();
+    drop(input);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let observed = tokio::time::timeout(Duration::from_secs(2), backend.clipboard_read()).await;
+        if observed
+            .as_ref()
+            .is_ok_and(|result| result.as_ref().is_ok_and(|text| text == from_desktop))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "remoted did not read the independent clipboard selection: {observed:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    owner.start_kill().unwrap();
+    tokio::time::timeout(Duration::from_secs(2), owner.wait())
+        .await
+        .expect("independent clipboard owner did not stop")
+        .unwrap();
 }
 
 const WEV_INPUT: &str = "[        17:      wl_pointer] motion: time: 100; x, y: 100.0, 200.0\n\
@@ -311,6 +379,7 @@ async fn niri_native_capabilities_and_first_frame() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    verify_text_clipboard(&backend, &socket).await;
     image::RgbaImage::from_raw(frame.width, frame.height, frame.pixels.to_vec())
         .unwrap()
         .save(report.join("niri-first-frame.png"))
@@ -325,6 +394,9 @@ async fn niri_native_capabilities_and_first_frame() {
             "input_delivery_tested": true,
             "keyboard_delivery_tested": true,
             "pointer_delivery_tested": true,
+            "clipboard_text_delivery_tested": true,
+            "clipboard_image_delivery_tested": false,
+            "clipboard_notifications_tested": false,
             "pond_shell_tested": false,
             "platform_proxy_tested": false,
             "physical_vt_tested": false,
