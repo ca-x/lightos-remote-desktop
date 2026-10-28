@@ -73,6 +73,96 @@ mod tests {
     }
 
     #[test]
+    fn default_compositor_remains_hyprland() {
+        let settings = config(&["test", "--password", "some-long-secret"]);
+        assert_eq!(settings.compositor, Compositor::Hyprland);
+        assert_eq!(settings.compositor.program(), "Hyprland");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn niri_uses_only_an_existing_configuration_in_an_absolute_home() {
+        let home = tempfile::tempdir().unwrap();
+        let native = home.path().join(".config/niri/config.kdl");
+        std::fs::create_dir_all(native.parent().unwrap()).unwrap();
+        std::fs::write(&native, "include \"personal.kdl\"\n").unwrap();
+        let settings = config(&["test", "--compositor", "niri"]);
+        assert_eq!(
+            settings.niri_config_from_home(Some(home.path())).unwrap(),
+            native
+        );
+        assert!(settings.niri_config_from_home(None).is_err());
+        assert!(
+            settings
+                .niri_config_from_home(Some(std::path::Path::new("relative")))
+                .is_err()
+        );
+        std::fs::remove_file(&native).unwrap();
+        assert!(
+            settings
+                .niri_config_from_home(Some(home.path()))
+                .is_err()
+        );
+        assert!(!native.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn niri_transport_attachment_does_not_require_the_startup_file() {
+        let settings = config(&[
+            "test",
+            "--password",
+            "some-long-secret",
+            "--compositor",
+            "niri",
+            "--session-runtime",
+            "/run/lrd-session",
+            "--desktop-config",
+            "/nonexistent/lightos-niri-native/config.kdl",
+        ]);
+        assert!(settings.validate().is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn incomplete_niri_owner_cannot_silently_start_hyprland() {
+        let directory = tempfile::tempdir().unwrap();
+        let native = directory.path().join("config.kdl");
+        let runtime = directory.path().join("session");
+        std::fs::write(&native, "").unwrap();
+        let settings = config(&[
+            "test",
+            "--password",
+            "some-long-secret",
+            "--compositor",
+            "niri",
+            "--desktop-config",
+            native.to_str().unwrap(),
+            "--runtime-dir",
+            runtime.to_str().unwrap(),
+            "--audio",
+            "false",
+        ]);
+        let error = crate::session::Session::start(&settings).err().unwrap();
+        assert!(error.to_string().contains("not implemented yet"));
+        assert!(!runtime.exists());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn niri_selection_is_not_supported_on_other_platforms() {
+        let settings = config(&[
+            "test",
+            "--password",
+            "some-long-secret",
+            "--compositor",
+            "niri",
+        ]);
+        let error = settings.validate().unwrap_err();
+        assert!(error.to_string().contains("unsupported on this platform"));
+    }
+
+    #[test]
     fn rejects_missing_or_default_password() {
         for password in ["", "changeme", "password", "lightos"] {
             assert!(
@@ -224,6 +314,21 @@ pub enum DesktopShell {
     Omarchy,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Compositor {
+    Hyprland,
+    Niri,
+}
+
+impl Compositor {
+    pub fn program(self) -> &'static str {
+        match self {
+            Self::Hyprland => "Hyprland",
+            Self::Niri => "niri",
+        }
+    }
+}
+
 #[derive(Clone, Parser)]
 pub struct Config {
     #[command(flatten)]
@@ -303,6 +408,14 @@ pub struct Config {
     )]
     #[arg(hide = !cfg!(target_os = "linux"))]
     pub display_backend: display_control::DisplayBackend,
+    #[arg(
+        long,
+        env = "LIGHTOS_REMOTE_DESKTOP_COMPOSITOR",
+        value_enum,
+        default_value = "hyprland"
+    )]
+    #[arg(hide = !cfg!(target_os = "linux"))]
+    pub compositor: Compositor,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_DESKTOP_CONFIG")]
     #[arg(hide = !cfg!(target_os = "linux"))]
     pub desktop_config: Option<PathBuf>,
@@ -325,6 +438,47 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn niri_config(&self) -> Result<PathBuf> {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        self.niri_config_from_home(home.as_deref())
+    }
+
+    fn niri_config_from_home(&self, home: Option<&std::path::Path>) -> Result<PathBuf> {
+        let path = if let Some(path) = &self.desktop_config {
+            path.clone()
+        } else {
+            let home = home.ok_or_else(|| anyhow::anyhow!("Niri requires an absolute HOME"))?;
+            ensure!(home.is_absolute(), "Niri requires an absolute HOME");
+            home.join(".config/niri/config.kdl")
+        };
+        ensure!(path.is_absolute(), "Niri configuration must be absolute");
+        ensure!(path.is_file(), "Niri configuration is missing");
+        Ok(path)
+    }
+
+    pub fn validate_compositor(&self) -> Result<()> {
+        if self.compositor == Compositor::Hyprland {
+            return Ok(());
+        }
+        ensure!(cfg!(target_os = "linux"), "Niri requires Linux");
+        ensure!(
+            self.desktop_shell == DesktopShell::Auto && self.aquamarine_dir.is_none(),
+            "Niri cannot use Hyprland shell selectors or private Aquamarine"
+        );
+        ensure!(
+            self.wayland_socket.is_none()
+                && self.x11_display.is_none()
+                && self.physical_wayland_socket.is_none(),
+            "Niri selection is only valid for an owned virtual session"
+        );
+        if self.session_runtime.is_none() {
+            self.niri_config()?;
+        } else if let Some(path) = &self.desktop_config {
+            ensure!(path.is_absolute(), "Niri configuration must be absolute");
+        }
+        Ok(())
+    }
+
     /// The service-owned runtime is a fallback, never a competing target.
     pub fn apply_service_defaults(&mut self, default_runtime: Option<PathBuf>) {
         if self.session_runtime.is_none()
@@ -337,7 +491,8 @@ impl Config {
 
     #[cfg(target_os = "linux")]
     pub fn omarchy_path(&self) -> Result<Option<PathBuf>> {
-        if self.desktop_shell == DesktopShell::Minimal
+        if self.compositor == Compositor::Niri
+            || self.desktop_shell == DesktopShell::Minimal
             || self.desktop_config.is_some()
             || self.wayland_socket.is_some()
             || self.x11_display.is_some()
@@ -379,11 +534,13 @@ impl Config {
                 && self.session_runtime.is_none()
                 && self.desktop_config.is_none()
                 && self.aquamarine_dir.is_none()
+                && self.compositor == Compositor::Hyprland
                 && self.desktop_shell == DesktopShell::Auto
                 && self.display_backend == display_control::DisplayBackend::Auto
                 && self.cage.as_os_str() == "cage",
             "Linux desktop/session options are unsupported on this platform"
         );
+        self.validate_compositor()?;
         let (width, height) = self.dimensions()?;
         ensure!(
             (320..=3840).contains(&width) && (200..=2160).contains(&height),

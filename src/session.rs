@@ -19,7 +19,7 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use display_control::SessionTarget;
 
-use crate::config::Config;
+use crate::config::{Compositor, Config};
 
 pub const DEFAULT_SESSION_RUNTIME: &str = "/run/lrd-session";
 pub const PREVIOUS_SESSION_RUNTIME: &str = "/run/lightos-remoted-session";
@@ -136,6 +136,7 @@ impl Session {
             unsafe { libc::geteuid() } != 0,
             "desktop service must run as a non-root user"
         );
+        config.validate_compositor()?;
         if let Some(pid) = config.virtual_wayland_server_pid {
             let socket = config
                 .wayland_socket
@@ -230,6 +231,9 @@ impl Session {
                 lock: None,
                 cancelled,
             });
+        }
+        if config.compositor == Compositor::Niri {
+            bail!("native Niri owner startup is not implemented yet");
         }
         let temporary = if config.runtime_dir.is_none() {
             Some(

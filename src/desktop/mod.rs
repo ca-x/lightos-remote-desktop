@@ -2,7 +2,7 @@
 mod generic;
 mod omarchy;
 
-use crate::config::{Config, DesktopShell};
+use crate::config::{Compositor, Config, DesktopShell};
 use anyhow::Result;
 use std::{
     os::unix::fs::PermissionsExt,
@@ -20,6 +20,14 @@ pub trait DesktopInitializer {
 }
 
 pub fn prepare(config: &Config, runtime: &Path) -> Result<PreparedDesktop> {
+    config.validate_compositor()?;
+    if config.compositor == Compositor::Niri {
+        return Ok(PreparedDesktop {
+            configuration: config.niri_config()?,
+            omarchy: None,
+            environment: vec![],
+        });
+    }
     if let Some(path) = &config.desktop_config {
         anyhow::ensure!(path.is_file(), "desktop configuration is missing");
         return Ok(PreparedDesktop {

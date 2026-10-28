@@ -109,10 +109,21 @@ Files: `src/session.rs`, `src/session/niri.rs`,
 
 ## Evidence
 
+- Intended task-2 RED is 40784412081/31f3beb: Linux workspace tests report
+  exactly five Niri-selection failures for unknown --compositor, with 160
+  existing cases passing and seven ignored. Implement selection, native path
+  validation/preparation and doctor dependency isolation; preserve Hyprland.
+  Add HOME, persistent-attachment, non-Linux and fail-closed startup cases.
+  This increment still does not implement native process ownership.
+
 - Initial task-2 run 40783292316/d002900 stops at rustfmt's requested array
   wrapping, before Linux behavior tests. Apply that exact remote formatting
   diff and correct the fixture's existing flag spelling to --desktop-shell.
   This is not the intended Niri-selection RED yet; require the actual test.
+- Separately, the unchanged Hyprland cursor companion fails against mutable
+  Arch headers (SHyprCtlCommand/render-context API changes). Do not count that
+  as the Niri-selection RED or mask the job. Keep it separate from this native
+  owner increment and do not claim full repository/release CI is green.
 
 - Feasibility clipboard probe 40699256007 and later full source CI40708400112
   are accepted predecessors. The real Pond init/frame probe40738943260 passes;

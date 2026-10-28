@@ -1,5 +1,5 @@
 //! Startup dependencies are distinct from optional desktop features.
-use crate::config::Config;
+use crate::config::{Compositor, Config};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -45,6 +45,7 @@ pub fn dependencies(
     omarchy: bool,
     resolve: impl Fn(&Path) -> Option<PathBuf>,
 ) -> DependencyReport {
+    let omarchy = omarchy && config.compositor == Compositor::Hyprland;
     let session_mode = SessionMode::from_config(config);
     let mut required: Vec<(PathBuf, &'static str, bool)> = vec![];
     let mut optional: Vec<(PathBuf, &'static str, bool)> = vec![];
@@ -56,9 +57,9 @@ pub fn dependencies(
                 resolve(&config.cage).is_some(),
             ),
             (
-                "Hyprland".into(),
+                config.compositor.program().into(),
                 "desktop startup",
-                resolve(Path::new("Hyprland")).is_some(),
+                resolve(Path::new(config.compositor.program())).is_some(),
             ),
             (
                 "dbus-daemon".into(),
@@ -89,7 +90,7 @@ pub fn dependencies(
                     resolve(Path::new(name)).is_some(),
                 )
             }));
-        } else if config.desktop_config.is_none() {
+        } else if config.compositor == Compositor::Hyprland && config.desktop_config.is_none() {
             let candidates = ["xdg-terminal-exec", "foot", "ghostty", "kitty", "alacritty"];
             required.push((
                 "terminal launcher".into(),
