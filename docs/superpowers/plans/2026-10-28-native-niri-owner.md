@@ -109,6 +109,13 @@ Files: `src/session.rs`, `src/session/niri.rs`,
 
 ## Evidence
 
+- Candidate 8d5f19e/40785414507 stops at one remotely reported rustfmt
+  assertion collapse; apply the exact diff. Readonly task-2 review finds no
+  confirmed P1/P2, but identifies missing boundary coverage. Add default-native
+  dependency checks, physical-socket conflicts, both audio choices and actual
+  subprocess environment/CLI-precedence plus HOME-less attachment tests.
+  Process-stub zero-start and real cancellation/cleanup stay in tasks 3/4.
+
 - Intended task-2 RED is 40784412081/31f3beb: Linux workspace tests report
   exactly five Niri-selection failures for unknown --compositor, with 160
   existing cases passing and seven ignored. Implement selection, native path

@@ -211,6 +211,21 @@ mod tests {
                 "dbus-update-activation-environment"
             ]
         );
+        let mut defaults = config.clone();
+        defaults.desktop_config = None;
+        let report = dependencies(&defaults, true, |_| None);
+        assert!(
+            !report
+                .required
+                .iter()
+                .any(|dependency| dependency.program == Path::new("terminal launcher"))
+        );
+        assert!(
+            report
+                .required
+                .iter()
+                .any(|dependency| dependency.program == Path::new("niri"))
+        );
     }
 
     #[test]

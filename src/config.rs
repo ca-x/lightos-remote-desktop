@@ -35,6 +35,7 @@ mod tests {
             ["--desktop-shell", "minimal"],
             ["--aquamarine-dir", "/private/aquamarine"],
             ["--wayland-socket", "/private/wayland-0"],
+            ["--physical-wayland-socket", "/private/physical"],
             ["--x11-display", ":0"],
         ] {
             let mut arguments = vec![
@@ -98,11 +99,7 @@ mod tests {
                 .is_err()
         );
         std::fs::remove_file(&native).unwrap();
-        assert!(
-            settings
-                .niri_config_from_home(Some(home.path()))
-                .is_err()
-        );
+        assert!(settings.niri_config_from_home(Some(home.path())).is_err());
         assert!(!native.exists());
     }
 
@@ -130,22 +127,24 @@ mod tests {
         let native = directory.path().join("config.kdl");
         let runtime = directory.path().join("session");
         std::fs::write(&native, "").unwrap();
-        let settings = config(&[
-            "test",
-            "--password",
-            "some-long-secret",
-            "--compositor",
-            "niri",
-            "--desktop-config",
-            native.to_str().unwrap(),
-            "--runtime-dir",
-            runtime.to_str().unwrap(),
-            "--audio",
-            "false",
-        ]);
-        let error = crate::session::Session::start(&settings).err().unwrap();
-        assert!(error.to_string().contains("not implemented yet"));
-        assert!(!runtime.exists());
+        for audio in ["false", "true"] {
+            let settings = config(&[
+                "test",
+                "--password",
+                "some-long-secret",
+                "--compositor",
+                "niri",
+                "--desktop-config",
+                native.to_str().unwrap(),
+                "--runtime-dir",
+                runtime.to_str().unwrap(),
+                "--audio",
+                audio,
+            ]);
+            let error = crate::session::Session::start(&settings).err().unwrap();
+            assert!(error.to_string().contains("not implemented yet"));
+            assert!(!runtime.exists());
+        }
     }
 
     #[cfg(not(target_os = "linux"))]
