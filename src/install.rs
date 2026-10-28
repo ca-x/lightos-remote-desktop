@@ -10,7 +10,10 @@ pub struct ServiceOptions {
         help = "Show installation layout without changing files or services"
     )]
     pub dry_run: bool,
-    #[arg(long, help = "Install files without activating services")]
+    #[arg(
+        long,
+        help = "Stage without activation (package-managed: only validate installed payload)"
+    )]
     pub stage_only: bool,
     #[arg(long, hide = true)]
     pub test_root: Option<PathBuf>,

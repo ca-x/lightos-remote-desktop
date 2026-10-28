@@ -44,3 +44,7 @@ authentication ownership and ordinary AUR activation behavior unchanged.
   the added explicitly-empty setting. Replace `:-0` with `-0` in both hooks:
   only an unset variable selects the live default; an empty value is invalid.
   The earlier nonempty-invalid and normal lifecycle cases remain unchanged.
+- Prepared the next unoccupied version `0.1.22` in Cargo/lock and both AUR source
+  templates. No release tag is created until the exact candidate has remote
+  verification and the important review finding is independently closed. The
+  existing tag-CI -> Release -> Arch helper -> AUR chain remains authoritative.
