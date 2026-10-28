@@ -61,3 +61,11 @@ No production code or the immutable v0.1.22 release source changes in this phase
 - Regression commit `67bb65b` run `40693788740` stopped at one rustfmt
   expression layout before the new tests ran. Apply only the emitted layout;
   this format failure is not the required behavioral RED.
+- Actual behavioral RED: `0114c31` run `40694410495`, test job `122837240964`
+  passed formatting, then failed the realistic XKB-key receipt and rejected-key
+  prefix regression (the old predicate falsely accepted key 300). Replace
+  substring matching with exact event/interface and integer-field parsing.
+  Explicitly redirect wev to its own private log, wait for keyboard focus, then
+  take an offset in that same log before injecting. The workflow also executes
+  every receipt regression before its ignored real-desktop probe. GREEN and
+  independent re-review are pending; no input-delivery success is claimed.

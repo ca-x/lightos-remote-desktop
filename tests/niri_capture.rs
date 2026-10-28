@@ -61,26 +61,47 @@ fn niri_socket(runtime: &Path) -> Option<PathBuf> {
         })
 }
 
+fn wev_event<'a>(line: &'a str, interface: &str, event: &str) -> Option<&'a str> {
+    let (header, payload) = line.strip_prefix('[')?.split_once("] ")?;
+    let (object, class) = header.split_once(':')?;
+    object.trim().parse::<u32>().ok()?;
+    let (name, fields) = payload.split_once(": ")?;
+    (class.trim() == interface && name == event).then_some(fields)
+}
+
+fn wev_number(fields: &str, name: &str) -> Option<u32> {
+    fields.split([';', ',']).find_map(|field| {
+        let (field_name, value) = field.trim().split_once(": ")?;
+        if field_name != name {
+            return None;
+        }
+        value.split_whitespace().next()?.parse().ok()
+    })
+}
+
 fn wev_reports_input(log: &str, offset: usize) -> bool {
     let Some(observed) = log.get(offset..) else {
         return false;
     };
     let delivered = [
-        ("wl_keyboard", "key: 30", "state: 1"),
-        ("wl_keyboard", "key: 30", "state: 0"),
-        ("wl_pointer", "button: 272", "state: 1"),
-        ("wl_pointer", "button: 272", "state: 0"),
+        ("wl_keyboard", "key", 38, 1),
+        ("wl_keyboard", "key", 38, 0),
+        ("wl_pointer", "button", 272, 1),
+        ("wl_pointer", "button", 272, 0),
     ]
     .iter()
-    .all(|(interface, event, state)| {
-        observed
-            .lines()
-            .any(|line| line.contains(interface) && line.contains(event) && line.contains(state))
+    .all(|(interface, event, code, state)| {
+        observed.lines().any(|line| {
+            wev_event(line, interface, event).is_some_and(|fields| {
+                wev_number(fields, event) == Some(*code)
+                    && wev_number(fields, "state") == Some(*state)
+            })
+        })
     });
     delivered
         && observed
             .lines()
-            .any(|line| line.contains("wl_pointer") && line.contains("motion:"))
+            .any(|line| wev_event(line, "wl_pointer", "motion").is_some())
 }
 
 const WEV_INPUT: &str = "[        17:      wl_pointer] motion: time: 100; x, y: 100.0, 200.0\n\
@@ -155,12 +176,20 @@ async fn niri_native_capabilities_and_first_frame() {
     let config = runtime.join("config.kdl");
     fs::write(&config, "").unwrap();
     let log = report.join("candidate.log");
+    let wev_log = report.join("wev.log");
     let output = fs::File::create(&log).unwrap();
     let _candidate = Candidate(
         Command::new("/usr/bin/dbus-run-session")
             .args(["--", "/usr/bin/cage", "--", "/usr/bin/niri", "--config"])
             .arg(&config)
-            .args(["--", "/usr/bin/stdbuf", "-oL", "/usr/bin/wev"])
+            .args([
+                "--",
+                "/usr/bin/sh",
+                "-c",
+                "exec /usr/bin/stdbuf -oL /usr/bin/wev >\"$1\" 2>&1",
+                "wev-log",
+            ])
+            .arg(&wev_log)
             .env_clear()
             .env("PATH", "/usr/bin")
             .env("HOME", &home)
@@ -222,7 +251,22 @@ async fn niri_native_capabilities_and_first_frame() {
     .expect("Niri did not produce a nonuniform frame containing its client");
     assert!(frame.width >= 320 && frame.height >= 200);
     assert!(backend.frame_is_fresh(Duration::from_secs(5)));
-    let offset = usize::try_from(fs::metadata(&log).unwrap().len()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let offset = loop {
+        let observed = fs::read_to_string(&wev_log).unwrap_or_default();
+        if observed
+            .lines()
+            .any(|line| wev_event(line, "wl_keyboard", "enter").is_some())
+        {
+            break observed.len();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "wev did not acquire keyboard focus: {observed}; {}",
+            fs::read_to_string(&log).unwrap_or_default()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
     for command in [
         InputCommand::Move { x: 0.25, y: 0.5 },
         InputCommand::Button {
@@ -246,14 +290,14 @@ async fn niri_native_capabilities_and_first_frame() {
     }
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let bytes = fs::read(&log).unwrap();
-        let observed = String::from_utf8_lossy(&bytes[offset.min(bytes.len())..]);
-        if wev_reports_input(&observed, 0) {
+        let observed = fs::read_to_string(&wev_log).unwrap();
+        if wev_reports_input(&observed, offset) {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "wev did not receive the injected pointer and key transitions: {observed}"
+            "wev did not receive the injected pointer and key transitions: {}",
+            observed.get(offset..).unwrap_or("wev log was truncated")
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
