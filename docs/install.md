@@ -50,6 +50,13 @@ transactional layout and compatibility-library provisioning.
 
 ## Capture backends and runtime libraries
 
+For Linux package-based rootfs/OCI preparation, use
+`install-service --package-managed --stage-only` only after the payload and its
+binary-exported units have been installed. This mode is read-only and does not
+create authentication or activate services. It is distinct from standalone
+`--stage-only`, which installs standalone files. See [offline package builds](aur.md#offline-rootfs--oci-builds)
+for the explicit AUR hook environment and required per-instance activation.
+
 Official binaries enable `bundled-jpeg,rdp,portal`. Portal support links
 `libpipewire-0.3.so.0` even when private audio is disabled. Building that feature
 requires the PipeWire/SPA development headers, pkg-config and libclang in

@@ -53,7 +53,11 @@ fn package_staging_is_read_only_and_needs_no_installer_commands() {
     let root = directory.path();
     fs::create_dir_all(root.join("etc/lightos")).unwrap();
     let environment = root.join("etc/lightos/remote-desktop.env");
-    fs::write(&environment, "opaque fixture: must not be parsed or replaced\n").unwrap();
+    fs::write(
+        &environment,
+        "opaque fixture: must not be parsed or replaced\n",
+    )
+    .unwrap();
     for _attempt in 0..2 {
         let output = stage(root);
         assert!(output.status.success(), "{:?}", output);
@@ -86,8 +90,11 @@ fn package_staging_rejects_missing_modified_and_symlinked_units() {
                 "modified" => fs::write(&unit, "[Service]\nExecStart=/different\n").unwrap(),
                 "symlink" => {
                     let outside = root.join("outside.service");
-                    fs::write(&outside, UNITS.iter().find(|entry| entry.0 == name).unwrap().1)
-                        .unwrap();
+                    fs::write(
+                        &outside,
+                        UNITS.iter().find(|entry| entry.0 == name).unwrap().1,
+                    )
+                    .unwrap();
                     symlink(outside, &unit).unwrap();
                 }
                 _ => {}

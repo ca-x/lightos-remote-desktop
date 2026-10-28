@@ -72,6 +72,41 @@ after installation or upgrade, `install-service --snapshot` before an upgrade,
 and `install-service --remove` before removal. Standalone installation uses the same installer without `--package-managed`; it creates
 both services and refuses to overwrite package-owned files.
 
+## Offline rootfs / OCI builds
+
+For a fresh, isolated image root, explicitly defer package activation:
+
+```sh
+LIGHTOS_REMOTED_PACKAGE_STAGE_ONLY=1 pacman -U ./lightos-remoted-bin-*.pkg.tar.zst ./lightos-codec-ffmpeg-bin-*.pkg.tar.zst
+```
+
+The package hooks call the binary's read-only
+`install-service --package-managed --stage-only` validator. It checks the
+installed executable and that both packaged units match its embedded definitions.
+It does not create an account, credentials, recovery state or a service enablement,
+and never invokes systemctl or starts a desktop. The optional codec hook also
+skips transport refresh. Unset/`0` keeps normal activation; invalid values fail.
+This is explicit, not inferred from the presence of a container or systemd.
+
+Use this only while assembling an offline image, not as a persistent image
+`ENV` or a substitute for activation. Older packages' pre-upgrade hooks predate
+this option, so do not assume it retroactively makes an old rootfs upgrade safe.
+Do not bake `/etc/lightos/remote-desktop.env`, host keys or recovery state into
+the image. After boot, let LightOS finish configuring the instance and its
+intended desktop attachment, then run:
+
+```sh
+lightos-remoted install-service --package-managed
+```
+
+Normal activation creates fresh private authentication or preserves existing
+values. The two canonical service names and configuration paths are unchanged.
+Staging does not select Niri, establish a VT/logind session, validate FFmpeg ABI
+compatibility or prove capture/input. Without an explicit supported attachment,
+activation still selects the existing Cage/Hyprland virtual owner.
+
+## Normal upgrades
+
 Normal upgrades check the candidate and restart only the transport. The desktop
 owner has no `PartOf`/`BindsTo` relationship to the transport, so existing desktop
 applications keep running. Package hooks select `--package-managed` so the

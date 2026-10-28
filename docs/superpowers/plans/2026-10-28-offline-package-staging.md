@@ -27,3 +27,12 @@ authentication ownership and ordinary AUR activation behavior unchanged.
   or rootfs were downloaded to this machine.
 - New test-first phase intentionally exposes the existing mutually exclusive
   flags and live-only package hooks. Only Actions may execute the tests.
+- Run `40672275877`, package-contracts job `122761789913`, observed the intended
+  hook failure: the recorded live lifecycle differed from the required two
+  staging-only calls. The main test job stopped first at two rustfmt changes in
+  the new test file; apply that runner-produced formatting without claiming a
+  Rust behavioral RED that did not run.
+- Implemented package validation directly in Rust before temporary-script
+  extraction, avoiding any installer/systemctl/NSS invocation. AUR hooks select
+  it only with the explicit staging environment. Full remote GREEN and review
+  are still required before bumping or tagging a release.

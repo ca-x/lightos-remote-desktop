@@ -17,7 +17,7 @@ pub struct ServiceOptions {
     #[arg(long, value_enum, conflicts_with_all = ["package_managed", "snapshot", "remove", "legacy", "dry_run", "stage_only", "test_root"]) ]
     #[arg(hide = !cfg!(target_os = "linux"))]
     pub print_unit: Option<ServiceUnit>,
-    #[arg(long, conflicts_with_all = ["snapshot", "remove", "legacy", "dry_run", "stage_only"]) ]
+    #[arg(long, conflicts_with_all = ["snapshot", "remove", "legacy", "dry_run"]) ]
     #[arg(hide = !cfg!(target_os = "linux"))]
     pub package_managed: bool,
     #[arg(long, conflicts_with_all = ["package_managed", "remove", "legacy", "dry_run", "stage_only"]) ]

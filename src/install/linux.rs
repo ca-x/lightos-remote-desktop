@@ -1,6 +1,11 @@
 use super::*;
 use anyhow::{Context, ensure};
-use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+use std::{
+    fs,
+    io::Read,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    process::Command,
+};
 const TRANSPORT: &str = include_str!("../../systemd/lightos-remoted-transport.service");
 const SESSION: &str = include_str!("../../systemd/lightos-remoted-session.service");
 
@@ -22,6 +27,9 @@ pub(super) fn service(options: ServiceOptions, rollback: bool) -> Result<()> {
     }
     if options.legacy {
         return legacy_service(options, rollback);
+    }
+    if options.package_managed && options.stage_only {
+        return stage_package(options.test_root.as_deref());
     }
     ensure!(
         options.dry_run || options.test_root.is_some() || unsafe { libc::geteuid() } == 0,
@@ -83,6 +91,56 @@ pub(super) fn service(options: ServiceOptions, rollback: bool) -> Result<()> {
     ensure!(
         status.success(),
         "service installer failed: {status}; inspect its recovery output"
+    );
+    Ok(())
+}
+
+fn package_file(root: &Path, relative: &str) -> Result<fs::File> {
+    let path = root.join(relative);
+    let parent = path.parent().context("package path has no parent")?;
+    ensure!(
+        fs::canonicalize(parent)? == parent,
+        "package staging refuses symlinked ancestors: {relative}"
+    );
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)
+        .with_context(|| format!("open staged package file: {relative}"))?;
+    ensure!(
+        file.metadata()?.is_file(),
+        "staged package file must be regular: {relative}"
+    );
+    Ok(file)
+}
+
+fn stage_package(test_root: Option<&Path>) -> Result<()> {
+    let root = fs::canonicalize(test_root.unwrap_or(Path::new("/")))?;
+    ensure!(
+        test_root.is_none() || root != Path::new("/"),
+        "test root cannot be /"
+    );
+    let binary = package_file(&root, "usr/lib/lightos-remoted/lightos-remoted")?;
+    let metadata = binary.metadata()?;
+    ensure!(
+        metadata.len() > 0 && metadata.permissions().mode() & 0o111 != 0,
+        "staged package executable is empty or not executable"
+    );
+    for (name, expected) in [
+        ("lightos-remote-desktop.service", TRANSPORT),
+        ("lightos-remote-desktop-session.service", SESSION),
+    ] {
+        let file = package_file(&root, &format!("usr/lib/systemd/system/{name}"))?;
+        let mut bytes = Vec::new();
+        file.take(u64::try_from(expected.len())? + 1)
+            .read_to_end(&mut bytes)?;
+        ensure!(
+            bytes == expected.as_bytes(),
+            "staged package unit differs from embedded definition: {name}"
+        );
+    }
+    println!(
+        "LightOS remote desktop payload staged; no accounts, credentials or services changed. Activate on the booted instance with: lightos-remoted install-service --package-managed"
     );
     Ok(())
 }
