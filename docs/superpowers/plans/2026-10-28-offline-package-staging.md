@@ -40,3 +40,7 @@ authentication ownership and ordinary AUR activation behavior unchanged.
   empty build variable as ordinary live activation, although the contract only
   permits unset/0 or explicit 1. Extend both real-hook fixtures to reject empty
   as well as nonempty invalid values before correcting either hook.
+- Remote package-contracts job `122772357862` in run `40675389119` failed on
+  the added explicitly-empty setting. Replace `:-0` with `-0` in both hooks:
+  only an unset variable selects the live default; an empty value is invalid.
+  The earlier nonempty-invalid and normal lifecycle cases remain unchanged.

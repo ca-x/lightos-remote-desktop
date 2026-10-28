@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 _lightos_remoted_package_hook() {
-    case ${LIGHTOS_REMOTED_PACKAGE_STAGE_ONLY:-0} in
+    case ${LIGHTOS_REMOTED_PACKAGE_STAGE_ONLY-0} in
         0) /usr/lib/lightos-remoted/lightos-remoted install-service "$1" ;;
         1)
             [[ $1 == --package-managed ]] || return 0
