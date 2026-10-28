@@ -1,7 +1,8 @@
 # Native Niri persistent owner
 
-Status: specified, not implemented or accepted. Capture feasibility succeeded;
-real input and clipboard gates must pass before owner implementation starts.
+Status: deferred at the user's request on 2026-10-28; not implemented or
+accepted. Capture, real input and text clipboard feasibility succeeded.
+Return to oci-kit and the Pond recipe instead of expanding this owner project.
 
 ## Goal
 

@@ -124,7 +124,9 @@ fn clipboard_client(socket: &Path, program: &str) -> tokio::process::Command {
 async fn await_clipboard_write(
     write: impl std::future::Future<Output = anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
-    write.await
+    tokio::time::timeout(Duration::from_secs(3), write)
+        .await
+        .map_err(|_| anyhow::anyhow!("initial Niri clipboard write timed out"))?
 }
 
 #[tokio::test]

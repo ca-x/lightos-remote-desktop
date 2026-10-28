@@ -1,5 +1,8 @@
 # Native Niri owner implementation plan
 
+Status: deferred at the user's request on 2026-10-28. Preserve this research,
+but do not implement it while finishing oci-kit and the Pond recipe.
+
 > For agentic workers: use the executing-plans skill task by task. Do not start
 > implementation before the real capture/input/text-clipboard prerequisite.
 

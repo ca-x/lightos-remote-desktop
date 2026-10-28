@@ -98,3 +98,11 @@ No production code or the immutable v0.1.22 release source changes in this phase
   test policy boundary. An outer five-second test supervisor must observe this
   regression fail before the probe gains its own three-second write deadline.
   No local executable validation or fake production failure is introduced.
+- Text clipboard GREEN: `878a791` probe `40699256007`/job `122854289937`
+  verified independent client-to-backend and backend-to-client Unicode text.
+  Full CI `40699006757` also succeeded. This is not full Pond acceptance.
+- The stalled-write regression at `e8a4a5d`, CI `40700198019`/test job
+  `122857611085`, failed after its five-second supervisor expired. Add the
+  missing three-second deadline to the shared probe wait; remote GREEN is
+  pending. Defer native-owner implementation at the user's request and return
+  to oci-kit/Pond after addressing CI and the reported package activation issue.
