@@ -22,6 +22,7 @@ printf 'Chinese README fixture\n' > "$srcdir/$_bundle/README.md"
 printf 'English README fixture\n' > "$srcdir/$_bundle/README.en.md"
 printf 'Aquamarine license\n' > "$srcdir/aquamarine-$_aqcommit/LICENSE"
 printf 'private library fixture\n' > "$srcdir/aq-build/libaquamarine.so.0.15.1"
+printf 'cursor adapter fixture\n' > "$srcdir/lightos-cursor.so"
 cat > "$srcdir/$_bundle/lightos-remoted" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -53,7 +54,9 @@ check test "$(readlink "$pkgdir/usr/bin/lightos-remoted")" = /usr/lib/lightos-re
 check test "$(stat -c %a "$pkgdir/usr/lib/systemd/system/lightos-remote-desktop.service")" = 644
 check test "$(stat -c %a "$pkgdir/usr/lib/systemd/system/lightos-remote-desktop-session.service")" = 644
 check cmp "$srcdir/aq-build/libaquamarine.so.0.15.1" "$pkgdir/usr/lib/lightos-remoted/aquamarine/libaquamarine.so.14"
-check test "$(find "$pkgdir/usr/lib/lightos-remoted" -type f | wc -l)" = 2
+check cmp "$srcdir/lightos-cursor.so" "$pkgdir/usr/lib/lightos-remoted/lightos-cursor.so"
+check test "$(stat -c %a "$pkgdir/usr/lib/lightos-remoted/lightos-cursor.so")" = 644
+check test "$(find "$pkgdir/usr/lib/lightos-remoted" -type f | wc -l)" = 3
 check test ! -e "$pkgdir/usr/lib/lightos-remoted/bootstrap.sh"
 check test ! -e "$pkgdir/usr/lib/lightos-remoted/activation.sh"
 check test ! -e "$pkgdir/etc"
