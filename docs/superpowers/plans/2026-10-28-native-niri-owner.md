@@ -56,12 +56,12 @@ Files: `src/config.rs`, `src/diagnostics.rs`, `src/desktop/mod.rs`,
 Interface: `Compositor::{Hyprland, Niri}`, `Config::compositor`; preserve
 `Config::desktop_config` as the native config path.
 
-- [ ] Add tests for default compatibility, explicit Niri selection, missing
+- [x] Add tests for default compatibility, explicit Niri selection, missing
   native config, native HOME defaults, relative paths, shell/Aquamarine conflicts and non-Linux
   rejection. Observe actual remote RED.
-- [ ] Implement validation and Niri doctor dependencies without traversing the
+- [x] Implement validation and Niri doctor dependencies without traversing the
   generic/Omarchy Hyprland initializer. Native includes remain at their source.
-- [ ] Remote test/fmt/clippy, review, commit/push the accepted interface.
+- [x] Remote test/fmt/clippy, review, commit/push the accepted interface.
 
 ### Task 3: Rust readiness and selected-process identity
 
@@ -108,6 +108,18 @@ Files: `src/session.rs`, `src/session/niri.rs`,
   Remove this temporary guard only when the real native owner is implemented.
 
 ## Evidence
+
+- Task 2 interface GREEN 40787218608/2f43e31: Linux test job succeeds including
+  169 default unit cases, real CLI subprocess environment/precedence cases,
+  bundled-jpeg and bundled-jpeg/rdp/portal tests and all-target clippy. Windows
+  and macOS arm64 jobs also succeed; Intel macOS was still running at inspection.
+  Independent review has no P1/P2 and its main coverage gaps are addressed.
+  Full repository CI is not green because the separate cursor ABI job fails.
+- Start task 3 with only the hidden publisher contract. Positive fixtures use
+  controlled socket nodes and a stub activator, not a real compositor or bus.
+  Its success must not imply peer admission or a persistent owner. Kernel peer
+  identity and the consumer are implemented with the actual startup branch,
+  avoiding unused production admission helpers. Startup remains fail-closed.
 
 - 43901e3/40786446538 reports only three formatting changes in the new
   subprocess test. Apply the exact runner rustfmt output; no local formatter
