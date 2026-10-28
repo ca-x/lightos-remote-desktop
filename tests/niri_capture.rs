@@ -24,41 +24,48 @@ impl Drop for Candidate {
 }
 
 fn niri_socket(runtime: &Path) -> Option<PathBuf> {
-    fs::read_dir(runtime).ok()?.filter_map(Result::ok).find_map(|entry| {
-        let path = entry.path();
-        if !entry.file_name().to_str()?.starts_with("wayland-")
-            || !entry.file_type().ok()?.is_socket()
-        {
-            return None;
-        }
-        let socket = UnixStream::connect(&path).ok()?;
-        let mut credentials = libc::ucred {
-            pid: 0,
-            uid: 0,
-            gid: 0,
-        };
-        let mut size = std::mem::size_of_val(&credentials).try_into().ok()?;
-        let status = unsafe {
-            libc::getsockopt(
-                socket.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_PEERCRED,
-                (&mut credentials as *mut libc::ucred).cast(),
-                &mut size,
-            )
-        };
-        if status != 0 || credentials.uid != unsafe { libc::geteuid() } {
-            return None;
-        }
-        let executable = fs::read_link(format!("/proc/{}/exe", credentials.pid)).ok()?;
-        (executable.file_name()? == "niri").then_some(path)
-    })
+    fs::read_dir(runtime)
+        .ok()?
+        .filter_map(Result::ok)
+        .find_map(|entry| {
+            let path = entry.path();
+            if !entry.file_name().to_str()?.starts_with("wayland-")
+                || !entry.file_type().ok()?.is_socket()
+            {
+                return None;
+            }
+            let socket = UnixStream::connect(&path).ok()?;
+            let mut credentials = libc::ucred {
+                pid: 0,
+                uid: 0,
+                gid: 0,
+            };
+            let mut size = std::mem::size_of_val(&credentials).try_into().ok()?;
+            let status = unsafe {
+                libc::getsockopt(
+                    socket.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_PEERCRED,
+                    (&mut credentials as *mut libc::ucred).cast(),
+                    &mut size,
+                )
+            };
+            if status != 0 || credentials.uid != unsafe { libc::geteuid() } {
+                return None;
+            }
+            let executable = fs::read_link(format!("/proc/{}/exe", credentials.pid)).ok()?;
+            (executable.file_name()? == "niri").then_some(path)
+        })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires an isolated non-root GitHub Niri/Cage software-rendered candidate"]
 async fn niri_native_capabilities_and_first_frame() {
-    assert_ne!(unsafe { libc::geteuid() }, 0, "probe must run as a fixture user");
+    assert_ne!(
+        unsafe { libc::geteuid() },
+        0,
+        "probe must run as a fixture user"
+    );
     let report = PathBuf::from(std::env::var_os("LRD_NIRI_PROBE_REPORT").unwrap());
     fs::create_dir_all(&report).unwrap();
     let directory = tempfile::Builder::new()
@@ -123,7 +130,10 @@ async fn niri_native_capabilities_and_first_frame() {
             let latest = frames.borrow().clone();
             if let Some(frame) = latest
                 && frame.pixels.len() >= 4
-                && frame.pixels.chunks_exact(4).any(|pixel| pixel[..3] != frame.pixels[..3])
+                && frame
+                    .pixels
+                    .chunks_exact(4)
+                    .any(|pixel| pixel[..3] != frame.pixels[..3])
             {
                 break frame;
             }

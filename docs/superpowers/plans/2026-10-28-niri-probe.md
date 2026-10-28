@@ -35,3 +35,6 @@ No production code or the immutable v0.1.22 release source changes in this phase
 - Payload audit `40683134808` confirms Pond shell starts `qs -c pond-shell`.
   Upstream Niri v26.04 source commit is
   `8ed0da44d974c32c6877d2f4630c314da0717ecb`; nested startup must omit `--session`.
+- Main run `40686718003` stopped at three rustfmt differences in the new probe.
+  Apply only the runner's diff and rebuild remotely. No Niri runtime result is
+  inferred from this format failure; tag v0.1.22 uses separate immutable source.
