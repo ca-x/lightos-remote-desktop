@@ -1,4 +1,5 @@
 pub mod capabilities;
+mod capture;
 mod clipboard;
 mod native_cursor;
 
@@ -137,6 +138,7 @@ fn validated_input(command: InputCommand) -> Option<InputCommand> {
 
 struct Shared {
     stopped: AtomicBool,
+    event_driven_capture: AtomicBool,
     frames: watch::Sender<Option<Arc<Frame>>>,
     capture_socket: Mutex<Option<UnixStream>>,
     cursor_owner: AtomicU64,
@@ -228,7 +230,9 @@ impl Backend {
         // establish liveness; an old unchanged image must not kill applications.
         !self.shared.stopped.load(Ordering::Acquire)
             && self.frames.borrow().as_ref().is_some_and(|frame| {
-                self.native_cursor_frames.is_some() || frame.captured_at.elapsed() <= max_age
+                self.native_cursor_frames.is_some()
+                    || self.shared.event_driven_capture.load(Ordering::Acquire)
+                    || frame.captured_at.elapsed() <= max_age
             })
     }
 
@@ -301,6 +305,7 @@ impl Backend {
         let (frames_tx, frames) = watch::channel(None);
         let shared = Arc::new(Shared {
             stopped: AtomicBool::new(false),
+            event_driven_capture: AtomicBool::new(false),
             frames: frames_tx,
             capture_socket: Mutex::new(None),
             cursor_owner: AtomicU64::new(0),
@@ -849,9 +854,45 @@ fn connect(socket: &Path, deadline: Instant, stopped: Option<&AtomicBool>) -> Re
 }
 
 struct CaptureBatch {
-    connection: WayshotConnection,
+    source: CaptureSource,
     started: Instant,
     frames: usize,
+}
+
+enum CaptureSource {
+    Reusable(capture::Reusable),
+    Screenshot(WayshotConnection),
+}
+impl CaptureSource {
+    fn reusable(&self) -> bool {
+        matches!(self, Self::Reusable(_))
+    }
+    fn capture(&mut self, target: &CaptureTarget) -> Result<capture::Pixels> {
+        let Self::Screenshot(connection) = self else {
+            if let Self::Reusable(capture) = self {
+                return capture.capture();
+            }
+            unreachable!()
+        };
+        let image = if let Some(name) = &target.output {
+            let output = connection
+                .get_all_outputs()
+                .iter()
+                .find(|o| &o.name == name)
+                .context("selected monitor disconnected")?;
+            connection.screenshot_single_output(output, false)?
+        } else if connection.get_all_outputs().len() == 1 {
+            connection.screenshot_single_output(&connection.get_all_outputs()[0], false)?
+        } else {
+            connection.screenshot_all(false)?
+        };
+        let image = image.into_rgba8();
+        Ok(capture::Pixels {
+            width: image.width(),
+            height: image.height(),
+            data: image.into_raw().into(),
+        })
+    }
 }
 
 fn capture_batch_expired(frames: usize, elapsed: Duration) -> bool {
@@ -874,12 +915,12 @@ fn run_capture(
     let mut previous_cursor = true;
     let mut batch: Option<CaptureBatch> = None;
     let mut capture_failures = 0;
+    let mut persistent_disabled = false;
     while !shared.stopped.load(Ordering::Acquire) {
         let started = Instant::now();
-        if batch
-            .as_ref()
-            .is_none_or(|batch| capture_batch_expired(batch.frames, batch.started.elapsed()))
-        {
+        if batch.as_ref().is_none_or(|batch| {
+            !batch.source.reusable() && capture_batch_expired(batch.frames, batch.started.elapsed())
+        }) {
             batch.take();
             if let Some(socket) = shared
                 .capture_socket
@@ -905,31 +946,29 @@ fn run_capture(
                 break;
             }
             let connection = Connection::from_socket(stream)?;
-            let capture = WayshotConnection::from_connection(connection)
-                .context("initialize native screencopy (compositor protocols required)")?;
+            let reusable = if persistent_disabled {
+                None
+            } else {
+                capture::Reusable::try_new(connection.clone(), target.output.as_deref())?
+            };
+            let source = match reusable {
+                Some(capture) => CaptureSource::Reusable(capture),
+                None => CaptureSource::Screenshot(
+                    WayshotConnection::from_connection(connection)
+                        .context("initialize native screencopy (compositor protocols required)")?,
+                ),
+            };
             batch = Some(CaptureBatch {
-                connection: capture,
+                source,
                 started: Instant::now(),
                 frames: 0,
             });
         }
         let current = batch.as_mut().context("missing capture connection")?;
-        let capture = &current.connection;
         // Cursor shape/position travel independently. Never burn them into
         // capture, including when the cursor observer is reconnecting.
         let cursor_embedded = false;
-        let captured = if let Some(name) = &target.output {
-            let output = capture
-                .get_all_outputs()
-                .iter()
-                .find(|output| &output.name == name)
-                .context("selected monitor disconnected")?;
-            capture.screenshot_single_output(output, cursor_embedded)
-        } else if capture.get_all_outputs().len() == 1 {
-            capture.screenshot_single_output(&capture.get_all_outputs()[0], cursor_embedded)
-        } else {
-            capture.screenshot_all(cursor_embedded)
-        };
+        let captured = current.source.capture(target);
         let image = match captured {
             Ok(image) => {
                 capture_failures = 0;
@@ -944,6 +983,12 @@ fn run_capture(
                     return Err(error).context("capture desktop after reconnect");
                 }
                 tracing::warn!(%error, capture_failures, "refreshing capture connection after failed frame");
+                if current.source.reusable() && !error.is::<capture::Reconfigure>() {
+                    persistent_disabled = true;
+                    tracing::warn!(
+                        "using screenshot compatibility path after reusable capture failure"
+                    );
+                }
                 batch.take();
                 thread::park_timeout(interval.min(Duration::from_millis(100)));
                 continue;
@@ -951,17 +996,16 @@ fn run_capture(
         };
         let captured_at = Instant::now();
         current.frames += 1;
-        let rgba = image.into_rgba8();
-        let dimensions = (rgba.width(), rgba.height());
+        let dimensions = (image.width, image.height);
         let changed = previous_dimensions != dimensions
-            || previous_pixels.as_ref() != rgba.as_raw().as_slice()
+            || previous_pixels.as_ref() != image.data.as_ref()
             || previous_cursor != cursor_embedded;
         previous_cursor = cursor_embedded;
         if shared.stopped.load(Ordering::Acquire) {
             break;
         }
         if changed {
-            previous_pixels = rgba.into_raw().into();
+            previous_pixels = image.data;
             previous_dimensions = dimensions;
         }
         let frame = Arc::new(Frame {
@@ -973,6 +1017,12 @@ fn run_capture(
             cursor_embedded,
         });
         publish_frame(shared, frame, changed);
+        // A persistent capture can legitimately wait for damage while idle.
+        // Socket/input workers and the compositor still establish liveness;
+        // do not restart the user's desktop merely because pixels are quiet.
+        shared
+            .event_driven_capture
+            .store(current.source.reusable(), Ordering::Release);
         if first {
             ready.send(Ok(()))?;
             first = false;
@@ -1510,6 +1560,7 @@ pub(crate) mod tests {
             input,
             shared: Arc::new(Shared {
                 stopped: AtomicBool::new(false),
+                event_driven_capture: AtomicBool::new(false),
                 frames: sender,
                 capture_socket: Mutex::new(None),
                 cursor_owner: AtomicU64::new(0),

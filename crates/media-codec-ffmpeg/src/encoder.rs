@@ -43,6 +43,7 @@ impl PixelConverter {
         }
         Ok(converter)
     }
+    #[cfg(not(all(target_os = "linux", feature = "fast-yuv")))]
     fn convert(&mut self, source: &frame::Video, target: &mut frame::Video) -> Result<()> {
         unsafe {
             check(
@@ -105,16 +106,19 @@ impl Bitstream {
 }
 /// Reuse CPU storage while respecting references retained by FFmpeg/drivers.
 struct CpuFrames {
+    #[cfg(not(all(target_os = "linux", feature = "fast-yuv")))]
     rgba: frame::Video,
     converted: frame::Video,
 }
 impl CpuFrames {
     fn new(width: u32, height: u32) -> Self {
         Self {
+            #[cfg(not(all(target_os = "linux", feature = "fast-yuv")))]
             rgba: frame::Video::new(Pixel::RGBA, width, height),
             converted: frame::Video::new(Pixel::NV12, width, height),
         }
     }
+    #[cfg(not(all(target_os = "linux", feature = "fast-yuv")))]
     fn convert(&mut self, pixels: &[u8], scaler: &mut PixelConverter) -> Result<()> {
         unsafe {
             check(
@@ -134,6 +138,48 @@ impl CpuFrames {
         scaler.convert(&self.rgba, &mut self.converted)?;
         Ok(())
     }
+    #[cfg(all(target_os = "linux", feature = "fast-yuv"))]
+    fn convert(&mut self, pixels: &[u8], _scaler: &mut PixelConverter) -> Result<()> {
+        // libyuv's ABGR name describes the word order; its byte input is RGBA.
+        // Conversion is synchronous, so the request's validated pixel slice can
+        // be used directly without allocating and copying another RGBA frame.
+        let width = self.converted.width() as i32;
+        let height = self.converted.height() as i32;
+        let y_stride = self.converted.stride(0) as i32;
+        let uv_stride = self.converted.stride(1) as i32;
+        unsafe {
+            check(
+                ffi::av_frame_make_writable(self.converted.as_mut_ptr()),
+                "make NV12 frame writable",
+            )?;
+            let status = ABGRToNV12(
+                pixels.as_ptr(),
+                width * 4,
+                self.converted.data_mut(0).as_mut_ptr(),
+                y_stride,
+                self.converted.data_mut(1).as_mut_ptr(),
+                uv_stride,
+                width,
+                height,
+            );
+            ensure!(status == 0, "convert RGBA to NV12: libyuv status {status}");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "fast-yuv"))]
+unsafe extern "C" {
+    fn ABGRToNV12(
+        source: *const u8,
+        source_stride: i32,
+        y: *mut u8,
+        y_stride: i32,
+        uv: *mut u8,
+        uv_stride: i32,
+        width: i32,
+        height: i32,
+    ) -> i32;
 }
 pub struct NativeEncoder {
     name: &'static str,
@@ -217,6 +263,17 @@ impl NativeEncoder {
         // Keep VBV bounded; this is a real native bitrate, not just FPS pacing.
         unsafe {
             (*encoder.as_mut_ptr()).rc_buffer_size = rate.bitrate_bps as i32;
+            #[cfg(all(target_os = "linux", feature = "fast-yuv"))]
+            {
+                // ABGRToNV12 uses the limited-range BT.601 matrix. Captured
+                // desktop RGB has sRGB/BT.709 primaries, not a BT.709 YUV matrix.
+                // Explicit VUI prevents browsers from guessing the HD matrix.
+                (*encoder.as_mut_ptr()).colorspace = ffi::AVColorSpace::AVCOL_SPC_SMPTE170M;
+                (*encoder.as_mut_ptr()).color_range = ffi::AVColorRange::AVCOL_RANGE_MPEG;
+                (*encoder.as_mut_ptr()).color_primaries = ffi::AVColorPrimaries::AVCOL_PRI_BT709;
+                (*encoder.as_mut_ptr()).color_trc =
+                    ffi::AVColorTransferCharacteristic::AVCOL_TRC_IEC61966_2_1;
+            }
         }
         let upload = if backend == EncoderBackend::Vaapi {
             Some(vaapi_frames(
