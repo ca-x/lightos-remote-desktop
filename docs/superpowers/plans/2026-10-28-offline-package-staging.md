@@ -48,3 +48,8 @@ authentication ownership and ordinary AUR activation behavior unchanged.
   templates. No release tag is created until the exact candidate has remote
   verification and the important review finding is independently closed. The
   existing tag-CI -> Release -> Arch helper -> AUR chain remains authoritative.
+- Independent re-review closed the empty-environment P1 but found a P2:
+  `O_NONBLOCK` prevents FIFO waiting, not a device driver's data-open callback.
+  Add an inotify-observed FIFO regression for the actual CLI before the fix;
+  it must reject the payload without even data-opening it. No real device node
+  or host service is used. The release remains untagged pending this gate.

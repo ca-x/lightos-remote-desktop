@@ -1,6 +1,10 @@
 #![cfg(target_os = "linux")]
 
+use std::ffi::CString;
 use std::fs;
+use std::io::{ErrorKind, Read};
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 use std::process::{Command, Output};
@@ -125,5 +129,35 @@ fn package_staging_rejects_an_absent_nonexecutable_or_symlinked_payload() {
         assert!(!output.status.success(), "accepted {condition} payload");
         assert!(!root.join("var").exists());
         assert!(!root.join("etc").exists());
+    }
+}
+
+#[test]
+fn package_staging_rejects_special_files_without_data_opening_them() {
+    for relative in [
+        "usr/lib/lightos-remoted/lightos-remoted",
+        "usr/lib/systemd/system/lightos-remote-desktop.service",
+        "usr/lib/systemd/system/lightos-remote-desktop-session.service",
+    ] {
+        let directory = fixture();
+        let path = directory.path().join(relative);
+        fs::remove_file(&path).unwrap();
+        let name = CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o700) }, 0);
+        let descriptor = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+        assert!(descriptor >= 0);
+        let mut watcher = unsafe { fs::File::from_raw_fd(descriptor) };
+        assert!(unsafe {
+            libc::inotify_add_watch(watcher.as_raw_fd(), name.as_ptr(), libc::IN_OPEN)
+        } >= 0);
+        let output = stage(directory.path());
+        assert!(!output.status.success(), "accepted special file {relative}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("must be regular"));
+        let mut events = [0_u8; 4096];
+        let error = watcher
+            .read(&mut events)
+            .expect_err("staging data-opened a special file before refusing it");
+        assert_eq!(error.kind(), ErrorKind::WouldBlock);
+        assert!(!directory.path().join("var").exists());
     }
 }
