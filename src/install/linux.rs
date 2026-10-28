@@ -3,6 +3,7 @@ use anyhow::{Context, ensure};
 use std::{
     fs,
     io::Read,
+    os::fd::AsRawFd,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     process::Command,
 };
@@ -104,14 +105,15 @@ fn package_file(root: &Path, relative: &str) -> Result<fs::File> {
     );
     let file = fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
         .open(&path)
         .with_context(|| format!("open staged package file: {relative}"))?;
     ensure!(
         file.metadata()?.is_file(),
         "staged package file must be regular: {relative}"
     );
-    Ok(file)
+    fs::File::open(format!("/proc/self/fd/{}", file.as_raw_fd()))
+        .with_context(|| format!("read verified staged package inode through procfs: {relative}"))
 }
 
 fn stage_package(test_root: Option<&Path>) -> Result<()> {
