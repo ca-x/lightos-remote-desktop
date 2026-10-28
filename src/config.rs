@@ -31,8 +31,8 @@ mod tests {
     fn niri_rejects_foreign_shells_aquamarine_and_attachment_modes() {
         let native = tempfile::NamedTempFile::new().unwrap();
         for extra in [
-            ["--shell", "omarchy"],
-            ["--shell", "minimal"],
+            ["--desktop-shell", "omarchy"],
+            ["--desktop-shell", "minimal"],
             ["--aquamarine-dir", "/private/aquamarine"],
             ["--wayland-socket", "/private/wayland-0"],
             ["--x11-display", ":0"],
@@ -55,7 +55,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn niri_rejects_relative_or_missing_explicit_configurations() {
-        for path in ["relative.kdl", "/nonexistent/lightos-niri-native/config.kdl"] {
+        for path in [
+            "relative.kdl",
+            "/nonexistent/lightos-niri-native/config.kdl",
+        ] {
             let settings = config(&[
                 "test",
                 "--password",

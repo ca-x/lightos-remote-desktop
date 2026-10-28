@@ -109,6 +109,11 @@ Files: `src/session.rs`, `src/session/niri.rs`,
 
 ## Evidence
 
+- Initial task-2 run 40783292316/d002900 stops at rustfmt's requested array
+  wrapping, before Linux behavior tests. Apply that exact remote formatting
+  diff and correct the fixture's existing flag spelling to --desktop-shell.
+  This is not the intended Niri-selection RED yet; require the actual test.
+
 - Feasibility clipboard probe 40699256007 and later full source CI40708400112
   are accepted predecessors. The real Pond init/frame probe40738943260 passes;
   probe40782166125 additionally verifies same-peer Wayland selection and an
