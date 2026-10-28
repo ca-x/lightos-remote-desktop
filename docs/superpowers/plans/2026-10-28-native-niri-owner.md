@@ -1,0 +1,100 @@
+# Native Niri owner implementation plan
+
+> For agentic workers: use the executing-plans skill task by task. Do not start
+> implementation before the real capture/input/text-clipboard prerequisite.
+
+**Goal:** Add an explicit Niri persistent owner without replacing Pond's shell
+or changing the LightOS control plane.
+
+**Architecture:** Preserve owner/transport separation and descriptor v1.
+Introduce a native Niri startup branch and a private Rust environment handshake.
+Existing Hyprland startup stays the default and retains its regression suite.
+
+**Tech Stack:** Rust, clap, Unix peer credentials, private D-Bus, Cage/Niri,
+GitHub Actions Arch runners.
+
+**Spec:** `docs/superpowers/specs/2026-10-28-native-niri-owner.md`
+
+## Global constraints
+
+- All executable validation, dependencies and artifacts stay in GitHub Actions.
+- Never use the running host's desktop, accounts, services, seed/auth or devices.
+- Preserve the two canonical LightOS services, config paths and descriptor v1.
+- Commit/push stages over SSH. Observe behavioral RED before each fix.
+- Complete the CLI/desktop extension gate before resuming OCI packaging.
+
+## Review focus
+
+- No config rewriting or empty-desktop fallback for a selected native config.
+- No Cage/foreign socket selection, stale readiness or owner-lock/pidfd confusion.
+- No authentication leakage into readiness, D-Bus activation or diagnostics.
+- No host user-systemd import or owner restart on transport-only updates.
+- No output-size/resize or full Pond claims from generic Niri feasibility.
+
+### Task 1: Close the feasibility prerequisite
+
+Files: `tests/niri_capture.rs`, `.github/workflows/niri-probe.yml`,
+`docs/superpowers/plans/2026-10-28-niri-probe.md`.
+
+- [ ] Preserve exact wev receipt regressions and observe real motion/key/button
+  success after establishing focus, without accepting `enter` as `motion`.
+- [ ] Exercise production `DesktopBackend::clipboard_write` against an
+  independent `wl-paste`, then independent foreground `wl-copy` against
+  `DesktopBackend::clipboard_read`, using distinct Unicode/multiline fixture
+  text and the exact private Niri socket. Bound waits and kill owned helpers.
+- [ ] Record exact reports, full CI, independent review and SSH-pushed evidence.
+
+### Task 2: Explicit configuration and dependency boundary
+
+Files: `src/config.rs`, `src/diagnostics.rs`, `src/desktop/mod.rs`,
+`src/main.rs`; adjacent unit tests.
+
+Interface: `Compositor::{Hyprland, Niri}`, `Config::compositor`; preserve
+`Config::desktop_config` as the native config path.
+
+- [ ] Add tests for default compatibility, explicit Niri selection, missing
+  native config, relative paths, Omarchy/Aquamarine conflicts and non-Linux
+  rejection. Observe actual remote RED.
+- [ ] Implement validation and Niri doctor dependencies without traversing the
+  generic/Omarchy Hyprland initializer. Native includes remain at their source.
+- [ ] Remote test/fmt/clippy, review, commit/push the accepted interface.
+
+### Task 3: Rust readiness and selected-process identity
+
+Files: new `src/session/niri.rs`, `src/main.rs`, `src/session.rs`; new
+`tests/niri_environment.rs` and adjacent identity tests.
+
+Interface: hidden `niri-session-environment --runtime <absolute-path>`;
+private readiness remains internal, not descriptor v1.
+
+- [ ] Add process-level negative tests for mismatched bus/runtime, escaped or
+  foreign sockets, stale readiness and auth-sentinel leakage. Observe RED.
+- [ ] Implement allowlisted atomic readiness and private-bus activation with
+  no shell, auth import or host user-systemd. Validate actual UID/PID/exe/group
+  and the same Niri peer for Wayland and IPC.
+- [ ] Remote tests, bounded failure/cleanup evidence, review and SSH push.
+
+### Task 4: Persistent native owner
+
+Files: `src/session.rs`, `src/session/niri.rs`,
+`tests/persistent_session.rs`, `.github/workflows/niri-probe.yml` and docs.
+
+- [ ] Add a real owner plus two-generation transport fixture that initially
+  fails because the Niri branch does not exist. Keep actual subprocess IDs,
+  PID/start times, fresh frames and GUI identity as observable assertions.
+- [ ] Start Cage/Niri without `--session`, invoke Rust readiness as its startup
+  command, select the verified Niri socket and preserve user-config shell
+  autostart. Set no Hyprland signature and publish unchanged descriptor v1.
+- [ ] Exercise startup failure/cancellation, missing readiness, foreign/stale
+  socket, transport restarts, owner liveness and owned-process cleanup.
+- [ ] Run full GitHub CI, independently review, SSH commit/push. Only then
+  plan package/version changes and the separate real Pond shell/device gates.
+
+## Evidence
+
+- Read-only owner audit identifies the existing Hyprland dependencies in
+  config/doctor, desktop socket discovery, environment IPC and persistent
+  fixtures. Descriptor v1 already permits an absent signature.
+- Baseline capture succeeded at `72f5239`/`40689971420`. Receipt predicate RED
+  is `0114c31`/`40694410495`; actual focus/motion fixture RED is
+  `9d1b57a`/`40695810183`. Current candidate `ab28c28` is not yet accepted.
