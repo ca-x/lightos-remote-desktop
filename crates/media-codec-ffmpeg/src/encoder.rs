@@ -1,8 +1,5 @@
 use anyhow::{Context, Result, bail, ensure};
-use ffmpeg_next::{
-    self as ffmpeg, Dictionary, Packet, codec, encoder, ffi, format::Pixel, frame,
-    software::scaling,
-};
+use ffmpeg_next::{self as ffmpeg, Dictionary, Packet, codec, encoder, ffi, format::Pixel, frame};
 use media_codec::{
     EncodedFrame, EncoderBackend, EncoderRate, EncoderSettings, default_bitrate, h264_packet_info,
     worker_protocol::{validate_pixels, validate_settings},
@@ -29,6 +26,35 @@ impl Drop for Bitstream {
         unsafe {
             ffi::av_bsf_free(&mut self.0);
         }
+    }
+}
+// The frame API can split conversion across a bounded number of workers;
+// sws_scale's legacy slice API keeps RGBA conversion on one CPU thread.
+struct PixelConverter(*mut ffi::SwsContext);
+impl PixelConverter {
+    fn new() -> Result<Self> {
+        let converter = Self(unsafe { ffi::sws_alloc_context() });
+        ensure!(!converter.0.is_null(), "allocate pixel converter");
+        unsafe {
+            check(
+                ffi::av_opt_set_int(converter.0.cast(), c"threads".as_ptr(), 2, 0),
+                "configure pixel conversion threads",
+            )?;
+        }
+        Ok(converter)
+    }
+    fn convert(&mut self, source: &frame::Video, target: &mut frame::Video) -> Result<()> {
+        unsafe {
+            check(
+                ffi::sws_scale_frame(self.0, target.as_mut_ptr(), source.as_ptr()),
+                "convert RGBA to NV12",
+            )
+        }
+    }
+}
+impl Drop for PixelConverter {
+    fn drop(&mut self) {
+        unsafe { ffi::sws_freeContext(self.0) }
     }
 }
 impl Bitstream {
@@ -89,7 +115,7 @@ impl CpuFrames {
             converted: frame::Video::new(Pixel::NV12, width, height),
         }
     }
-    fn convert(&mut self, pixels: &[u8], scaler: &mut scaling::Context) -> Result<()> {
+    fn convert(&mut self, pixels: &[u8], scaler: &mut PixelConverter) -> Result<()> {
         unsafe {
             check(
                 ffi::av_frame_make_writable(self.rgba.as_mut_ptr()),
@@ -105,7 +131,7 @@ impl CpuFrames {
         for (y, source) in pixels.chunks_exact(row).enumerate() {
             self.rgba.data_mut(0)[y * stride..y * stride + row].copy_from_slice(source);
         }
-        scaler.run(&self.rgba, &mut self.converted)?;
+        scaler.convert(&self.rgba, &mut self.converted)?;
         Ok(())
     }
 }
@@ -117,7 +143,7 @@ pub struct NativeEncoder {
     encoder: encoder::Video,
     filter: Bitstream,
     upload: Option<Buffer>,
-    scaler: scaling::Context,
+    scaler: PixelConverter,
     frames: CpuFrames,
     pts: i64,
     vaapi_device: Option<PathBuf>,
@@ -262,15 +288,7 @@ impl NativeEncoder {
             );
         }
         let filter = Bitstream::new(&encoder)?;
-        let scaler = scaling::Context::get(
-            Pixel::RGBA,
-            settings.width,
-            settings.height,
-            Pixel::NV12,
-            settings.width,
-            settings.height,
-            scaling::flag::Flags::BILINEAR,
-        )?;
+        let scaler = PixelConverter::new()?;
         Ok(Self {
             name,
             backend,
