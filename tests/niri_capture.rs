@@ -73,9 +73,9 @@ fn wev_reports_input(log: &str, offset: usize) -> bool {
     ]
     .iter()
     .all(|(interface, event, state)| {
-        observed.lines().any(|line| {
-            line.contains(interface) && line.contains(event) && line.contains(state)
-        })
+        observed
+            .lines()
+            .any(|line| line.contains(interface) && line.contains(event) && line.contains(state))
     });
     delivered
         && observed

@@ -58,3 +58,6 @@ No production code or the immutable v0.1.22 release source changes in this phase
   found numeric-prefix false positives in the receipt predicate. Add regression
   cases before changing it; upstream wev prints XKB `evdev + 8`, hence key 38
   is the receipt for injected evdev 30. All execution remains in GitHub.
+- Regression commit `67bb65b` run `40693788740` stopped at one rustfmt
+  expression layout before the new tests ran. Apply only the emitted layout;
+  this format failure is not the required behavioral RED.
