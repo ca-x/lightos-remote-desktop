@@ -119,6 +119,8 @@ fn wev_receipt_accepts_xkb_keycode_for_evdev_30() {
 fn wev_receipt_rejects_numeric_prefix_collisions() {
     for invalid in [
         WEV_INPUT.replace("key: 38", "key: 300"),
+        WEV_INPUT.replace("key: 38", "key: 380"),
+        WEV_INPUT.replace("button: 272", "button: 2720"),
         WEV_INPUT
             .replace("key: 38", "key: 30")
             .replace("button: 272", "button: 2720"),

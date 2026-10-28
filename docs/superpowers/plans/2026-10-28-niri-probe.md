@@ -69,3 +69,6 @@ No production code or the immutable v0.1.22 release source changes in this phase
   take an offset in that same log before injecting. The workflow also executes
   every receipt regression before its ignored real-desktop probe. GREEN and
   independent re-review are pending; no input-delivery success is claimed.
+- Retain the observed old key-300 failure and independently mutate the valid
+  key-38 fixture to key 380 or button 2720, so a wrong keyboard field cannot mask
+  a pointer-prefix regression in future implementations.
