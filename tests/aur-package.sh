@@ -112,9 +112,11 @@ reject post_upgrade
 check pre_remove
 unset HOOK_STATUS
 : > "$temporary/hooks.log"
-export LIGHTOS_REMOTED_PACKAGE_STAGE_ONLY=invalid
-for hook in pre_upgrade post_install post_upgrade pre_remove; do reject "$hook"; done
-check test ! -s "$temporary/hooks.log"
+for staging_mode in invalid ""; do
+    export LIGHTOS_REMOTED_PACKAGE_STAGE_ONLY=$staging_mode
+    for hook in pre_upgrade post_install post_upgrade pre_remove; do reject "$hook"; done
+    check test ! -s "$temporary/hooks.log"
+done
 unset LIGHTOS_REMOTED_PACKAGE_STAGE_ONLY
 # The source assets and workflow must both use only the hook and ABI patch.
 for asset in "${source[@]:1}"; do

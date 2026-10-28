@@ -135,9 +135,11 @@ fixture offline
 export LIGHTOS_REMOTED_PACKAGE_STAGE_ONLY=1
 for hook in post_install post_upgrade post_remove; do check "$hook"; done
 check test ! -s "$AUR_CODEC_ROOT/events"
-export LIGHTOS_REMOTED_PACKAGE_STAGE_ONLY=invalid
-for hook in post_install post_upgrade post_remove; do reject "$hook"; done
-check test ! -s "$AUR_CODEC_ROOT/events"
+for staging_mode in invalid ""; do
+    export LIGHTOS_REMOTED_PACKAGE_STAGE_ONLY=$staging_mode
+    for hook in post_install post_upgrade post_remove; do reject "$hook"; done
+    check test ! -s "$AUR_CODEC_ROOT/events"
+done
 unset LIGHTOS_REMOTED_PACKAGE_STAGE_ONLY
 python3 - "$repository" <<'PY'
 from pathlib import Path

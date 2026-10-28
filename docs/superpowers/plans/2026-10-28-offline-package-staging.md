@@ -36,3 +36,7 @@ authentication ownership and ordinary AUR activation behavior unchanged.
   extraction, avoiding any installer/systemctl/NSS invocation. AUR hooks select
   it only with the explicit staging environment. Full remote GREEN and review
   are still required before bumping or tagging a release.
+- Independent read-only review found one P1: Bash `:-0` treats an explicitly
+  empty build variable as ordinary live activation, although the contract only
+  permits unset/0 or explicit 1. Extend both real-hook fixtures to reject empty
+  as well as nonempty invalid values before correcting either hook.
