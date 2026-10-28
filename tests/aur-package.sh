@@ -122,13 +122,14 @@ for staging_mode in invalid ""; do
 done
 unset LIGHTOS_REMOTED_PACKAGE_STAGE_ONLY
 # The source assets and workflow must both use only the hook and ABI patch.
-for asset in "${source[@]:1}"; do
+for asset in "${source[@]:2}"; do
     check test -f "$repository/lightos-remoted-bin/$asset"
 done
-check test "${source[1]}" = aquamarine-wayland.patch
-check test "${source[2]}" = lightos-remoted-bin.install
-check test "${#source[@]}" = 3
-check test "${#sha256sums[@]}" = 3
+check test "${source[1]}" = "lightos-remoted-source-${pkgver}.tar.gz::https://codeload.github.com/ca-x/lightos-remote-desktop/tar.gz/refs/tags/v${pkgver}"
+check test "${source[2]}" = aquamarine-wayland.patch
+check test "${source[3]}" = lightos-remoted-bin.install
+check test "${#source[@]}" = 4
+check test "${#sha256sums[@]}" = 4
 python3 - "$repository" <<'PY'
 import pathlib, sys
 root = pathlib.Path(sys.argv[1])

@@ -136,6 +136,17 @@ Removing the package disables future transport and desktop-owner startup while
 retaining running services, credentials/account/data, and older installations.
 Finish and save remote work before deliberately stopping/removing retained sessions.
 
+### Hyprland cursor companion
+
+Starting with `0.1.22-2`, the package builds `lightos-cursor.so` from the same
+release tag against the installed Hyprland headers, and installs it next to the
+managed executable. The transport verifies independent cursor/cursor-free capture
+before declaring the desktop ready; omitting this companion can fail activation
+even when `doctor` reports every executable dependency available. Rebuild the AUR
+package after a Hyprland ABI change; do not copy a plugin from another ABI.
+Correcting this payload and reactivating the transport does not require restarting
+`lightos-remote-desktop-session.service` or replacing authentication settings.
+
 ## Existing installations and manual migration
 
 The setup hook detects an old transport or owner unit in `/etc/systemd/system`,

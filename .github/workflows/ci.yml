@@ -12,6 +12,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: bash tests/aur-package.sh
       - run: bash tests/aur-codec-package.sh
+  aur-native-cursor:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install matching Arch compositor headers
+        run: pacman -Syu --noconfirm --needed git hyprland pkgconf
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Compile the package's cursor companion against the compositor ABI
+        run: |
+          set -euo pipefail
+          bash scripts/build-hyprland-cursor.sh "$RUNNER_TEMP/lightos-cursor.so"
+          test -s "$RUNNER_TEMP/lightos-cursor.so"
+          readelf -h "$RUNNER_TEMP/lightos-cursor.so" | grep -q 'DYN (Shared object file)'
   test:
     runs-on: ubuntu-latest
     env:

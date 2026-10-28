@@ -68,7 +68,7 @@ reset() {
     cp "$repository/lightos-remoted-bin/PKGBUILD" "$temporary/lightos-remoted-bin/"
     cp "$repository/lightos-codec-ffmpeg-bin/PKGBUILD" "$temporary/lightos-codec-ffmpeg-bin/"
     # API fixtures use a fixed historical release, independent of the tracked version.
-    sed -i 's/^pkgver=.*/pkgver=0.1.11/' "$temporary/lightos-remoted-bin/PKGBUILD" "$temporary/lightos-codec-ffmpeg-bin/PKGBUILD"
+    sed -i 's/^pkgver=.*/pkgver=0.1.11/; s/^pkgrel=.*/pkgrel=1/' "$temporary/lightos-remoted-bin/PKGBUILD" "$temporary/lightos-codec-ffmpeg-bin/PKGBUILD"
     python3 - <<'PY'
 import json, os
 from pathlib import Path
