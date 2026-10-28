@@ -62,3 +62,16 @@ authentication ownership and ordinary AUR activation behavior unchanged.
   non-regular inodes, then reopens the pinned regular inode through procfs; no
   device-driver data-open is involved. A fresh candidate run and independent
   closure remain required before the release tag.
+- Release candidate `b244af2265bf3ec8b2ac3d7d6a34d82b0a330e48` passed full
+  run `40682739378`; independent re-review closed the original P1 and all P2s.
+  Pushed annotated `v0.1.22` over SSH only after checking the tag was unoccupied.
+- Exact-tag run `40685354147` succeeded. GitHub published v0.1.22 on
+  `2026-10-28T12:24:26Z`; Arch codec run `40687539494` and AUR run `40687977677`
+  succeeded. The release has all 12 expected assets, including the Arch helper.
+- Verified actual AUR RPC versions are both `0.1.22-1`. Published master refs:
+  main `6625b4524167a6448e5321dc387186fb2efceb8a`, helper
+  `68e58ea09a27010b0a7b37aef7414924c242bdc8`. RPC briefly retained the old main
+  version after a successful source push; inspect source refs/logs and wait for
+  metadata propagation instead of forcing a new package release.
+- Offline-staging release gate is complete. It still does not implement a
+  Niri owner or establish Pond shell, real proxy, input or physical VT acceptance.

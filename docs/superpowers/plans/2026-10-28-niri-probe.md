@@ -13,8 +13,11 @@ No production code or the immutable v0.1.22 release source changes in this phase
   capturing Cage's parent surface is not sufficient.
 - Probe the required protocols, capture a nonuniform client frame on output
   `winit`, and retain a screenshot plus a bounded-scope machine-readable report.
-- Input delivery, clipboard, Pond/Quickshell, persistent-owner recovery and
-  platform proxy/physical VT acceptance remain explicitly untested.
+- After capture feasibility, inject actual pointer motion/button and key
+  press/release commands. Require the independent wev client to observe every
+  transition after injection, not only protocol globals or successful sends.
+- Clipboard, Pond/Quickshell, persistent-owner recovery and platform
+  proxy/physical VT acceptance remain explicitly untested.
 
 ## Execution
 
@@ -24,7 +27,7 @@ No production code or the immutable v0.1.22 release source changes in this phase
 3. Run `niri-probe.yml`, observe the actual result, and address root causes with
    fresh remote evidence. A successful feasibility probe need not manufacture
    a failing test; a subsequent behavior fix does require a meaningful RED.
-4. Only after capture feasibility, specify input/shell/owner acceptance. Keep
+4. Only after capture feasibility, exercise input and specify shell/owner acceptance. Keep
    the overall desktop CLI gate and image packaging closed meanwhile.
 
 ## Ledger
@@ -43,3 +46,8 @@ No production code or the immutable v0.1.22 release source changes in this phase
   the fixed-size pixel iterator with typed `as_chunks::<4>()`, not a lint allow.
   Independent review found no execution/isolation/cleanup P1/P2; dispatch the
   real probe after this correction. No runtime result is claimed beforehand.
+- Probe `40689971420` at `72f5239` succeeded: actual Niri-owned socket,
+  1272x688 nonuniform fresh frame, capture/keyboard/pointer globals present.
+  This proves software-rendered capture without a physical VT, not input
+  delivery or the Pond shell. Extend the same fixture with real wev-observed
+  motion/button/key transitions next; production code remains unchanged.

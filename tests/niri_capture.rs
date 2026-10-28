@@ -9,7 +9,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use lightos_remote_desktop::wayland::{Backend, capabilities};
+use lightos_remote_desktop::{
+    backend::InputCommand,
+    wayland::{Backend, capabilities},
+};
 
 struct Candidate(Child);
 
@@ -84,7 +87,7 @@ async fn niri_native_capabilities_and_first_frame() {
         Command::new("/usr/bin/dbus-run-session")
             .args(["--", "/usr/bin/cage", "--", "/usr/bin/niri", "--config"])
             .arg(&config)
-            .args(["--", "/usr/bin/wev"])
+            .args(["--", "/usr/bin/stdbuf", "-oL", "/usr/bin/wev"])
             .env_clear()
             .env("PATH", "/usr/bin")
             .env("HOME", &home)
@@ -146,6 +149,57 @@ async fn niri_native_capabilities_and_first_frame() {
     .expect("Niri did not produce a nonuniform frame containing its client");
     assert!(frame.width >= 320 && frame.height >= 200);
     assert!(backend.frame_is_fresh(Duration::from_secs(5)));
+    let offset = usize::try_from(fs::metadata(&log).unwrap().len()).unwrap();
+    for command in [
+        InputCommand::Move { x: 0.25, y: 0.5 },
+        InputCommand::Button {
+            button: 0,
+            pressed: true,
+        },
+        InputCommand::Button {
+            button: 0,
+            pressed: false,
+        },
+        InputCommand::Key {
+            code: 30,
+            pressed: true,
+        },
+        InputCommand::Key {
+            code: 30,
+            pressed: false,
+        },
+    ] {
+        backend.input.send(command).await.unwrap();
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let bytes = fs::read(&log).unwrap();
+        let observed = String::from_utf8_lossy(&bytes[offset.min(bytes.len())..]);
+        let delivered = [
+            ("wl_keyboard", "key: 30", "state: 1"),
+            ("wl_keyboard", "key: 30", "state: 0"),
+            ("wl_pointer", "button: 272", "state: 1"),
+            ("wl_pointer", "button: 272", "state: 0"),
+        ]
+        .iter()
+        .all(|(interface, event, state)| {
+            observed.lines().any(|line| {
+                line.contains(interface) && line.contains(event) && line.contains(state)
+            })
+        });
+        if delivered
+            && observed
+                .lines()
+                .any(|line| line.contains("wl_pointer") && line.contains("motion:"))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "wev did not receive the injected pointer and key transitions: {observed}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     image::RgbaImage::from_raw(frame.width, frame.height, frame.pixels.to_vec())
         .unwrap()
         .save(report.join("niri-first-frame.png"))
@@ -157,7 +211,9 @@ async fn niri_native_capabilities_and_first_frame() {
             "protocols": protocols,
             "width": frame.width,
             "height": frame.height,
-            "input_delivery_tested": false,
+            "input_delivery_tested": true,
+            "keyboard_delivery_tested": true,
+            "pointer_delivery_tested": true,
             "pond_shell_tested": false,
             "platform_proxy_tested": false,
             "physical_vt_tested": false,
