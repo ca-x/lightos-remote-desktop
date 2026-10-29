@@ -3,11 +3,11 @@
 use std::{
     fs,
     os::unix::{
-        fs::{MetadataExt, PermissionsExt},
+        fs::{MetadataExt, PermissionsExt, symlink},
         net::UnixListener,
         process::CommandExt,
     },
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     thread,
     time::{Duration, Instant},
@@ -56,6 +56,10 @@ impl Fixture {
     }
 
     fn command(&self) -> Command {
+        self.command_for(&self.runtime)
+    }
+
+    fn command_for(&self, runtime: &Path) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_lightos-remoted"));
         let bus = format!("unix:path={}", self.runtime.join("bus").display());
         command
@@ -71,7 +75,7 @@ impl Fixture {
                 "fixture-auth-sentinel-not-for-readiness",
             )
             .args(["niri-session-environment", "--runtime"])
-            .arg(&self.runtime);
+            .arg(runtime);
         command
     }
 }
@@ -133,6 +137,10 @@ fn publishes_only_private_display_values_after_activation_without_importing_auth
     assert!(!arguments.contains("AUTH"));
     assert!(!arguments.contains("fixture-auth-sentinel"));
     assert!(!arguments.contains("--systemd"));
+    assert_eq!(arguments.lines().count(), 7);
+    assert!(arguments.contains("XDG_CURRENT_DESKTOP=niri"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("fixture-auth-sentinel"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("fixture-auth-sentinel"));
 }
 
 #[test]
@@ -160,4 +168,148 @@ fn rejects_a_mismatched_runtime_before_activating_or_writing_readiness() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("XDG_RUNTIME_DIR"));
     assert!(!fixture.calls.exists());
     assert!(!fixture.record().exists());
+}
+
+#[test]
+fn accepts_the_private_bus_guid_without_importing_into_user_systemd() {
+    let fixture = Fixture::new();
+    let mut command = fixture.command();
+    command.env(
+        "DBUS_SESSION_BUS_ADDRESS",
+        format!(
+            "unix:path={},guid=0123456789abcdef0123456789abcdef",
+            fixture.runtime.join("bus").display()
+        ),
+    );
+    let output = run(command);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(fixture.record().exists());
+    assert!(!fs::read_to_string(&fixture.calls).unwrap().contains("--systemd"));
+}
+
+#[test]
+fn publishes_without_an_x11_display() {
+    let fixture = Fixture::new();
+    let mut command = fixture.command();
+    command.env_remove("DISPLAY");
+    let output = run(command);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let document: serde_json::Value = serde_json::from_slice(&fs::read(fixture.record()).unwrap()).unwrap();
+    assert_eq!(document.as_object().unwrap().len(), 2);
+    assert!(document.get("display").is_none());
+    assert!(fs::read_to_string(&fixture.calls).unwrap().lines().any(|line| line == "DISPLAY="));
+}
+
+#[test]
+fn rejects_ambiguous_or_non_filesystem_bus_addresses() {
+    for suffix in [";unix:path=/tmp/foreign", ",path=/tmp/foreign", ",unused=yes"] {
+        let fixture = Fixture::new();
+        let mut command = fixture.command();
+        command.env(
+            "DBUS_SESSION_BUS_ADDRESS",
+            format!("unix:path={}{suffix}", fixture.runtime.join("bus").display()),
+        );
+        let output = run(command);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("private session bus"));
+        assert!(!fixture.calls.exists());
+        assert!(!fixture.record().exists());
+    }
+    let fixture = Fixture::new();
+    let mut command = fixture.command();
+    command.env("DBUS_SESSION_BUS_ADDRESS", "unix:abstract=not-the-private-bus");
+    let output = run(command);
+    assert!(!output.status.success());
+    assert!(!fixture.calls.exists());
+    assert!(!fixture.record().exists());
+}
+
+#[test]
+fn rejects_socket_symlinks_and_nonprivate_runtime_before_activation() {
+    for name in ["bus", "wayland-7", "niri.control.sock"] {
+        let fixture = Fixture::new();
+        let socket = fixture.runtime.join(name);
+        let other = fixture.runtime.join(format!("other-{name}"));
+        fs::rename(&socket, &other).unwrap();
+        symlink(other, socket).unwrap();
+        let output = run(fixture.command());
+        assert!(!output.status.success());
+        assert!(!fixture.calls.exists());
+        assert!(!fixture.record().exists());
+    }
+    let fixture = Fixture::new();
+    fs::set_permissions(&fixture.runtime, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = run(fixture.command());
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("private directory"));
+    assert!(!fixture.calls.exists());
+    assert!(!fixture.record().exists());
+}
+
+#[test]
+fn rejects_runtime_aliases_and_socket_escapes_before_activation() {
+    for (name, value) in [
+        ("WAYLAND_DISPLAY", "../wayland-7"),
+        ("WAYLAND_DISPLAY", "/tmp/wayland-7"),
+        ("NIRI_SOCKET", "/tmp/foreign-niri.sock"),
+        ("DISPLAY", "remote.example:0"),
+    ] {
+        let fixture = Fixture::new();
+        let mut command = fixture.command();
+        command.env(name, value);
+        let output = run(command);
+        assert!(!output.status.success());
+        assert!(!fixture.calls.exists());
+        assert!(!fixture.record().exists());
+    }
+    let fixture = Fixture::new();
+    let alias = fixture._directory.path().join("runtime-alias");
+    symlink(&fixture.runtime, &alias).unwrap();
+    let mut command = fixture.command_for(&alias);
+    command.env("XDG_RUNTIME_DIR", alias);
+    let output = run(command);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("private directory"));
+    assert!(!fixture.calls.exists());
+    assert!(!fixture.record().exists());
+}
+
+#[test]
+fn never_replaces_existing_readiness_or_activates_for_a_stale_record() {
+    let fixture = Fixture::new();
+    fs::write(fixture.record(), b"old-generation\n").unwrap();
+    let output = run(fixture.command());
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("already exists"));
+    assert!(!fixture.calls.exists());
+    assert_eq!(fs::read(fixture.record()).unwrap(), b"old-generation\n");
+}
+
+#[test]
+fn activation_failure_never_publishes_readiness() {
+    let fixture = Fixture::new();
+    fs::write(fixture.bin.join("dbus-update-activation-environment"), "#!/bin/sh\nexit 42\n").unwrap();
+    let output = run(fixture.command());
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("activation failed"));
+    assert!(!fixture.record().exists());
+}
+
+#[test]
+fn activation_deadline_kills_and_reaps_its_owned_helper_without_publishing() {
+    let fixture = Fixture::new();
+    let pid_file = fixture._directory.path().join("activator.pid");
+    fs::write(
+        fixture.bin.join("dbus-update-activation-environment"),
+        format!("#!/bin/sh\nprintf '%s\\n' \"$$\" > '{}'\nexec /bin/sleep 30\n", pid_file.display()),
+    ).unwrap();
+    let start = Instant::now();
+    let output = run(fixture.command());
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("timed out"));
+    assert!(start.elapsed() < Duration::from_secs(8));
+    assert!(!fixture.record().exists());
+    let pid: i32 = fs::read_to_string(pid_file).unwrap().trim().parse().unwrap();
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+    assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
 }

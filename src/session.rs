@@ -21,6 +21,9 @@ use display_control::SessionTarget;
 
 use crate::config::{Compositor, Config};
 
+mod niri;
+pub use niri::publish_environment as publish_niri_environment;
+
 pub const DEFAULT_SESSION_RUNTIME: &str = "/run/lrd-session";
 pub const PREVIOUS_SESSION_RUNTIME: &str = "/run/lightos-remoted-session";
 

@@ -109,6 +109,20 @@ Files: `src/session.rs`, `src/session/niri.rs`,
 
 ## Evidence
 
+- Task-3 publisher behavior RED is 52e2030/40790727648: all three process
+  cases run and fail for the missing niri-session-environment action, not
+  formatting. Implement only the private publisher first. Its controlled
+  socket-node/stub-activator fixture does not verify kernel peers or a native
+  owner. Preserve the fail-closed owner guard until the consumer is integrated.
+- Ruling: refuse pre-existing readiness rather than overwriting it. A future
+  lock-owning startup must clear the previous generation before launching Niri
+  and independently admit both peers; the publisher cannot prove freshness.
+- Sidecar review distinguishes sidebar.toggle from the actual launcher:
+  it expands/collapses the sidebar, whereas the audited native Mod+Space
+  binding invokes vicinae toggle. Neither ipc-show success nor a changed
+  screenshot proves launcher selection or application start. Future real Pond
+  acceptance must observe a new verified application window and process.
+
 - Task-3 fixture 5ad6ad6/40789753777 stops at three rustfmt changes before
   behavior runs. Apply the exact GitHub output and observe the publisher's
   actual missing-action RED, not a formatting failure.

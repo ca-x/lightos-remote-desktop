@@ -52,6 +52,12 @@ enum Action {
     #[command(about = "Own a persistent desktop independently of the HTTP transport")]
     #[command(hide = !cfg!(target_os = "linux"))]
     DesktopSession(Config),
+    #[cfg(target_os = "linux")]
+    #[command(hide = true)]
+    NiriSessionEnvironment {
+        #[arg(long)]
+        runtime: PathBuf,
+    },
     Doctor(Config),
     Probe {
         #[command(flatten)]
@@ -116,6 +122,13 @@ async fn main() -> Result<()> {
         }
         Action::Serve(config) => serve(config, None).await,
         Action::DesktopSession(config) => desktop_session(config).await,
+        #[cfg(target_os = "linux")]
+        Action::NiriSessionEnvironment { runtime } => {
+            tokio::task::spawn_blocking(move || {
+                lightos_remote_desktop::session::publish_niri_environment(&runtime)
+            })
+            .await?
+        }
     }
 }
 
