@@ -147,7 +147,20 @@ fn activate(runtime: &Path, bus: &str, environment: &Environment) -> Result<()> 
     let program = platform_detect::find_executable(Path::new("dbus-update-activation-environment"))
         .context("private session bus activator is unavailable")?;
     let program = fs::canonicalize(program).context("resolve private session bus activator")?;
-    let mut child = Command::new(program)
+    let publisher = unsafe { libc::getpid() };
+    let mut command = Command::new(program);
+    unsafe {
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != publisher {
+                return Err(std::io::Error::from_raw_os_error(libc::ECANCELED));
+            }
+            Ok(())
+        });
+    }
+    let mut child = command
         .env_clear()
         .env("XDG_RUNTIME_DIR", runtime)
         .env("DBUS_SESSION_BUS_ADDRESS", bus)

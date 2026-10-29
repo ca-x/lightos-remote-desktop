@@ -14,6 +14,25 @@ claim is made without its own implementation and behavioral acceptance. The
 probe explicitly requests JPEG before checking fresh red/blue application pixels.
 Full owner acceptance and production-image publication remain pending.
 
+Actual owner GREEN: `0fad9c9` / probe `40800711240` passes both authenticated
+transport generations with fresh JPEG pixels: red 302772 and blue 302756 at
+1272x688. Owner, Niri and foot PID-start identities remain unchanged, native
+relative includes remain unchanged, and normal owner stop leaves no live fixture
+processes before independent fallback cleanup. The probe also checks the actual
+Niri/private-bus PATH. This does not test Pond shell or the platform proxy.
+Cancellation and log-alias regressions added at `1be94be` remain independent
+production-hardening gates, not grounds to discard the successful owner evidence.
+
+Behavioral RED: `7207f46` / CI `40800945917`, Linux job `123208642450`,
+executes both regressions despite the separate formatting failure. Abruptly
+killing the publisher leaves the direct activation helper alive; opening the
+preplaced log symlink does not fail before truncation. The production fix ties
+the direct activator to publisher death with race-checked Linux PDEATHSIG while
+retaining group cleanup on normal completion/deadline. Log creation opens without
+following symlinks or truncating, validates a private owned single-link regular
+file, then truncates the pinned descriptor. These fixes await GitHub GREEN;
+PDEATHSIG is not a claim about arbitrary malicious activator grandchildren.
+
 > For agentic workers: use the executing-plans skill task by task. Do not start
 > implementation before the real capture/input/text-clipboard prerequisite.
 

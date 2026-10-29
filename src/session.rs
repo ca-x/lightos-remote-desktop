@@ -493,10 +493,19 @@ impl Session {
     fn spawn(&mut self, mut command: Command, log: &str) -> Result<()> {
         let output = OpenOptions::new()
             .create(true)
-            .truncate(true)
             .write(true)
             .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(self.runtime.join(log))?;
+        let metadata = output.metadata()?;
+        ensure!(
+            metadata.is_file()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.nlink() == 1
+                && metadata.mode() & 0o077 == 0,
+            "session log must be a private owned regular file without aliases"
+        );
+        output.set_len(0)?;
         command
             .process_group(0)
             .stdin(Stdio::null())
@@ -1047,8 +1056,15 @@ mod tests {
             None,
             None,
         );
-        assert!(session.spawn(Command::new("/bin/true"), "dbus.log").is_err());
-        assert_eq!(fs::read_to_string(&unrelated).unwrap(), "must remain unchanged");
+        assert!(
+            session
+                .spawn(Command::new("/bin/true"), "dbus.log")
+                .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(&unrelated).unwrap(),
+            "must remain unchanged"
+        );
     }
 
     fn private_runtime() -> tempfile::TempDir {

@@ -412,7 +412,7 @@ done
     fs::write(&included, &include_source).unwrap();
     let configuration = "include \"included.kdl\"\n";
     let config = config_dir.join("config.kdl");
-    fs::write(&config, &configuration).unwrap();
+    fs::write(&config, configuration).unwrap();
     let owner_log = report.join("owner.log");
     let owner = start(
         "desktop-session",

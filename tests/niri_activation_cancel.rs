@@ -75,8 +75,8 @@ fn cancelling_publisher_terminates_its_direct_activation_helper() {
         events: libc::POLLIN,
         revents: 0,
     };
-    let stopped = unsafe { libc::poll(&mut poll, 1, 1500) } == 1
-        && poll.revents & libc::POLLIN != 0;
+    let stopped =
+        unsafe { libc::poll(&mut poll, 1, 1500) } == 1 && poll.revents & libc::POLLIN != 0;
     if !stopped {
         unsafe {
             libc::syscall(
@@ -90,5 +90,8 @@ fn cancelling_publisher_terminates_its_direct_activation_helper() {
     }
     unsafe { libc::waitpid(helper_pid.unwrap(), std::ptr::null_mut(), 0) };
     assert!(!runtime.join("niri-environment.json").exists());
-    assert!(stopped, "publisher cancellation left its activation helper alive");
+    assert!(
+        stopped,
+        "publisher cancellation left its activation helper alive"
+    );
 }
