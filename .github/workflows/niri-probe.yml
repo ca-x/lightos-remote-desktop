@@ -16,7 +16,7 @@ jobs:
       TURBOJPEG_STATIC: '1'
     steps:
       - name: Install only runner-side build and candidate dependencies
-        run: pacman -Syu --noconfirm --needed git rust clang cmake nasm pkgconf python nodejs npm libjpeg-turbo opus libpulse libxkbcommon wayland mesa cage niri wev dbus wl-clipboard
+        run: pacman -Syu --noconfirm --needed git rust clang cmake nasm pkgconf python nodejs npm libjpeg-turbo opus libpulse libxkbcommon wayland mesa cage niri wev foot ttf-dejavu dbus wl-clipboard
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
@@ -32,20 +32,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --locked --features bundled-jpeg --test niri_capture --no-run --message-format json > "$RUNNER_TEMP/niri-build.jsonl"
+          cargo test --locked --features bundled-jpeg --test niri_capture --test niri_owner --no-run --message-format json > "$RUNNER_TEMP/niri-build.jsonl"
           python3 - "$RUNNER_TEMP/niri-build.jsonl" >> "$GITHUB_ENV" <<'PY'
           import json
           from pathlib import Path
           import sys
 
           records = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines()]
-          executables = [record["executable"] for record in records
+          executables = {record["target"]["name"]: record["executable"] for record in records
                          if record.get("reason") == "compiler-artifact"
-                         and record.get("target", {}).get("name") == "niri_capture"
-                         and record.get("executable")]
-          if len(executables) != 1:
-              raise SystemExit("expected one native Niri probe executable")
-          print("NIRI_PROBE_BINARY=" + executables[0])
+                         and record.get("target", {}).get("name") in ("niri_capture", "niri_owner")
+                         and record.get("executable")}
+          if set(executables) != {"niri_capture", "niri_owner"}:
+              raise SystemExit("expected capture and owner Niri probe executables")
+          print("NIRI_PROBE_BINARY=" + executables["niri_capture"])
+          print("NIRI_OWNER_BINARY=" + executables["niri_owner"])
           PY
       - name: Probe an isolated software-rendered Niri socket, never the running host
         shell: bash
@@ -56,6 +57,12 @@ jobs:
           runuser -u lrd-niri-probe -- "$NIRI_PROBE_BINARY" --skip niri_native_capabilities_and_first_frame
           runuser -u lrd-niri-probe -- env LRD_NIRI_PROBE_REPORT=/home/lrd-niri-probe/report "$NIRI_PROBE_BINARY" --ignored --exact niri_native_capabilities_and_first_frame --nocapture
           cat /home/lrd-niri-probe/report/capture.json
+      - name: Require an actual persistent Niri owner and two fresh transport generations
+        shell: bash
+        run: |
+          set -euo pipefail
+          runuser -u lrd-niri-probe -- env LRD_NIRI_PROBE_REPORT=/home/lrd-niri-probe/report "$NIRI_OWNER_BINARY" --ignored --exact persistent_niri_owner_survives_two_transport_generations --nocapture
+          cat /home/lrd-niri-probe/report/owner.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
