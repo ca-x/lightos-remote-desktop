@@ -1,4 +1,5 @@
 import { pictureClientPoint, pictureNormalizedPoint, pictureClip } from "./picture-geometry";
+import { isDesktopClient } from "./platform";
 
 interface CursorState {
   type: "cursor"; visible: boolean; id: string; x: number; y: number;
@@ -38,7 +39,7 @@ export function createCursorLayer(canvas: HTMLCanvasElement, overlay: HTMLImageE
     const hx = shape.hotspot_x * sx, hy = shape.hotspot_y * sy;
     const density = shape.width / width;
     const cursor = `image-set(url("${url}") ${density.toFixed(5)}x) ${hx.toFixed(2)} ${hy.toFixed(2)}, default`;
-    const native = !rotation && !touch && !corrected && width > 0 && height > 0 && width <= 128 && height <= 128
+    const native = !isDesktopClient() && !rotation && !touch && !corrected && width > 0 && height > 0 && width <= 128 && height <= 128
       && shape.width <= 128 && shape.height <= 128 && hx >= 0 && hy >= 0 && hx < width && hy < height
       && Math.abs(density - shape.height / height) < 0.01 && window.CSS?.supports("cursor", cursor);
     setCursor(native ? cursor : "none");

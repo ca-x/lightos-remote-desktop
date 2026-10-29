@@ -12,6 +12,7 @@
 #include <hyprland/src/output/MonitorResources.hpp>
 #include <hyprland/src/managers/screenshare/ScreenshareManager.hpp>
 #include <hyprland/src/event/EventBus.hpp>
+#include <hyprland/src/helpers/math/Math.hpp>
 #include <cmath>
 #include <sstream>
 #include <stdexcept>
@@ -59,15 +60,28 @@ class CleanFrameElement : public IPassElement {
         std::erase_if(cleanFrames, [](const auto& entry) { return entry.second.monitor.expired(); });
         auto& frame = cleanFrames[output->resources().get()];
         frame.monitor = monitor;
+        const bool initialize = !frame.valid || !frame.framebuffer || frame.framebuffer->m_size != source->m_size ||
+                                frame.framebuffer->m_drmFormat != source->m_drmFormat;
         frame.valid = false;
-        GLint read = 0, draw = 0;
+        GLint read = 0, draw = 0, viewport[4] = {}, activeTexture = 0, texture = 0, texture0 = 0;
         glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
         glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
+        glGetIntegerv(GL_VIEWPORT, viewport);
+        glGetIntegerv(GL_ACTIVE_TEXTURE, &activeTexture);
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
+        glActiveTexture(GL_TEXTURE0);
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture0);
+        glActiveTexture(activeTexture);
         const bool scissor = glIsEnabled(GL_SCISSOR_TEST);
         const auto restore = Render::CScopeGuard([&] {
             glBindFramebuffer(GL_READ_FRAMEBUFFER, read);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
-            if (scissor) glEnable(GL_SCISSOR_TEST);
+            Render::GL::g_pHyprOpenGL->setViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+            Render::GL::g_pHyprOpenGL->setCapStatus(GL_SCISSOR_TEST, scissor);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, texture0);
+            glActiveTexture(activeTexture);
+            glBindTexture(GL_TEXTURE_2D, texture);
         });
         if (!frame.framebuffer)
             frame.framebuffer = g_pHyprRenderer->createFB("LightOS cursor-free capture");
@@ -76,10 +90,17 @@ class CleanFrameElement : public IPassElement {
         frame.framebuffer->setImageDescription(source->imageDescription());
         glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<Render::GL::CGLFramebuffer*>(source.get())->getFBID());
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<Render::GL::CGLFramebuffer*>(frame.framebuffer.get())->getFBID());
-        glDisable(GL_SCISSOR_TEST);
-        glBlitFramebuffer(0, 0, source->m_size.x, source->m_size.y,
-                          0, 0, source->m_size.x, source->m_size.y,
-                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        Render::GL::g_pHyprOpenGL->setCapStatus(GL_SCISSOR_TEST, false);
+        // Work buffers only contain this pass's repainted regions. Keep the
+        // previous clean pixels elsewhere, especially on cursor-only frames.
+        CRegion damage = initialize ? CRegion(0, 0, source->m_size.x, source->m_size.y) : g_pHyprRenderer->m_renderData.damage;
+        if (!initialize)
+            damage.transform(Math::wlTransformToHyprutils(Math::invertTransform(output->m_transform)), output->m_transformedSize.x, output->m_transformedSize.y);
+        damage.intersect(0, 0, source->m_size.x, source->m_size.y);
+        for (const auto& box : damage.getRects())
+            glBlitFramebuffer(box.x1, box.y1, box.x2, box.y2,
+                              box.x1, box.y1, box.x2, box.y2,
+                              GL_COLOR_BUFFER_BIT, GL_NEAREST);
         frame.valid = true;
         return {};
     }

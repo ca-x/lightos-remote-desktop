@@ -29,6 +29,7 @@ export interface ControlState {
 }
 
 export type ToolbarEdge = "left" | "right" | "top" | "bottom";
+export type ToolbarDirection = "left" | "right";
 
 export interface SessionView {
   mode: "fit" | "actual";
@@ -47,6 +48,7 @@ export interface ClientOptions {
   onStatus?: (id: "state" | "performance" | "video-details" | "message" | "desktop-status", text: string) => void;
   onSessionView?: (view: SessionView) => void;
   onToolbarDock?: (edge: ToolbarEdge) => void;
+  onToolbarDirection?: (direction: ToolbarDirection) => void;
   translate?: (text: string) => string;
   onControls?: (state: ControlState) => void;
   onToolsOpen?: (open: boolean, focus: boolean) => void;
@@ -86,14 +88,12 @@ export interface Elements {
   "keyboard-capture": HTMLButtonElement;
   "switch-input-method": HTMLButtonElement;
   "send-shortcut": HTMLButtonElement;
-  "refresh-desktops": HTMLButtonElement;
   audio: HTMLButtonElement;
   connection: HTMLButtonElement;
   "mode-fit": HTMLButtonElement;
   "mode-actual": HTMLButtonElement;
   fullscreen: HTMLButtonElement;
   "tools-toggle": HTMLButtonElement;
-  "tools-close": HTMLButtonElement;
   "clipboard-toggle": HTMLButtonElement;
   "settings-toggle": HTMLButtonElement;
   tools: HTMLElement;

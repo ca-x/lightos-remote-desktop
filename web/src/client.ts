@@ -4,7 +4,7 @@ import { createLightBookInput, supportsLightBook } from "./lightbook-input";
 import { createPictureZoom } from "./picture-zoom";
 import { encoderBackendKey, encoderBackends, readPreference, savePreference, videoCodecKey, videoCodecs, streamStrategyKey, streamStrategies } from "./preferences";
 import { supportedVideoConfig } from "./video-codec";
-import type { ClientOptions, DesktopChoice, DesktopOutput, Elements, SessionView } from "./types";
+import type { ClientOptions, DesktopChoice, DesktopOutput, Elements, SessionView, ToolbarEdge } from "./types";
 import { createMobileControls, mobileResolution } from "./mobile";
 import { createCursorLayer } from "./cursor";
 import { createClipboard } from "./clipboard";
@@ -165,6 +165,7 @@ export function createClient(options: ClientOptions = {}) {
   let releasingSocket: WebSocket | null = null;
   let discoveryRequest = 0;
   let refreshingDesktops = false;
+  let discoveryController: AbortController | null = null;
   let mobile: ReturnType<typeof createMobileControls> | null = null;
   let lightBook: ReturnType<typeof createLightBookInput> = null;
   let lightBookEnabled = false;
@@ -335,15 +336,21 @@ export function createClient(options: ClientOptions = {}) {
     }
   } catch {}
 
+  function nearestToolEdge(centerX: number, centerY: number, width: number, height: number): ToolbarEdge {
+    const distances = { left: centerX, right: width - centerX, top: centerY, bottom: height - centerY };
+    return (Object.keys(distances) as ToolbarEdge[]).reduce((nearest, candidate) => distances[candidate] < distances[nearest] ? candidate : nearest);
+  }
+
   function layoutTools(point: {x: number; y: number} | null = toolDrag?.moved ? toolDrag : null) {
     const bounds = mobile?.bounds();
     const width = bounds?.width || window.innerWidth || 1280;
     const height = bounds ? bounds.height - bounds.bar : window.innerHeight || 720;
     const originX = bounds?.left ?? 0;
     const originY = bounds?.top ?? 0;
-    const maxX = Math.max(12, width - 52);
-    const maxY = Math.max(12, height - 60);
-    options.onToolbarDock?.(toolPosition.edge as "left" | "right" | "top" | "bottom");
+    const handleWidth = toolHandle.offsetWidth || 40;
+    const handleHeight = toolHandle.offsetHeight || 40;
+    const maxX = Math.max(12, width - handleWidth - 12);
+    const maxY = Math.max(12, height - handleHeight - 12);
     const horizontal = toolPosition.edge === "top" || toolPosition.edge === "bottom";
     const left = point ? Math.max(12, Math.min(maxX, point.x - originX)) :
       horizontal ? 12 + toolPosition.ratio * (maxX - 12) : toolPosition.edge === "left" ? 12 : maxX;
@@ -351,16 +358,34 @@ export function createClient(options: ClientOptions = {}) {
       horizontal ? toolPosition.edge === "top" ? 12 : maxY : 12 + toolPosition.ratio * (maxY - 12);
     tools.style.setProperty("--tool-x", `${left + originX}px`);
     tools.style.setProperty("--tool-y", `${top + originY}px`);
-    tools.style.setProperty("--panel-origin", toolPosition.edge === "left" ? "left center" : toolPosition.edge === "right" ? "right center" : toolPosition.edge === "top" ? "center top" : "center bottom");
-    if (options.isToolsOpen ? !options.isToolsOpen() : element("tool-panel").hidden) return;
-    const panel = element("tool-panel").getBoundingClientRect();
-    // Animation transforms must not change the docked layout measurements.
-    const panelWidth = element("tool-panel").offsetWidth || panel.width;
-    const panelHeight = element("tool-panel").offsetHeight || panel.height;
-    const panelX = toolPosition.edge === "left" ? left + 48 : toolPosition.edge === "right" ? left - panelWidth - 8 : left + 20 - panelWidth / 2;
-    const panelY = toolPosition.edge === "top" ? top + 56 : toolPosition.edge === "bottom" ? top - panelHeight - 8 : top + 24 - panelHeight / 2;
-    tools.style.setProperty("--panel-x", `${originX + Math.max(12, Math.min(width - panelWidth - 12, panelX))}px`);
-    tools.style.setProperty("--panel-y", `${originY + Math.max(12, Math.min(height - panelHeight - 12, panelY))}px`);
+    const leftSpace = Math.max(0, left - 12);
+    const rightSpace = Math.max(0, width - 12 - left - handleWidth);
+    const directionEdge = point ? nearestToolEdge(left + handleWidth / 2, top + handleHeight / 2, width, height) : toolPosition.edge;
+    tools.setAttribute("data-edge", directionEdge);
+    options.onToolbarDock?.(directionEdge as ToolbarEdge);
+    const expandLeft = directionEdge === "right" || (directionEdge === "top" || directionEdge === "bottom") && leftSpace > rightSpace;
+    tools.style.setProperty("--panel-max-width", `${Math.max(40, expandLeft ? leftSpace : rightSpace)}px`);
+    tools.setAttribute("data-expand", expandLeft ? "left" : "right");
+    // Keep the horizontal expansion direction separate from the dock edge:
+    // top/bottom show vertical arrows until the toolbar opens.
+    options.onToolbarDirection?.(expandLeft ? "left" : "right");
+    // Keep the full layout mounted. Only its clip changes during expansion, so
+    // closing and rapid reversals never remeasure an intermediate animation.
+    const panel = element("tool-panel");
+    const panelWidth = panel.offsetWidth || panel.getBoundingClientRect().width;
+    const panelHeight = panel.offsetHeight || panel.getBoundingClientRect().height;
+    const panelX = expandLeft ? -panelWidth : handleWidth;
+    const desiredY = (handleHeight - panelHeight) / 2;
+    const panelY = Math.max(12 - top, Math.min(height - 12 - top - panelHeight, desiredY));
+    const shellX = Math.min(0, panelX), shellY = Math.min(0, panelY);
+    const shellWidth = Math.max(handleWidth, panelX + panelWidth) - shellX;
+    const shellHeight = Math.max(handleHeight, panelY + panelHeight) - shellY;
+    for (const [name, value] of Object.entries({
+      "shell-x": shellX, "shell-y": shellY, "shell-width": shellWidth, "shell-height": shellHeight,
+      "panel-x": panelX - shellX, "panel-y": panelY - shellY,
+      "clip-top": -shellY, "clip-right": shellWidth + shellX - handleWidth,
+      "clip-bottom": shellHeight + shellY - handleHeight, "clip-left": -shellX,
+    })) tools.style.setProperty(`--${name}`, `${value}px`);
   }
 
   function saveToolPosition() {
@@ -496,10 +521,11 @@ export function createClient(options: ClientOptions = {}) {
       return;
     }
     element("tool-panel").hidden = !open;
+    tools.classList.toggle("is-open", open);
     element("tools-toggle").setAttribute("aria-expanded", String(open));
     element("tools-toggle").setAttribute("aria-label", open ? "收起桌面工具栏" : "打开桌面工具栏");
     layoutTools();
-    if (focus) (open ? element("connection") : canvas).focus({ preventScroll: true });
+    if (focus) (open ? toolHandle : canvas).focus({ preventScroll: true });
   }
 
   function validDimensions(width: number, height: number) {
@@ -561,7 +587,6 @@ export function createClient(options: ClientOptions = {}) {
     element("desktop-source").value = desktopMode;
     element("monitor-controls").hidden = desktopMode !== "physical" || desktopChoices.length === 0;
     element("monitor-source").disabled = !ready || switchingDesktop || desktopOutputs.length === 0;
-    element("refresh-desktops").disabled = refreshingDesktops || switchingDesktop;
     element("audio").disabled = !ready || desktopPaused || !audioAvailable;
     const audioLabel = audioContext && (!audioEnabled || audioContext.state === "running") ? "关闭声音" : "开启声音";
     for (const attribute of ["aria-label", "title", "data-tip"]) element("audio").setAttribute(attribute, translate(audioLabel));
@@ -661,6 +686,7 @@ export function createClient(options: ClientOptions = {}) {
     lightBook?.reset();
     mobile?.reset();
     discoveryRequest += 1;
+    discoveryController?.abort(); discoveryController = null;
     refreshingDesktops = false;
     canvas.hidden = true;
     canvas.style.setProperty("cursor", "default");
@@ -1531,11 +1557,13 @@ export function createClient(options: ClientOptions = {}) {
   });
   listen(toolHandle, "pointermove", (event) => {
     if (!toolDrag || toolDrag.id !== event.pointerId) return;
+    if (event.buttons === 0) { finishToolDrag(event); return; }
     if (!toolDrag.moved && Math.hypot(event.clientX - toolDrag.startX, event.clientY - toolDrag.startY) < 6) return;
     toolDrag.x = event.clientX - toolDrag.offsetX;
     toolDrag.y = event.clientY - toolDrag.offsetY;
     if (!toolDrag.moved) {
       toolDrag.moved = true;
+      tools.setAttribute("data-dragging", "true");
       setToolsOpen(false);
     }
     layoutTools();
@@ -1544,22 +1572,28 @@ export function createClient(options: ClientOptions = {}) {
     if (!toolDrag || toolDrag.id !== event.pointerId) return;
     const drag = toolDrag;
     toolDrag = null;
+    tools.removeAttribute("data-dragging");
     suppressToolClick = drag.moved;
-    if (drag.moved && event.type === "pointerup") {
-      const width = window.innerWidth || 1280;
-      const height = window.innerHeight || 720;
-      const centerX = Math.max(0, Math.min(width, event.clientX - drag.offsetX + 20));
-      const centerY = Math.max(0, Math.min(height, event.clientY - drag.offsetY + 24));
-      const distances: Record<string, number> = { left: centerX, right: width - centerX, top: centerY, bottom: height - centerY };
-      const edge = Object.keys(distances).reduce((nearest, candidate) => distances[candidate] < distances[nearest] ? candidate : nearest);
+    if (drag.moved && event.type !== "pointercancel") {
+      const bounds = mobile?.bounds();
+      const width = bounds?.width || window.innerWidth || 1280;
+      const height = bounds ? bounds.height - bounds.bar : window.innerHeight || 720;
+      const handleWidth = toolHandle.offsetWidth || 40, handleHeight = toolHandle.offsetHeight || 40;
+      const maxX = Math.max(12, width - handleWidth - 12), maxY = Math.max(12, height - handleHeight - 12);
+      // Capture-loss events can omit coordinates. Snap from the last visible
+      // drag position instead of reverting to the previous dock or using 0,0.
+      const left = Math.max(12, Math.min(maxX, drag.x - (bounds?.left ?? 0)));
+      const top = Math.max(12, Math.min(maxY, drag.y - (bounds?.top ?? 0)));
+      const edge = nearestToolEdge(left + handleWidth / 2, top + handleHeight / 2, width, height);
       const horizontal = edge === "top" || edge === "bottom";
-      const ratio = horizontal ? (centerX - 32) / Math.max(1, width - 64) : (centerY - 36) / Math.max(1, height - 72);
+      const ratio = horizontal ? (left - 12) / Math.max(1, maxX - 12) : (top - 12) / Math.max(1, maxY - 12);
       toolPosition = { edge, ratio: Math.max(0, Math.min(1, ratio)) };
       saveToolPosition();
     } else layoutTools();
     if (toolHandle.hasPointerCapture(event.pointerId)) toolHandle.releasePointerCapture(event.pointerId);
   }
   for (const name of ["pointerup", "pointercancel", "lostpointercapture"] as const) listen(toolHandle, name, finishToolDrag);
+  listen(window, "pointerup", finishToolDrag, { capture: true });
   listen(toolHandle, "keydown", (event) => {
     const edges: Record<string, string> = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "top", ArrowDown: "bottom" };
     if (!event.altKey || !edges[event.code]) return;
@@ -1571,7 +1605,7 @@ export function createClient(options: ClientOptions = {}) {
   listen(document, "fullscreenchange", () => layoutTools());
   const toolObserver = window.ResizeObserver ? new window.ResizeObserver(() => layoutTools()) : null;
   toolObserver?.observe(element("tool-panel"));
-  listen(element("tools-close"), "click", () => setToolsOpen(false, true));
+  toolObserver?.observe(toolHandle);
   listen(document, "keydown", (event) => {
     if (event.key === "Escape" && !options.onToolsOpen && !element("tool-panel").hidden && !event.ctrlKey && !event.altKey && !event.shiftKey) {
       event.preventDefault();
@@ -1632,7 +1666,7 @@ export function createClient(options: ClientOptions = {}) {
       release();
       keyboardCaptureWanted = false;
       setToolsOpen(true);
-      element("connection").focus();
+      toolHandle.focus();
       return false;
     }
     // A local Command+V must not become a bare Super tap in the remote
@@ -1740,25 +1774,27 @@ export function createClient(options: ClientOptions = {}) {
     const output = element("monitor-source").value;
     if (desktopMode === "physical" && desktopOutputs.some((monitor) => monitor.name === output)) switchDesktop("physical", output);
   });
-  listen(element("refresh-desktops"), "click", async () => {
-    if (refreshingDesktops || switchingDesktop || !desktopChoices.length) return;
+  async function refreshDesktops() {
+    if (destroyed || document.hidden || refreshingDesktops || switchingDesktop) return;
     const request = ++discoveryRequest;
+    const controller = new AbortController();
+    discoveryController = controller;
     refreshingDesktops = true;
-    updateControls();
     try {
-      const response = await fetch(new URL("./desktops", location.href), { credentials: "same-origin", cache: "no-store" });
+      const response = await fetch(new URL("./desktops", location.href), {
+        credentials: "same-origin", cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]),
+      });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const value = await response.json();
       if (request !== discoveryRequest || destroyed) return;
       if (!value || !Array.isArray(value.desktops)) throw new Error("无效的桌面列表");
-      desktopStatus(ready ? `已连接${desktopLabel()}${selectedOutput ? ` · ${selectedOutput}` : ""}。` : "列表已刷新，当前连接尚未确认。");
       populateDesktops(value);
     } catch (error) {
-      if (request === discoveryRequest && !destroyed) desktopStatus(`刷新失败：${errorMessage(error)}。仍可切回虚拟桌面。`);
+      if (request === discoveryRequest && !destroyed && !controller.signal.aborted) desktopStatus(`刷新失败：${errorMessage(error)}。仍可切回虚拟桌面。`);
     } finally {
-      if (request === discoveryRequest) { refreshingDesktops = false; updateControls(); }
+      if (request === discoveryRequest) { discoveryController = null; refreshingDesktops = false; updateControls(); }
     }
-  });
+  }
   async function displayMode(mode: string) {
     pictureZoom.reset();
     try {
@@ -1978,6 +2014,7 @@ export function createClient(options: ClientOptions = {}) {
     screenRotation.dispose();
     disconnect();
     destroyed = true;
+    discoveryController?.abort();
     lightBook?.dispose();
     mobile?.dispose();
     pictureZoom.dispose();
@@ -2083,7 +2120,7 @@ export function createClient(options: ClientOptions = {}) {
   updateControls();
   if (drawing) connect();
   else { disconnect(); message("Canvas rendering is unavailable in this browser."); }
-  return { destroy, setLightBook, refreshLanguage() {
+  return { destroy, setLightBook, refreshDesktops, refreshLanguage() {
     for (const [id, text] of texts) {
       element(id).textContent = translate(text);
       if (id === "state" || id === "performance" || id === "video-details" || id === "message" || id === "desktop-status") options.onStatus?.(id, translate(text));

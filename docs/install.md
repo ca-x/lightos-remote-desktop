@@ -96,6 +96,16 @@ or run a web development server on the target. When compiling from source, run
 frontend license notices in release archives. The appearance section remembers
 language/theme locally and never changes the remote desktop's own theme.
 
+For a Hyprland host, rebuild the cursor adapter against that host's matching
+headers with `bash scripts/build-hyprland-cursor.sh` and include the resulting
+`lightos-cursor.so` alongside the executable. Do not reuse an older read-only
+cursor adapter with a host that requires cursor-free capture. Restarting the
+HTTP service does not replace a plugin already loaded into Hyprland: release
+active desktop-control connections, reload the adapter in the exact selected
+compositor instance, and verify its loaded file against the installed artifact.
+Temporary development plugins must not silently take precedence over the
+installed adapter. The desktop owner and applications can remain running.
+
 Native capture uses standard Wayland protocols/libwayshot, with **Cage/wlroots**
 as the parent compositor for nested Hyprland. Install the system `cage` and
 Hyprland packages; Weston is not the selected parent due to protocol-version

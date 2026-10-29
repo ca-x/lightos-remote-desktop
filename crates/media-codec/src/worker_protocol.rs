@@ -44,6 +44,8 @@ pub enum Reply {
         codec: Option<String>,
     },
     Error(String),
+    /// Sent only when the parent explicitly asks for shared-frame negotiation.
+    ReadySharedFrame,
 }
 
 pub fn pack(value: &impl Serialize) -> Result<Vec<u8>> {

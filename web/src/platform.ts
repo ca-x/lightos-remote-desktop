@@ -8,3 +8,7 @@ export function isMobilePlatform() {
     || /\b(iPhone|iPad|iPod)\b/i.test(platform) || /\b(iPhone|iPad|iPod)\b/i.test(userAgent)
     || (/\bMac/i.test(platform) && (browser.maxTouchPoints ?? 0) > 1);
 }
+
+export function isDesktopClient() {
+  return /\b(?:LazyCatClientDesktop|lzc-client-desktop)\//i.test(navigator.userAgent || "");
+}

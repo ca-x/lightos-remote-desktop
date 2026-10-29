@@ -66,6 +66,13 @@ fn handle(
                 fps: settings.fps,
             };
             *encoder = Some(NativeEncoder::new(backend, settings, rate)?);
+            #[cfg(target_os = "linux")]
+            if shared.is_some()
+                && std::env::var_os(wire::shared_frame::NEGOTIATE_ENV).as_deref()
+                    == Some(std::ffi::OsStr::new("1"))
+            {
+                return Ok(Reply::ReadySharedFrame);
+            }
             Ok(Reply::Ready)
         }
         Request::Frame { pixels, rate } => {

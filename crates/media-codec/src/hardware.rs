@@ -182,12 +182,14 @@ impl Worker {
         let mut command = Command::new(path);
         #[cfg(target_os = "linux")]
         let shared = {
-            use wire::shared_frame::{CHILD_FD, ENV, SharedFrame};
+            use wire::shared_frame::{CHILD_FD, ENV, NEGOTIATE_ENV, SharedFrame};
             let shared = frame_size.and_then(|length| SharedFrame::new(length).ok());
             command.env_remove(ENV);
+            command.env_remove(NEGOTIATE_ENV);
             if let Some(frame) = &shared {
                 let fd = frame.fd();
                 command.env(ENV, CHILD_FD.to_string());
+                command.env(NEGOTIATE_ENV, "1");
                 // SAFETY: only async-signal-safe descriptor operations run
                 // between fork and exec. The parent keeps the original file.
                 unsafe {
@@ -300,20 +302,34 @@ impl VideoEncoder for HardwareEncoder {
             if self.worker.is_none() {
                 let frame_size = self.settings.width as usize * self.settings.height as usize * 4;
                 let mut worker = Worker::spawn(&self.factory.path, Some(frame_size))?;
+                let reply = worker
+                    .exchange(
+                        Request::Init {
+                            backend: self.backend,
+                            settings: self.settings,
+                        },
+                        self.factory.deadlines.init,
+                    )
+                    .await?;
                 ensure!(
-                    matches!(
-                        worker
-                            .exchange(
-                                Request::Init {
-                                    backend: self.backend,
-                                    settings: self.settings
-                                },
-                                self.factory.deadlines.init
-                            )
-                            .await?,
-                        Reply::Ready
-                    ),
+                    matches!(reply, Reply::Ready | Reply::ReadySharedFrame),
                     "invalid codec initialization response"
+                );
+                #[cfg(target_os = "linux")]
+                if matches!(reply, Reply::ReadySharedFrame) {
+                    ensure!(
+                        worker.shared.is_some(),
+                        "worker acknowledged an unavailable shared frame"
+                    );
+                } else {
+                    // Older workers ignore the inherited descriptor. Continue
+                    // sending complete pixels over the compatible v1 protocol.
+                    worker.shared = None;
+                }
+                #[cfg(not(target_os = "linux"))]
+                ensure!(
+                    matches!(reply, Reply::Ready),
+                    "unexpected shared-frame acknowledgement"
                 );
                 self.worker = Some(worker);
             }

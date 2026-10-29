@@ -401,11 +401,10 @@ impl Reusable {
             self.state.transform = 0;
             let frame = Pending(self.session.create_frame(&self.queue.handle(), ()));
             frame.0.attach_buffer(&self.buffer.as_ref().unwrap().handle);
-            // This buffer is never modified by the client. Only its first
-            // capture needs client damage; the compositor tracks source damage.
-            if fresh {
-                frame.0.damage_buffer(0, 0, width as i32, height as i32);
-            }
+            // We do not maintain accumulated damage between capture requests.
+            // The protocol requires full buffer damage in that case, even when
+            // the allocation is reused; partial updates can retain black areas.
+            frame.0.damage_buffer(0, 0, width as i32, height as i32);
             frame.0.capture();
             while !self.state.ready && !self.state.failed {
                 self.queue.blocking_dispatch(&mut self.state)?;

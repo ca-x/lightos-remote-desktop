@@ -18,7 +18,7 @@ beforeEach(async () => {
   vi.mocked(createClient).mockImplementation(() => {
     expect(document.getElementById("tools-toggle")).not.toBeNull();
     expect(document.getElementById("tool-panel")).not.toBeNull();
-    return { destroy, refreshLanguage, layoutTools, setLightBook: vi.fn() };
+    return { destroy, refreshLanguage, layoutTools, refreshDesktops: async () => {}, setLightBook: vi.fn() };
   });
 });
 
@@ -73,7 +73,7 @@ describe("React shell, menus and dialog lifecycle", () => {
     fireEvent.click(within(settings).getByRole("tab", { name: "Display" }));
     expect(document.getElementById("width")).toBe(width);
     expect(width.value).toBe("1920");
-    fireEvent.click(within(settings).getByRole("button", { name: "Done" }));
+    fireEvent.click(within(settings).getByRole("button", { name: "Close settings" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Settings" })).toBeNull());
     expect(document.getElementById("width")).toBe(width);
     expect(createClient).toHaveBeenCalledTimes(1);
@@ -149,21 +149,24 @@ describe("React shell, menus and dialog lifecycle", () => {
   });
 
   it.each([
-    ["top", "down", "up"], ["bottom", "up", "down"],
-    ["left", "right", "left"], ["right", "left", "right"],
-  ] as const)("points the transparent trigger toward the toolbar when docked %s and toward the edge when expanded", async (edge, expand, collapse) => {
+    ["top", "right"], ["bottom", "right"],
+    ["left", "right"], ["right", "left"],
+  ] as const)("keeps the same directional trigger mounted when toggling at the %s edge", async (edge, expand) => {
     render(<App />);
     await waitFor(() => expect(createClient).toHaveBeenCalledTimes(1));
-    act(() => vi.mocked(createClient).mock.calls[0][0]?.onToolbarDock?.(edge));
+    act(() => {
+      vi.mocked(createClient).mock.calls[0][0]?.onToolbarDock?.(edge);
+      vi.mocked(createClient).mock.calls[0][0]?.onToolbarDirection?.(expand);
+    });
     const toggle = screen.getByRole("button", { name: "Open desktop tools" });
-    expect(toggle.querySelector(`.lucide-chevron-${expand}`)).not.toBeNull();
+    expect(toggle.querySelector(".lucide-chevron-right")).not.toBeNull();
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(toggle);
-    expect(toggle.querySelector(`.lucide-chevron-${collapse}`)).not.toBeNull();
+    expect(toggle.querySelector(".lucide-chevron-right")).not.toBeNull();
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    expect(document.getElementById("tools-close")!.querySelector(`.lucide-chevron-${collapse}`)).not.toBeNull();
+    expect(document.getElementById("tools-close")).toBeNull();
     fireEvent.click(toggle);
-    expect(toggle.querySelector(`.lucide-chevron-${expand}`)).not.toBeNull();
+    expect(toggle.querySelector(".lucide-chevron-right")).not.toBeNull();
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(createClient).toHaveBeenCalledTimes(1);
   });
@@ -203,7 +206,7 @@ it("places full keyboard mode below theme, off by default, and only enables it f
   expect(localStorage.getItem("lightos-desktop-lightbook")).toBe("on");
   expect(document.querySelector(".lightbook-brand")!.textContent).toBe("LightOS");
   expect(document.querySelector(".lightbook-deck")!.hasAttribute("hidden")).toBe(false);
-  fireEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+  fireEvent.click(within(dialog).getByRole("button", { name: "Close settings" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Settings" })).toBeNull());
   expect(within(document.querySelector(".lightbook-deck") as HTMLElement).getAllByRole("button",{name:"Super"})).toHaveLength(2);
 });

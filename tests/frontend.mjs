@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { setMaxListeners } from "node:events";
 import { stripTypeScriptTypes } from "node:module";
 
 const platformSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/platform.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
@@ -54,7 +55,7 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}, pixelR
     addEventListener(name, callback, options) {
       if (!this.handlers.has(name)) this.handlers.set(name, new Set());
       this.handlers.get(name).add(callback);
-      options?.signal?.cleanups.push(() => this.handlers.get(name).delete(callback));
+      options?.signal?.addEventListener("abort", () => this.handlers.get(name).delete(callback), { once: true });
     }
     fire(name, properties = {}) {
       const event = { target: this, type: name, preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() {}, ...properties };
@@ -72,9 +73,8 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}, pixelR
     releasePointerCapture(id) { this.captures.delete(id); this.fire("lostpointercapture", { pointerId: id }); }
     clientHeight = 100;
   }
-  class AbortController {
-    signal = { cleanups: [] };
-    abort() { this.signal.cleanups.splice(0).forEach((cleanup) => cleanup()); }
+  class AbortController extends globalThis.AbortController {
+    constructor() { super(); setMaxListeners(0, this.signal); }
   }
   const nodes = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map((match) => [match[1], new Target()]));
   const document = new Target();
@@ -151,7 +151,7 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}, pixelR
   }
   window.AudioContext = AudioContext;
   const navigator = { platform, maxTouchPoints: touchPoints, clipboard: { readText: async () => "local text" } };
-  const context = vm.createContext({ document, window, navigator, AbortController, WebSocket, clientOptions,
+  const context = vm.createContext({ document, window, navigator, AbortController, AbortSignal, WebSocket, clientOptions,
     URL, location: { href: `https://desktop.test${pathname}`, pathname, protocol: "https:" },
     ArrayBuffer, Uint8Array, DataView, TextEncoder, Blob, performance: { now: () => now },
     localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
@@ -263,7 +263,7 @@ test("toolbar requests delegate to the Headless UI owner", () => {
   app.fireKey("Escape", { ctrlKey: true, altKey: true, shiftKey: true });
   assert.equal(open, true);
   assert.equal(requests.at(-1).focus, false);
-  app.nodes["tools-close"].fire("click");
+  app.nodes.desktop.fire("pointerdown", { button: 0, pointerId: 1, clientX: 50, clientY: 50 });
   assert.equal(open, false);
   app.run("client.destroy()");
   app.paint();
@@ -508,7 +508,7 @@ test("desktop discovery refresh stays prefix-relative, reports errors and ignore
   desktopReady(socket, "virtual", { desktops: [desktopChoices[0],
     { mode: "physical", label: "物理桌面", available: false, reason: "没有可用会话" }] });
   app.run("globalThis.discoveryRequests = []; globalThis.fetch = (url, options) => new Promise(resolve => discoveryRequests.push({url: String(url), options, resolve}))");
-  app.nodes["refresh-desktops"].fire("click");
+  app.run("void client.refreshDesktops()");
   const request = app.run("discoveryRequests[0]");
   assert.equal(request.url, "https://desktop.test/gateway/opaque/desktops");
   assert.equal(request.options.credentials, "same-origin");
@@ -516,7 +516,7 @@ test("desktop discovery refresh stays prefix-relative, reports errors and ignore
   await flush();
   assert.equal(app.nodes["desktop-source"].children[1].disabled, false);
   assert.equal(app.nodes["monitor-controls"].hidden, true);
-  app.nodes["refresh-desktops"].fire("click");
+  app.run("void client.refreshDesktops()");
   const stale = app.run("discoveryRequests[1]");
   app.nodes["desktop-source"].value = "physical";
   app.nodes["desktop-source"].fire("change");
@@ -527,7 +527,7 @@ test("desktop discovery refresh stays prefix-relative, reports errors and ignore
   const physical = app.sockets.at(-1);
   physical.open();
   desktopReady(physical, "physical");
-  app.nodes["refresh-desktops"].fire("click");
+  app.run("void client.refreshDesktops()");
   app.run("discoveryRequests[2]").resolve({ ok: false, status: 503 });
   await flush();
   assert.match(app.nodes["desktop-status"].textContent, /刷新失败.*503/);
@@ -610,17 +610,17 @@ test("toolbar drags to all four edges, suppresses drag click and restores persis
     assert.equal(JSON.parse(storage.get("lightos-desktop-toolbar-position")).edge, edge);
   }
   const restored = harness("/", storage);
-  assert.equal(restored.nodes.tools.style.values["--tool-y"], "660px");
+  assert.equal(restored.nodes.tools.style.values["--tool-y"], "668px");
   handle.fire("keydown", { altKey: true, code: "ArrowLeft" });
   handle.fire("click", { detail: 0 });
   assert.equal(app.nodes["tool-panel"].hidden, false);
   assert.equal(app.nodes.tools.style.values["--tool-x"], "12px");
-  assert.equal(app.nodes.tools.style.values["--panel-x"], "60px");
+  assert.equal(app.nodes.tools.style.values["--panel-x"], "40px");
   app.window.innerWidth = 360;
   app.window.innerHeight = 240;
   app.window.fire("resize");
-  assert.equal(app.nodes.tools.style.values["--tool-y"], "96px");
-  assert.ok(parseFloat(app.nodes.tools.style.values["--panel-y"]) >= 12);
+  assert.equal(app.nodes.tools.style.values["--tool-y"], "100px");
+  assert.ok(parseFloat(app.nodes.tools.style.values["--tool-y"]) + parseFloat(app.nodes.tools.style.values["--shell-y"]) >= 12);
 });
 
 test("toolbar tap opens without moving, cancelled drag restores location and releases capture", () => {
@@ -875,7 +875,7 @@ test("floating tools start collapsed, close on desktop click and remain keyboard
   assert.equal(app.nodes["tool-panel"].hidden, true);
   app.fireKey("Escape", { ctrlKey: true, altKey: true, shiftKey: true });
   assert.equal(app.nodes["tool-panel"].hidden, false);
-  app.nodes["tools-close"].fire("click");
+  app.nodes["tools-toggle"].fire("click");
   assert.equal(app.nodes["tool-panel"].hidden, true);
   assert.equal(app.document.activeElement, app.nodes.desktop);
 });
@@ -1303,7 +1303,7 @@ test("normal pointer release keeps held modifiers; keyboard escape returns focus
   assert.equal(socket.sent.some((command) => command.type === "release"), false);
   app.fireKey("Escape", { ctrlKey: true, altKey: true, shiftKey: true });
   assert.equal(socket.sent.at(-1).type, "release");
-  assert.equal(app.document.activeElement, app.nodes.connection);
+  assert.equal(app.document.activeElement, app.nodes["tools-toggle"]);
 });
 
 test("missing ready message times out without opening a concurrent socket", () => {
@@ -1957,8 +1957,8 @@ test("toolbar docking uses untransformed panel dimensions during entry animation
   app.nodes["tool-panel"].offsetWidth = 300;
   app.nodes["tool-panel"].offsetHeight = 150;
   app.nodes["tools-toggle"].fire("click", { detail: 0 });
-  assert.equal(app.nodes.tools.style.values["--panel-x"], "920px");
-  assert.equal(app.nodes.tools.style.values["--panel-y"], "285px");
+  assert.equal(app.nodes.tools.style.values["--shell-x"], "-300px");
+  assert.equal(app.nodes.tools.style.values["--shell-y"], "-55px");
 });
 
 

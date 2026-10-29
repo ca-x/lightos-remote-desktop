@@ -67,7 +67,7 @@ describe("MCP settings", () => {
     expand();
     await screen.findByLabelText("Token name");
     fireEvent.change(screen.getByLabelText("Token name"), { target: { value: "Agent one" } });
-    fireEvent.change(screen.getByLabelText("Access"), { target: { value: "control" } });
+    fireEvent.change(document.getElementById("mcp-token-scope")!, { target: { value: "control" } });
     fireEvent.submit(screen.getByRole("form", { name: "Create an MCP token" }));
     const field = await screen.findByRole("textbox", { name: "New MCP token" }) as HTMLTextAreaElement;
     expect(field.value).toBe(secret);
@@ -77,7 +77,7 @@ describe("MCP settings", () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(secret);
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(screen.queryByRole("textbox", { name: "New MCP token" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    fireEvent.focus(window);
     await waitFor(() => expect((screen.getByRole("button", { name: "Revoke Agent one" }) as HTMLButtonElement).disabled).toBe(false));
     expect(screen.queryByDisplayValue(secret)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Revoke Agent one" }));

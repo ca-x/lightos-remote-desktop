@@ -8,6 +8,7 @@ use std::{
 };
 
 pub const ENV: &str = "LIGHTOS_CODEC_FRAME_FD";
+pub const NEGOTIATE_ENV: &str = "LIGHTOS_CODEC_NEGOTIATE_SHARED_FRAME";
 pub const CHILD_FD: RawFd = 3;
 const SIZE_SEALS: i32 = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;
 const MAX_PIXELS: usize = 3840 * 2160 * 4;
