@@ -85,11 +85,13 @@ can switch after validation, while Software and JPEG choices remain unchanged.
 Only one hardware probe batch runs at a time. Results expire after ten minutes
 when any platform-supported backend failed, otherwise after one hour; a later
 connection triggers a refresh. Replacing the helper or changing detected GPU
-device identities invalidates the cache on the next connection. These identities
-only invalidate results; they never prove encoder availability. A permission or
-driver change without a detectable identity change becomes eligible for the TTL
-refresh, or an explicit transport restart; the persistent desktop owner does not
-need a restart. Missing helpers, loader
+device identities invalidates the cache on the next connection. Linux identities
+include NVIDIA nodes, DRM device/driver bindings, bounded driver-version contents,
+device ownership/change times and the service's device overrides. These identities
+only invalidate results; they never prove encoder availability. Undetected changes
+still become eligible for the TTL refresh or an explicit transport restart;
+changing a running service's supplementary groups requires the usual service
+restart. The persistent desktop owner does not need a restart. Missing helpers, loader
 failures, device errors and timeouts are reported as unavailable. The browser
 also checks the actual H.264 profile. A failed or rejected backend is excluded
 for that connection, with a fresh IDR on the next backend; software H.264 is
@@ -104,6 +106,50 @@ updates and may have a keyframe cost. This is RGBA conversion/upload through a
 pipe, not zero copy. Driver initialization, probe and encode calls have parent
 process deadlines; a broken worker is terminated. Only raw captures are replaced
 before encoding. Emitted predictive packets retain their order.
+
+## Dedicated and hybrid GPU selection
+
+By default VA-API validates all render nodes in order, including GPUs without
+connected displays. NVENC retains FFmpeg's automatic device selection. Capture
+and encoding use CPU RGBA frames, so their GPUs need not be the same adapter.
+This is not a GPU-to-GPU or DMA-BUF zero-copy pipeline.
+
+For an adapter that fails automatic selection or a multi-GPU machine where a
+particular encoder is preferred, the host administrator can set:
+
+| Transport environment variable | Value |
+| --- | --- |
+| `LIGHTOS_VAAPI_DEVICE` | Absolute UTF-8 render-device path; stable `/dev/dri/by-path/*-render` links are supported. |
+| `LIGHTOS_NVENC_GPU` | Nonnegative FFmpeg/CUDA GPU index, `0` through `2147483647`; not a DRM render-node number. |
+
+These are host-only settings, not browser parameters. For a managed Linux install,
+put the desired variable in a systemd drop-in for
+`lightos-remote-desktop.service`, for example:
+
+```ini
+[Service]
+Environment=LIGHTOS_VAAPI_DEVICE=/dev/dri/by-path/pci-0000:03:00.0-render
+```
+
+Use the actual path/index on the host; the example is not hardware detection.
+The environment is read when the transport starts. Apply configuration through
+the normal transport-service lifecycle, not by restarting
+`lightos-remote-desktop-session.service` and closing desktop applications.
+
+An unset variable preserves automatic behavior; an empty, malformed, unavailable
+or denied override makes only that hardware backend unavailable. A pinned VA-API
+probe never tries another render node. NVENC sets and reads back FFmpeg's `gpu`
+option. Probe and initialization receive the same typed selection, and rate
+restarts retain it. The existing complete encode/decode probe is still required;
+neither a valid index nor successful option readback proves that the GPU encodes.
+Auto may use another verified backend or software; an explicitly selected backend
+retains its existing software fallback policy.
+
+Device-specific requests are distinct additions to the local worker protocol.
+An older helper rejects them and the core falls back instead of silently ignoring
+the pin. With no overrides, the original version-1 requests remain compatible.
+Upgrade both packages to use device selection. No driver installation, device
+permission change, PRIME setting or desktop switch is performed automatically.
 
 ## Verification limits
 

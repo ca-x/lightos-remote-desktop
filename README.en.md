@@ -78,6 +78,10 @@ retains its existing virtual desktops and systemd services. See
 Microphone uplink, file transfer, gamepads and simultaneous multi-monitor control
 are not yet supported.
 
+For rotated outputs, Portal input and dedicated/hybrid GPU limits, see
+[desktop and GPU compatibility](docs/desktop-gpu-compatibility.md) and
+[encoder device selection](docs/hardware-encoding.md#dedicated-and-hybrid-gpu-selection).
+
 ## Linux: AUR installation and updates
 
 The package is `lightos-remoted-bin`; the command is `lightos-remoted` and the

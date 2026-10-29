@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail, ensure};
 use ffmpeg_next::{self as ffmpeg, Dictionary, Packet, codec, encoder, ffi, format::Pixel, frame};
 use media_codec::{
     EncodedFrame, EncoderBackend, EncoderRate, EncoderSettings, default_bitrate, h264_packet_info,
-    worker_protocol::{validate_pixels, validate_settings},
+    worker_protocol::{EncoderDevice, validate_pixels, validate_settings},
 };
 use std::{
     ffi::CString,
@@ -210,18 +210,26 @@ pub struct NativeEncoder {
     scaler: PixelConverter,
     frames: CpuFrames,
     pts: i64,
-    vaapi_device: Option<PathBuf>,
+    device: Option<EncoderDevice>,
 }
 impl NativeEncoder {
     pub fn new(
         backend: EncoderBackend,
         settings: EncoderSettings,
         rate: EncoderRate,
+        device: Option<&EncoderDevice>,
     ) -> Result<Self> {
         ensure!(
             backend.is_hardware() && backend.supported_platform(),
             "unsupported hardware backend/platform"
         );
+        if let Some(device) = device {
+            device.validate()?;
+            ensure!(
+                device.backend() == backend,
+                "encoder device/backend mismatch"
+            );
+        }
         let name = match backend {
             EncoderBackend::Vaapi => "h264_vaapi",
             EncoderBackend::Nvenc => "h264_nvenc",
@@ -232,15 +240,20 @@ impl NativeEncoder {
         if backend == EncoderBackend::Vaapi {
             // Validate the complete encoder and rate-restart path per device.
             // A render node that merely creates a frame pool is not sufficient.
-            return try_devices(vaapi_devices()?, |device| {
+            return try_devices(vaapi_devices(device)?, |path| {
+                let device = EncoderDevice::Vaapi(path.to_owned());
                 let mut candidate =
-                    Self::open_on_device(name, backend, settings, rate, Some(device))?;
+                    Self::open_on_device(name, backend, settings, rate, Some(&device))?;
                 verify(&mut candidate, settings, rate)?;
                 drop(candidate);
-                Self::open_on_device(name, backend, settings, rate, Some(device))
+                Self::open_on_device(name, backend, settings, rate, Some(&device))
             });
         }
-        Self::open(name, backend, settings, rate)
+        if device.is_some() {
+            Self::open_on_device(name, backend, settings, rate, device)
+        } else {
+            Self::open(name, backend, settings, rate)
+        }
     }
     fn open(
         name: &'static str,
@@ -255,7 +268,7 @@ impl NativeEncoder {
         backend: EncoderBackend,
         settings: EncoderSettings,
         rate: EncoderRate,
-        device: Option<&Path>,
+        device: Option<&EncoderDevice>,
     ) -> Result<Self> {
         validate_settings(settings)?;
         rate.validate()?;
@@ -294,14 +307,16 @@ impl NativeEncoder {
             }
         }
         let upload = if backend == EncoderBackend::Vaapi {
-            Some(vaapi_frames(
-                &mut encoder,
-                settings,
-                device.context("missing VA-API device")?,
-            )?)
+            let Some(EncoderDevice::Vaapi(path)) = device else {
+                bail!("missing VA-API device");
+            };
+            Some(vaapi_frames(&mut encoder, settings, path)?)
         } else {
             None
         };
+        if let Some(EncoderDevice::Nvenc(index)) = device {
+            select_nvenc_gpu(&mut encoder, *index)?;
+        }
         let mut opts = Dictionary::new();
         match backend {
             EncoderBackend::Nvenc => {
@@ -375,7 +390,7 @@ impl NativeEncoder {
             scaler,
             frames: CpuFrames::new(settings.width, settings.height),
             pts: 0,
-            vaapi_device: device.map(Path::to_owned),
+            device: device.cloned(),
         })
     }
     pub fn encode(&mut self, pixels: &[u8], rate: EncoderRate) -> Result<EncodedFrame> {
@@ -389,7 +404,7 @@ impl NativeEncoder {
                 self.backend,
                 self.settings,
                 rate,
-                self.vaapi_device.as_deref(),
+                self.device.as_ref(),
             )?;
         }
         self.frames.convert(pixels, &mut self.scaler)?;
@@ -445,7 +460,35 @@ fn check(status: i32, action: &str) -> Result<()> {
     }
     Ok(())
 }
-fn vaapi_devices() -> Result<Vec<PathBuf>> {
+fn select_nvenc_gpu(encoder: &mut encoder::video::Video, index: u32) -> Result<()> {
+    ensure!(index <= i32::MAX as u32, "invalid NVENC GPU index");
+    unsafe {
+        let private = (*encoder.as_mut_ptr()).priv_data;
+        ensure!(!private.is_null(), "missing NVENC private context");
+        check(
+            ffi::av_opt_set_int(private, c"gpu".as_ptr(), i64::from(index), 0),
+            "select NVENC GPU",
+        )?;
+        let mut selected = -1;
+        check(
+            ffi::av_opt_get_int(private, c"gpu".as_ptr(), 0, &mut selected),
+            "verify NVENC GPU selection",
+        )?;
+        ensure!(
+            selected == i64::from(index),
+            "NVENC GPU selection was ignored"
+        );
+    }
+    Ok(())
+}
+fn vaapi_devices(device: Option<&EncoderDevice>) -> Result<Vec<PathBuf>> {
+    if let Some(device) = device {
+        device.validate()?;
+        let EncoderDevice::Vaapi(path) = device else {
+            bail!("not a VA-API device");
+        };
+        return Ok(vec![path.clone()]);
+    }
     let mut candidates: Vec<_> = std::fs::read_dir("/dev/dri")
         .context("read VA-API render nodes")?
         .filter_map(Result::ok)
@@ -508,7 +551,7 @@ fn vaapi_frames(
         Ok(frames)
     }
 }
-pub fn probe(backend: EncoderBackend) -> Result<String> {
+pub fn probe(backend: EncoderBackend, device: Option<&EncoderDevice>) -> Result<String> {
     let settings = EncoderSettings {
         width: 640,
         height: 360,
@@ -520,7 +563,7 @@ pub fn probe(backend: EncoderBackend) -> Result<String> {
         fps: 30,
     };
     verify(
-        &mut NativeEncoder::new(backend, settings, rate)?,
+        &mut NativeEncoder::new(backend, settings, rate, device)?,
         settings,
         rate,
     )
@@ -598,6 +641,58 @@ fn verify(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn pinned_vaapi_failure_never_tries_a_different_adapter() {
+        let selected =
+            EncoderDevice::Vaapi(PathBuf::from("/dev/dri/by-path/pci-0000:03:00.0-render"));
+        let candidates = vaapi_devices(Some(&selected)).unwrap();
+        assert_eq!(
+            candidates,
+            [PathBuf::from("/dev/dri/by-path/pci-0000:03:00.0-render")]
+        );
+        let mut attempted = Vec::new();
+        let result: Result<()> = try_devices(candidates, |path| {
+            attempted.push(path.to_owned());
+            bail!("selected adapter failed the complete frame probe")
+        });
+        assert!(result.is_err());
+        assert_eq!(attempted.len(), 1);
+        assert!(vaapi_devices(Some(&EncoderDevice::Nvenc(1))).is_err());
+        assert!(vaapi_devices(Some(&EncoderDevice::Vaapi(PathBuf::from("renderD129")))).is_err());
+    }
+
+    #[test]
+    fn nvenc_gpu_option_is_set_and_read_back_without_initializing_a_driver() {
+        ffmpeg::init().unwrap();
+        let Some(codec) = encoder::find_by_name("h264_nvenc") else {
+            eprintln!("FFmpeg build has no NVENC encoder; device option test skipped");
+            return;
+        };
+        let mut context = codec::context::Context::new_with_codec(codec)
+            .encoder()
+            .video()
+            .unwrap();
+        for index in [0, 1, i32::MAX as u32] {
+            select_nvenc_gpu(&mut context, index).unwrap();
+            let mut actual = -1;
+            unsafe {
+                check(
+                    ffi::av_opt_get_int(
+                        (*context.as_mut_ptr()).priv_data,
+                        c"gpu".as_ptr(),
+                        0,
+                        &mut actual,
+                    ),
+                    "read selected GPU",
+                )
+                .unwrap();
+            }
+            assert_eq!(actual, i64::from(index));
+        }
+        assert!(select_nvenc_gpu(&mut context, u32::MAX).is_err());
+    }
     use ffmpeg::software::scaling;
 
     #[test]

@@ -2,12 +2,40 @@
 use crate::{EncoderBackend, EncoderRate, EncoderSettings};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 pub const VERSION: u16 = 1;
 pub const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 
 #[cfg(target_os = "linux")]
 pub mod shared_frame;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EncoderDevice {
+    Vaapi(PathBuf),
+    Nvenc(u32),
+}
+impl EncoderDevice {
+    pub fn backend(&self) -> EncoderBackend {
+        match self {
+            Self::Vaapi(_) => EncoderBackend::Vaapi,
+            Self::Nvenc(_) => EncoderBackend::Nvenc,
+        }
+    }
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Self::Vaapi(path) => ensure!(
+                path.is_absolute() && path.to_str().is_some_and(|value| !value.contains('\0')),
+                "LIGHTOS_VAAPI_DEVICE must be an absolute UTF-8 device path"
+            ),
+            Self::Nvenc(index) => ensure!(
+                *index <= i32::MAX as u32,
+                "LIGHTOS_NVENC_GPU must be a nonnegative GPU index within i32 range"
+            ),
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(bound(
@@ -26,6 +54,13 @@ pub enum RequestPayload<P> {
         #[serde(with = "serde_bytes")]
         pixels: P,
         rate: EncoderRate,
+    },
+    ProbeDevice {
+        device: EncoderDevice,
+    },
+    InitDevice {
+        device: EncoderDevice,
+        settings: EncoderSettings,
     },
 }
 pub type Request = RequestPayload<Vec<u8>>;
@@ -88,6 +123,60 @@ pub fn validate_pixels(settings: EncoderSettings, pixels: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pinned_devices_roundtrip_but_are_rejected_by_legacy_workers() {
+        #[derive(Serialize, Deserialize)]
+        enum LegacyRequest {
+            Probe {
+                backend: EncoderBackend,
+            },
+            Init {
+                backend: EncoderBackend,
+                settings: EncoderSettings,
+            },
+            Frame {
+                pixels: Vec<u8>,
+                rate: EncoderRate,
+            },
+        }
+        let settings = EncoderSettings {
+            width: 640,
+            height: 360,
+            fps: 30,
+            quality: 75,
+        };
+        for device in [
+            EncoderDevice::Vaapi(PathBuf::from("/dev/dri/renderD129")),
+            EncoderDevice::Nvenc(1),
+        ] {
+            for request in [
+                RequestRef::ProbeDevice {
+                    device: device.clone(),
+                },
+                RequestRef::InitDevice { device, settings },
+            ] {
+                let bytes = pack(&request).unwrap();
+                assert!(unpack::<LegacyRequest>(&bytes).is_err());
+                let decoded: Request = unpack(&bytes).unwrap();
+                assert_eq!(pack(&decoded).unwrap(), bytes);
+            }
+        }
+        for bytes in [
+            pack(&LegacyRequest::Probe {
+                backend: EncoderBackend::Nvenc,
+            })
+            .unwrap(),
+            pack(&LegacyRequest::Init {
+                backend: EncoderBackend::Vaapi,
+                settings,
+            })
+            .unwrap(),
+        ] {
+            let decoded: Request = unpack(&bytes).unwrap();
+            assert_eq!(pack(&decoded).unwrap(), bytes);
+        }
+    }
     #[test]
     fn byte_reply_is_compatible_with_legacy_worker_in_both_directions() {
         #[derive(Debug, Serialize, Deserialize)]

@@ -7,7 +7,13 @@ use crate::{
 use anyhow::{Context, Result, bail, ensure};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt, future::BoxFuture};
-use std::{path::PathBuf, process::Stdio, sync::Arc, time::Duration};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::Arc,
+    time::Duration,
+};
 use tokio::{
     process::{Child, ChildStdin, ChildStdout, Command},
     time::timeout,
@@ -33,6 +39,46 @@ impl Default for WorkerDeadlines {
 pub struct HardwareEncoders {
     path: PathBuf,
     deadlines: WorkerDeadlines,
+    devices: DeviceOverrides,
+}
+#[derive(Clone, Default)]
+struct DeviceOverrides {
+    vaapi: Option<OsString>,
+    nvenc: Option<OsString>,
+}
+impl DeviceOverrides {
+    fn from_environment() -> Self {
+        Self {
+            vaapi: std::env::var_os("LIGHTOS_VAAPI_DEVICE"),
+            nvenc: std::env::var_os("LIGHTOS_NVENC_GPU"),
+        }
+    }
+    fn device(&self, backend: EncoderBackend) -> Result<Option<wire::EncoderDevice>> {
+        let device = match backend {
+            EncoderBackend::Vaapi => self.vaapi.as_ref().map(|value| {
+                let value = value
+                    .to_str()
+                    .context("LIGHTOS_VAAPI_DEVICE must be UTF-8")?;
+                Ok(wire::EncoderDevice::Vaapi(PathBuf::from(value)))
+            }),
+            EncoderBackend::Nvenc => self.nvenc.as_ref().map(|value| {
+                let value = value.to_str().context("LIGHTOS_NVENC_GPU must be UTF-8")?;
+                ensure!(
+                    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()),
+                    "LIGHTOS_NVENC_GPU must be a nonnegative GPU index"
+                );
+                Ok(wire::EncoderDevice::Nvenc(
+                    value.parse().context("invalid LIGHTOS_NVENC_GPU")?,
+                ))
+            }),
+            _ => None,
+        }
+        .transpose()?;
+        if let Some(device) = &device {
+            device.validate()?;
+        }
+        Ok(device)
+    }
 }
 impl HardwareEncoders {
     /// Only the service's sibling is discovered; viewer input cannot select a binary.
@@ -52,6 +98,7 @@ impl HardwareEncoders {
         Self {
             path,
             deadlines: WorkerDeadlines::default(),
+            devices: DeviceOverrides::from_environment(),
         }
     }
     pub fn with_deadlines(mut self, deadlines: WorkerDeadlines) -> Self {
@@ -73,10 +120,12 @@ impl HardwareEncoders {
                     "backend is unsupported on this operating system"
                 );
                 self.check_path()?;
+                let request = match self.devices.device(backend)? {
+                    Some(device) => Request::ProbeDevice { device },
+                    None => Request::Probe { backend },
+                };
                 let mut worker = Worker::spawn(&self.path, None)?;
-                let result = worker
-                    .exchange(Request::Probe { backend }, self.deadlines.probe)
-                    .await;
+                let result = worker.exchange(request, self.deadlines.probe).await;
                 worker.stop().await;
                 match result? {
                     Reply::Probe { codec } if valid_avc_codec(&codec) => Ok(codec),
@@ -109,41 +158,65 @@ impl HardwareEncoders {
                 PathBuf::from("/dev/nvidia0"),
                 PathBuf::from("/proc/driver/nvidia/version"),
             ]);
-            if let Ok(entries) = std::fs::read_dir("/dev/dri") {
+            if let Ok(entries) = std::fs::read_dir("/dev") {
                 paths.extend(
                     entries
                         .filter_map(Result::ok)
-                        .filter(|entry| entry.file_name().to_string_lossy().starts_with("renderD"))
+                        .filter(|entry| entry.file_name().to_string_lossy().starts_with("nvidia"))
                         .map(|entry| entry.path()),
                 );
             }
+            if let Ok(entries) = std::fs::read_dir("/dev/dri") {
+                for entry in entries
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.file_name().to_string_lossy().starts_with("renderD"))
+                {
+                    paths.push(entry.path());
+                    let device = PathBuf::from("/sys/class/drm")
+                        .join(entry.file_name())
+                        .join("device");
+                    paths.extend([
+                        device.clone(),
+                        device.join("driver"),
+                        device.join("driver/module/version"),
+                    ]);
+                }
+            }
+            if let Ok(Some(wire::EncoderDevice::Vaapi(path))) =
+                self.devices.device(EncoderBackend::Vaapi)
+            {
+                paths.push(path);
+            }
         }
         paths.sort();
-        paths
+        paths.dedup();
+        let mut identity: Vec<_> = paths
             .into_iter()
             .map(|path| {
-                let signature = std::fs::metadata(&path).ok().map(|metadata| {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::MetadataExt;
-                        format!(
-                            "{}:{}:{}:{}:{}:{:?}",
-                            metadata.dev(),
-                            metadata.ino(),
-                            metadata.rdev(),
-                            metadata.mode(),
-                            metadata.len(),
-                            metadata.modified().ok()
-                        )
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        format!("{}:{:?}", metadata.len(), metadata.modified().ok())
-                    }
-                });
+                let version = path == Path::new("/proc/driver/nvidia/version")
+                    || (path.starts_with("/sys/class/drm")
+                        && path.file_name().is_some_and(|name| name == "version"));
+                let signature = file_signature(&path, version);
                 (path, signature)
             })
-            .collect()
+            .collect();
+        identity.extend([
+            (
+                PathBuf::from("env:LIGHTOS_VAAPI_DEVICE"),
+                self.devices
+                    .vaapi
+                    .as_ref()
+                    .map(|value| format!("{value:?}")),
+            ),
+            (
+                PathBuf::from("env:LIGHTOS_NVENC_GPU"),
+                self.devices
+                    .nvenc
+                    .as_ref()
+                    .map(|value| format!("{value:?}")),
+            ),
+        ]);
+        identity
     }
     pub fn create(
         &self,
@@ -156,10 +229,12 @@ impl HardwareEncoders {
         );
         wire::validate_settings(settings)?;
         self.check_path()?;
+        let device = self.devices.device(backend)?;
         Ok(Box::new(HardwareEncoder {
             factory: self.clone(),
             backend,
             settings,
+            device,
             rate: EncoderRate {
                 bitrate_bps: default_bitrate(settings.width, settings.height),
                 fps: settings.fps,
@@ -167,6 +242,46 @@ impl HardwareEncoders {
             worker: None,
         }))
     }
+}
+
+fn file_signature(path: &Path, read_contents: bool) -> Option<String> {
+    std::fs::metadata(path).ok().map(|metadata| {
+        let mut signature = {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                format!(
+                    "{}:{}:{}:{}:uid={}:gid={}:ctime={}:{}:{}:{:?}",
+                    metadata.dev(),
+                    metadata.ino(),
+                    metadata.rdev(),
+                    metadata.mode(),
+                    metadata.uid(),
+                    metadata.gid(),
+                    metadata.ctime(),
+                    metadata.ctime_nsec(),
+                    metadata.len(),
+                    metadata.modified().ok()
+                )
+            }
+            #[cfg(not(unix))]
+            {
+                format!("{}:{:?}", metadata.len(), metadata.modified().ok())
+            }
+        };
+        if read_contents {
+            use std::io::Read;
+            let contents = std::fs::File::open(path)
+                .and_then(|file| {
+                    let mut contents = String::new();
+                    file.take(4096).read_to_string(&mut contents)?;
+                    Ok(contents)
+                })
+                .ok();
+            signature.push_str(&format!(":{contents:?}"));
+        }
+        signature
+    })
 }
 
 struct Worker {
@@ -284,6 +399,7 @@ struct HardwareEncoder {
     factory: HardwareEncoders,
     backend: EncoderBackend,
     settings: EncoderSettings,
+    device: Option<wire::EncoderDevice>,
     rate: EncoderRate,
     worker: Option<Worker>,
 }
@@ -302,14 +418,18 @@ impl VideoEncoder for HardwareEncoder {
             if self.worker.is_none() {
                 let frame_size = self.settings.width as usize * self.settings.height as usize * 4;
                 let mut worker = Worker::spawn(&self.factory.path, Some(frame_size))?;
+                let request = match &self.device {
+                    Some(device) => Request::InitDevice {
+                        device: device.clone(),
+                        settings: self.settings,
+                    },
+                    None => Request::Init {
+                        backend: self.backend,
+                        settings: self.settings,
+                    },
+                };
                 let reply = worker
-                    .exchange(
-                        Request::Init {
-                            backend: self.backend,
-                            settings: self.settings,
-                        },
-                        self.factory.deadlines.init,
-                    )
+                    .exchange(request, self.factory.deadlines.init)
                     .await?;
                 ensure!(
                     matches!(reply, Reply::Ready | Reply::ReadySharedFrame),
@@ -357,5 +477,140 @@ impl VideoEncoder for HardwareEncoder {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wire::EncoderDevice;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn gpu_overrides_are_explicit_and_backend_specific() {
+        let overrides = DeviceOverrides {
+            vaapi: Some("/dev/dri/by-path/pci-0000:03:00.0-render".into()),
+            nvenc: Some("1".into()),
+        };
+        assert_eq!(
+            overrides.device(EncoderBackend::Vaapi).unwrap(),
+            Some(EncoderDevice::Vaapi(PathBuf::from(
+                "/dev/dri/by-path/pci-0000:03:00.0-render"
+            )))
+        );
+        assert_eq!(
+            overrides.device(EncoderBackend::Nvenc).unwrap(),
+            Some(EncoderDevice::Nvenc(1))
+        );
+        assert_eq!(overrides.device(EncoderBackend::Amf).unwrap(), None);
+        assert_eq!(
+            DeviceOverrides::default()
+                .device(EncoderBackend::Vaapi)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn gpu_overrides_reject_invalid_values_without_changing_other_backends() {
+        for value in [
+            "",
+            "-1",
+            "+1",
+            " 1",
+            "1.0",
+            "all",
+            "2147483648",
+            "4294967296",
+        ] {
+            let overrides = DeviceOverrides {
+                nvenc: Some(value.into()),
+                ..Default::default()
+            };
+            assert!(
+                overrides.device(EncoderBackend::Nvenc).is_err(),
+                "{value:?}"
+            );
+            assert!(overrides.device(EncoderBackend::Vaapi).unwrap().is_none());
+        }
+        for value in ["", "renderD128", "/dev/dri/renderD128\0"] {
+            let overrides = DeviceOverrides {
+                vaapi: Some(value.into()),
+                ..Default::default()
+            };
+            assert!(
+                overrides.device(EncoderBackend::Vaapi).is_err(),
+                "{value:?}"
+            );
+            assert!(overrides.device(EncoderBackend::Nvenc).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn gpu_override_changes_invalidate_the_capability_identity() {
+        let mut factory = HardwareEncoders::at(PathBuf::from("/missing/codec-worker"));
+        factory.devices = DeviceOverrides::default();
+        let automatic = factory.identity();
+        factory.devices.nvenc = Some("1".into());
+        let selected = factory.identity();
+        assert_ne!(automatic, selected);
+        factory.devices.nvenc = Some("2".into());
+        assert_ne!(selected, factory.identity());
+    }
+
+    #[test]
+    fn gpu_driver_signature_covers_contents_even_with_unchanged_size_and_mtime() {
+        use std::{
+            fs::{File, FileTimes},
+            time::{SystemTime, UNIX_EPOCH},
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("version");
+        let modified: SystemTime = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let write = |contents| {
+            std::fs::write(&path, contents).unwrap();
+            File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_times(FileTimes::new().set_modified(modified))
+                .unwrap();
+        };
+        write("driver-1");
+        let before = file_signature(&path, true).unwrap();
+        assert!(before.contains("driver-1"));
+        write("driver-2");
+        let after = file_signature(&path, true).unwrap();
+        assert!(after.contains("driver-2"));
+        assert_ne!(before, after);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gpu_device_signature_includes_ownership_and_change_time() {
+        use std::os::unix::fs::MetadataExt;
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let metadata = file.as_file().metadata().unwrap();
+        let signature = file_signature(file.path(), false).unwrap();
+        assert!(signature.contains(&format!(
+            "uid={}:gid={}:ctime={}:{}:",
+            metadata.uid(),
+            metadata.gid(),
+            metadata.ctime(),
+            metadata.ctime_nsec()
+        )));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gpu_overrides_reject_non_utf8_values() {
+        use std::os::unix::ffi::OsStringExt;
+        let invalid = OsString::from_vec(vec![0xff]);
+        let overrides = DeviceOverrides {
+            vaapi: Some(invalid.clone()),
+            nvenc: Some(invalid),
+        };
+        assert!(overrides.device(EncoderBackend::Vaapi).is_err());
+        assert!(overrides.device(EncoderBackend::Nvenc).is_err());
     }
 }

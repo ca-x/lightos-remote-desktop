@@ -721,15 +721,10 @@ async fn apply_input(
         }
         InputCommand::Text { text } => {
             ensure!(text.len() <= 16 * 1024, "text input too long");
-            for character in text.chars() {
+            for symbol in text_keysyms(&text) {
                 if guard.as_ref().is_some_and(|guard| !guard.active()) {
                     break;
                 }
-                let symbol = if character as u32 <= 0x7f {
-                    character as u32
-                } else {
-                    0x0100_0000 | (character as u32)
-                };
                 desktop
                     .notify_keyboard_keysym(
                         session,
@@ -754,6 +749,30 @@ async fn apply_input(
         InputCommand::Guarded { .. } => unreachable!("guard was removed by into_active"),
     }
     Ok(())
+}
+
+fn text_keysyms(text: &str) -> Vec<u32> {
+    use xkbcommon::xkb::{self, keysyms};
+    let mut characters = text.chars().peekable();
+    let mut symbols = Vec::new();
+    while let Some(character) = characters.next() {
+        let symbol = match character {
+            '\r' => {
+                if characters.peek() == Some(&'\n') {
+                    characters.next();
+                }
+                keysyms::KEY_Return
+            }
+            '\n' => keysyms::KEY_Return,
+            '\t' => keysyms::KEY_Tab,
+            character if character.is_control() => continue,
+            character => xkb::utf32_to_keysym(character as u32).raw(),
+        };
+        if symbol != keysyms::KEY_NoSymbol {
+            symbols.push(symbol);
+        }
+    }
+    symbols
 }
 
 // Cleanup remains valid after the input authorization expires while a key or
@@ -1203,6 +1222,32 @@ pub(crate) fn capture_pipewire(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portal_text_uses_canonical_keysyms_and_normalizes_line_endings() {
+        assert_eq!(
+            text_keysyms("Aé中🦀\r\nB\nC\r\t"),
+            [
+                0x41,
+                0xe9,
+                0x0100_4e2d,
+                0x0101_f980,
+                0xff0d,
+                0x42,
+                0xff0d,
+                0x43,
+                0xff0d,
+                0xff09
+            ]
+        );
+        assert_eq!(text_keysyms("\r\r\n\n"), [0xff0d, 0xff0d, 0xff0d]);
+        assert!(text_keysyms("").is_empty());
+    }
+
+    #[test]
+    fn portal_text_does_not_turn_other_control_characters_into_keys() {
+        assert_eq!(text_keysyms("a\0\u{8}\u{1b}\u{7f}\u{85}b"), [0x61, 0x62]);
+    }
 
     #[tokio::test]
     async fn cancelled_clipboard_request_skips_queued_work_and_drops_inflight_work() {

@@ -52,11 +52,33 @@ fn handle(
     encoder: &mut Option<NativeEncoder>,
     shared: Option<&[u8]>,
 ) -> Result<Reply> {
+    let (request, device) = match request {
+        Request::ProbeDevice { device } => {
+            device.validate()?;
+            (
+                Request::Probe {
+                    backend: device.backend(),
+                },
+                Some(device),
+            )
+        }
+        Request::InitDevice { device, settings } => {
+            device.validate()?;
+            (
+                Request::Init {
+                    backend: device.backend(),
+                    settings,
+                },
+                Some(device),
+            )
+        }
+        request => (request, None),
+    };
     match request {
         Request::Probe { backend } => {
             ensure!(encoder.is_none(), "probe cannot replace an active encoder");
             Ok(Reply::Probe {
-                codec: encoder::probe(backend)?,
+                codec: encoder::probe(backend, device.as_ref())?,
             })
         }
         Request::Init { backend, settings } => {
@@ -65,7 +87,12 @@ fn handle(
                 bitrate_bps: default_bitrate(settings.width, settings.height),
                 fps: settings.fps,
             };
-            *encoder = Some(NativeEncoder::new(backend, settings, rate)?);
+            *encoder = Some(NativeEncoder::new(
+                backend,
+                settings,
+                rate,
+                device.as_ref(),
+            )?);
             #[cfg(target_os = "linux")]
             if shared.is_some()
                 && std::env::var_os(wire::shared_frame::NEGOTIATE_ENV).as_deref()
@@ -88,6 +115,9 @@ fn handle(
                 key: encoded.key,
                 codec: encoded.codec,
             })
+        }
+        Request::ProbeDevice { .. } | Request::InitDevice { .. } => {
+            unreachable!("device request normalized")
         }
     }
 }

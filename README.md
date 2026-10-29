@@ -31,6 +31,8 @@ Windows/macOS 物理桌面主机正在加入实验性支持：共用浏览器协
 
 当前尚未支持麦克风上行、文件传输、手柄和多显示器同时控制。
 
+旋转屏、Portal 输入及独显/混合显卡的兼容范围见[桌面与显卡兼容说明](docs/desktop-gpu-compatibility.md)；指定编码显卡的方法见[硬件编码设置](docs/hardware-encoding.md#dedicated-and-hybrid-gpu-selection)。
+
 ## Linux：AUR 安装与更新
 
 包名为 `lightos-remoted-bin`，命令为 `lightos-remoted`，可执行文件安装到 `/usr/lib/lightos-remoted/lightos-remoted`。GitHub 二进制压缩包名为 `lightos-remoted-linux-x86_64.tar.gz`。可选 AUR 包 `lightos-codec-ffmpeg-bin` 提供原生 FFmpeg 编码 worker，可探测硬件 H.264 编码。它在 Arch 构建环境中从同版本源码预编译，链接对应 ABI 的系统 FFmpeg，安装到 `/usr/lib/lightos-remoted/lightos-codec-ffmpeg`，主程序会自动发现。无需安装该包即可使用内置软件 H.264 和 JPEG；硬件编码是否可用仍取决于 GPU、驱动和 FFmpeg 能力。

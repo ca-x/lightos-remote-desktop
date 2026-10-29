@@ -29,6 +29,50 @@ pub(super) struct Pixels {
     pub height: u32,
     pub data: Arc<[u8]>,
 }
+impl Pixels {
+    fn oriented(self, transform: u32) -> Result<Self> {
+        ensure!(transform < 8, "unsupported capture transform");
+        let source_width = self.width as usize;
+        let source_height = self.height as usize;
+        let length = source_width
+            .checked_mul(source_height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .context("capture dimensions overflow")?;
+        ensure!(
+            source_width > 0 && source_height > 0 && self.data.len() == length,
+            "invalid capture pixels"
+        );
+        if transform == 0 {
+            return Ok(self);
+        }
+        let (width, height) = if transform % 2 == 1 {
+            (self.height, self.width)
+        } else {
+            (self.width, self.height)
+        };
+        let mut data = vec![0; length];
+        for (index, pixel) in self.data.as_chunks::<4>().0.iter().enumerate() {
+            let column = index % source_width;
+            let row = index / source_width;
+            let (mut column, row) = match transform % 4 {
+                0 => (column, row),
+                1 => (source_height - 1 - row, column),
+                2 => (source_width - 1 - column, source_height - 1 - row),
+                _ => (row, source_width - 1 - column),
+            };
+            if transform >= 4 {
+                column = width as usize - 1 - column;
+            }
+            let offset = (row * width as usize + column) * 4;
+            data[offset..offset + 4].copy_from_slice(pixel);
+        }
+        Ok(Self {
+            width,
+            height,
+            data: data.into(),
+        })
+    }
+}
 #[derive(Debug)]
 pub(super) struct Reconfigure;
 impl std::fmt::Display for Reconfigure {
@@ -144,9 +188,12 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for State {
         match e {
             ext_image_copy_capture_frame_v1::Event::Ready => s.ready = true,
             ext_image_copy_capture_frame_v1::Event::Failed { .. } => s.failed = true,
-            ext_image_copy_capture_frame_v1::Event::Transform {
-                transform: WEnum::Value(value),
-            } => s.transform = value as u32,
+            ext_image_copy_capture_frame_v1::Event::Transform { transform } => {
+                s.transform = match transform {
+                    WEnum::Value(value) => value as u32,
+                    WEnum::Unknown(value) => value,
+                }
+            }
             _ => {}
         }
     }
@@ -330,7 +377,7 @@ impl Reusable {
             state
                 .outputs
                 .get(id)
-                .is_some_and(|o| o.transform == 0 && selected.is_none_or(|name| o.name == name))
+                .is_some_and(|o| selected.is_none_or(|name| o.name == name))
         }) else {
             return Ok(None);
         };
@@ -413,17 +460,97 @@ impl Reusable {
             if self.state.failed {
                 continue;
             }
-            ensure!(
-                self.state.transform == 0,
-                "capture requires transformed screenshot path"
-            );
             let buffer = self.buffer.as_ref().unwrap();
-            return Ok(Pixels {
+            return Pixels {
                 width: buffer.width,
                 height: buffer.height,
                 data: buffer.pixels(),
-            });
+            }
+            .oriented(self.state.transform);
         }
         bail!("capture buffer constraints did not settle")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(width: u32, height: u32) -> Pixels {
+        Pixels {
+            width,
+            height,
+            data: (0..width * height)
+                .flat_map(|index| [index as u8, index as u8 + 10, 200, 255])
+                .collect::<Vec<_>>()
+                .into(),
+        }
+    }
+
+    #[test]
+    fn reusable_capture_orients_all_eight_transforms() {
+        let expected = [
+            (2, 3, [0, 1, 2, 3, 4, 5]),
+            (3, 2, [4, 2, 0, 5, 3, 1]),
+            (2, 3, [5, 4, 3, 2, 1, 0]),
+            (3, 2, [1, 3, 5, 0, 2, 4]),
+            (2, 3, [1, 0, 3, 2, 5, 4]),
+            (3, 2, [0, 2, 4, 1, 3, 5]),
+            (2, 3, [4, 5, 2, 3, 0, 1]),
+            (3, 2, [5, 3, 1, 4, 2, 0]),
+        ];
+        for (transform, (width, height, order)) in expected.into_iter().enumerate() {
+            let source = frame(2, 3);
+            let retained = source.data.clone();
+            let output = source.oriented(transform as u32).unwrap();
+            assert_eq!((output.width, output.height), (width, height));
+            let pixels: Vec<_> = order
+                .into_iter()
+                .flat_map(|index| [index, index + 10, 200, 255])
+                .collect();
+            assert_eq!(&*output.data, &pixels, "transform {transform}");
+            assert_eq!(&*retained, &*frame(2, 3).data);
+            if transform == 0 {
+                assert!(Arc::ptr_eq(&output.data, &retained));
+            }
+        }
+    }
+
+    #[test]
+    fn reusable_capture_transform_handles_singleton_axes_and_rejects_invalid_frames() {
+        for (width, height) in [(1, 1), (1, 3), (3, 1)] {
+            for transform in 0..8 {
+                let output = frame(width, height).oriented(transform).unwrap();
+                let mut indices: Vec<_> = output
+                    .data
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|pixel| pixel[0])
+                    .collect();
+                indices.sort_unstable();
+                assert_eq!(indices, (0..(width * height) as u8).collect::<Vec<_>>());
+            }
+        }
+        assert!(frame(2, 3).oriented(8).is_err());
+        assert!(frame(0, 3).oriented(0).is_err());
+        assert!(
+            Pixels {
+                width: 2,
+                height: 3,
+                data: vec![0; 23].into()
+            }
+            .oriented(1)
+            .is_err()
+        );
+        assert!(
+            Pixels {
+                width: u32::MAX,
+                height: u32::MAX,
+                data: vec![0; 4].into()
+            }
+            .oriented(0)
+            .is_err()
+        );
     }
 }
