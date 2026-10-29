@@ -62,6 +62,7 @@ interface MobileOptions {
   text: (text: string) => void;
   move: (point: { clientX: number; clientY: number }) => void;
   tools: (open: boolean) => void;
+  isToolsOpen: () => boolean;
   layout: () => void;
   translate: (text: string) => string;
   zoom?: {
@@ -284,7 +285,7 @@ export function createMobileControls(options: MobileOptions) {
     if (button.disabled) return;
     if (button.dataset.mobileAction === "menu") {
       hideKeyboard();
-      options.tools(true);
+      options.tools(!options.isToolsOpen());
       return;
     }
     if (button.dataset.mobileAction === "fullscreen") { hideKeyboard(); options.toggleFullscreen?.(); return; }
@@ -341,8 +342,7 @@ export function createMobileControls(options: MobileOptions) {
     shortcutPointer = null;
     cancelRepeat();
     if (current.button.hasPointerCapture?.(current.id)) current.button.releasePointerCapture(current.id);
-    // Open the popover on click, after its document outside-click listener has
-    // handled this gesture. Opening on pointerup makes that same click close it.
+    // Toggle on click so one pointer gesture changes the toolbar state once.
     if (current.button.dataset.mobileAction === "menu") {
       suppressClick = null;
       return;

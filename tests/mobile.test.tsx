@@ -39,6 +39,7 @@ beforeEach(() => {
     zoom: { active: () => zoomed, gesture: (from, to, ratio) => { gestures.push({from, to, ratio}); zoomed = true; } },
     ready: () => ready, send: command => { commands.push(command); return true; },
     text: value => texts.push(value), chord: value => chords.push(value), move: () => {}, tools: (open) => { menuOpen = open; }, layout: () => {}, translate: value => value,
+    isToolsOpen: () => menuOpen,
   });
 });
 
@@ -70,6 +71,7 @@ it("fullscreen exit restores controls without opening the IME, even when disconn
     expect(document.querySelector('nav')!.hidden).toBe(false);
     const menu=document.querySelector<HTMLButtonElement>('[data-mobile-action=menu]')!;
     expect(menu.disabled).toBe(false);menu.click();expect(menuOpen).toBe(true);
+    menu.click();expect(menuOpen).toBe(false);
   }
 });
 

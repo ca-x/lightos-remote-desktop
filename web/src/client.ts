@@ -2096,6 +2096,7 @@ export function createClient(options: ClientOptions = {}) {
     toggleFullscreen: () => { void displayMode(isDesktopFullscreen() ? windowMode : "fullscreen"); },
     toggleAudio: () => { void toggleAudio(); }, audioAvailable: () => audioAvailable, rotated: () => pictureRotated,
     ready: () => ready && !desktopPaused, lightBook: () => lightBookEnabled, zoom: pictureZoom, send, text: typeText, move, tools: (open) => setToolsOpen(open), translate,
+    isToolsOpen: () => options.isToolsOpen?.() ?? !element("tool-panel").hidden,
     hardwareKey: (event) => hardwareKey(event, true), composition: release,
     hardwareInput: (event) => {
       const pending = pendingHardwareKey;
