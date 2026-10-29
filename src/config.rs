@@ -122,6 +122,23 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn native_runtime_budget_does_not_reserve_a_hyprland_signature() {
+        let directory = tempfile::tempdir().unwrap();
+        let native = directory.path().join("config.kdl");
+        std::fs::write(&native, "").unwrap();
+        let runtime = "/tmp/lrd.owner.ABCDEF/session";
+        assert!(crate::session::validate_runtime_socket_paths(std::path::Path::new(runtime)).is_err());
+        let settings = config(&[
+            "test", "--password", "some-long-secret", "--compositor", "niri",
+            "--desktop-config", native.to_str().unwrap(), "--runtime-dir", runtime,
+        ]);
+        assert!(settings.validate().is_ok());
+        let too_long = format!("/{}", "x".repeat(100));
+        assert!(crate::session::validate_niri_runtime_socket_paths(std::path::Path::new(&too_long)).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn incomplete_niri_owner_cannot_silently_start_hyprland() {
         let directory = tempfile::tempdir().unwrap();
         let native = directory.path().join("config.kdl");
@@ -624,7 +641,10 @@ impl Config {
                 "runtime directory must be absolute"
             );
             #[cfg(target_os = "linux")]
-            crate::session::validate_runtime_socket_paths(directory)?;
+            match self.compositor {
+                Compositor::Hyprland => crate::session::validate_runtime_socket_paths(directory)?,
+                Compositor::Niri => crate::session::validate_niri_runtime_socket_paths(directory)?,
+            }
         }
         Ok(())
     }

@@ -39,6 +39,17 @@ pub(crate) fn validate_runtime_socket_paths(runtime: &Path) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn validate_niri_runtime_socket_paths(runtime: &Path) -> Result<()> {
+    let socket = runtime.join("niri.wayland-4294967295.2147483647.sock");
+    UnixSocketAddr::from_pathname(&socket).with_context(|| {
+        format!(
+            "runtime directory {} is too long for Niri IPC sockets; use a shorter --runtime-dir",
+            runtime.display()
+        )
+    })?;
+    Ok(())
+}
+
 pub struct Session {
     pub socket: PathBuf,
     pub runtime: PathBuf,

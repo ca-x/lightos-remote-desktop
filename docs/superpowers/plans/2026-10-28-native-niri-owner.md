@@ -109,6 +109,17 @@ Files: `src/session.rs`, `src/session/niri.rs`,
 
 ## Evidence
 
+- Initial actual-owner probe e9c7e22/40795985718 is a real RED, but not the
+  intended missing-owner RED: Config incorrectly reserves a 64-byte Hyprland
+  signature for a Niri runtime before startup. Fix the compositor-specific
+  socket budget rather than shortening the fixture to hide the defect.
+  Remote rustfmt output is applied as a source patch, never executed locally.
+- Native feasibility remains green in that same run. Numeric origin reports
+  Niri PID7609, Cage parent7608, process group7606, session7586: nested Niri
+  retains the explicitly launched dbus-run-session root's group. Native startup
+  can require its own Cage group's identity, not merely a same-UID process.
+  The future direct Cage launch must still verify that relationship at runtime.
+
 - Start the actual owner increment with a GitHub-only native fixture: the
   unchanged publisher is not enough. Require preserved native includes,
   same Wayland/IPC Niri peer, unchanged owner/Niri/application PID-start
