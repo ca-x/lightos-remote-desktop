@@ -47,7 +47,7 @@ fn private_runtime(runtime: &Path) -> Result<u32> {
         "Niri runtime must not contain symlink aliases"
     );
     ensure!(
-        resolved != PathBuf::from(format!("/run/user/{owner}")),
+        resolved != format!("/run/user/{owner}"),
         "Niri runtime must not be the physical login runtime"
     );
     let inherited = std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is required")?;
@@ -68,6 +68,12 @@ fn private_bus(runtime: &Path, owner: u32) -> Result<String> {
     let address: Address = value
         .parse()
         .context("invalid private session bus address")?;
+    if let Some(guid) = address.guid() {
+        ensure!(
+            guid.len() == 32 && guid.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "private session bus GUID must contain exactly 32 ASCII hexadecimal digits"
+        );
+    }
     let expected = runtime.join("bus");
     ensure!(
         matches!(address.transport(), Transport::Unix(unix) if matches!(unix.path(), UnixSocket::File(path) if path == &expected))

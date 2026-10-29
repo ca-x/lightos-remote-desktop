@@ -109,6 +109,14 @@ Files: `src/session.rs`, `src/session/niri.rs`,
 
 ## Evidence
 
+- GUID behavior RED is 68e4abb/40793321370: eleven publisher cases pass and
+  the added subprocess case rejects neither the hyphenated UUID nor activation,
+  failing with non-D-Bus GUID accepted. Narrow the parsed optional GUID to
+  exactly 32 ASCII hexadecimal digits before invoking the activator.
+- The preceding 3960f83/40793241737 runs all eleven publisher cases green,
+  then clippy reports only cmp_owned at the login-runtime comparison. Apply
+  its specific comparison suggestion; this is not full CI acceptance yet.
+
 - Independent publisher review finds a P2: zbus 5.19 delegates GUID validation
   to a UUID parser accepting hyphenated/braced/URN values and preserves their
   spelling, so address round-tripping alone does not enforce the D-Bus
