@@ -58,7 +58,21 @@ fn niri_socket(runtime: &Path) -> Option<PathBuf> {
                 return None;
             }
             let executable = fs::read_link(format!("/proc/{}/exe", credentials.pid)).ok()?;
-            (executable.file_name()? == "niri").then_some(path)
+            if executable.file_name()? != "niri" {
+                return None;
+            }
+            let stat = fs::read_to_string(format!("/proc/{}/stat", credentials.pid)).ok()?;
+            let origin: Vec<_> = stat
+                .rsplit_once(") ")?
+                .1
+                .split_whitespace()
+                .take(4)
+                .collect();
+            println!(
+                "native Niri peer PID={} origin(state/parent/group/session)={origin:?}",
+                credentials.pid
+            );
+            Some(path)
         })
 }
 

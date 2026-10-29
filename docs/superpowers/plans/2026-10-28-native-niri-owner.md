@@ -109,6 +109,15 @@ Files: `src/session.rs`, `src/session/niri.rs`,
 
 ## Evidence
 
+- Start the actual owner increment with a GitHub-only native fixture: the
+  unchanged publisher is not enough. Require preserved native includes,
+  same Wayland/IPC Niri peer, unchanged owner/Niri/application PID-start
+  identities and two real transport generations delivering a red then blue
+  terminal background, not just changed screenshot hashes or health checks.
+  Re-run native feasibility first with numeric process-origin diagnostics to
+  learn Cage/Niri process-group behavior before choosing ownership cleanup.
+  The intended RED is the existing explicit unimplemented-owner guard.
+
 - Publisher-only GREEN is edf216e/40794000163, Linux test job123185863015:
   both bundled-jpeg and bundled-jpeg/rdp/portal run all twelve process cases
   successfully, including all three malformed UUID spellings; both all-target
