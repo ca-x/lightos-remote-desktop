@@ -109,6 +109,12 @@ Files: `src/session.rs`, `src/session/niri.rs`,
 
 ## Evidence
 
+- Independent publisher review finds a P2: zbus 5.19 delegates GUID validation
+  to a UUID parser accepting hyphenated/braced/URN values and preserves their
+  spelling, so address round-tripping alone does not enforce the D-Bus
+  32-ASCII-hex contract. Add process rejection cases first; observe actual RED
+  before narrowing GUID validation. No kernel-peer or native-owner claim.
+
 - Publisher candidate 0ab363e/40792935194 stops at rustfmt before behavior.
   Apply only the reported GitHub formatting diff; no local formatter or test
   runs. Keep the publisher unaccepted until the subprocess suite actually runs.

@@ -219,6 +219,30 @@ fn publishes_without_an_x11_display() {
 }
 
 #[test]
+fn rejects_non_dbus_uuid_forms_before_private_bus_activation() {
+    for guid in [
+        "01234567-89ab-cdef-0123-456789abcdef",
+        "{01234567-89ab-cdef-0123-456789abcdef}",
+        "urn:uuid:01234567-89ab-cdef-0123-456789abcdef",
+    ] {
+        let fixture = Fixture::new();
+        let mut command = fixture.command();
+        command.env(
+            "DBUS_SESSION_BUS_ADDRESS",
+            format!(
+                "unix:path={},guid={guid}",
+                fixture.runtime.join("bus").display()
+            ),
+        );
+        let output = run(command);
+        assert!(!output.status.success(), "non-D-Bus GUID accepted: {guid}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("private session bus"));
+        assert!(!fixture.calls.exists());
+        assert!(!fixture.record().exists());
+    }
+}
+
+#[test]
 fn rejects_ambiguous_or_non_filesystem_bus_addresses() {
     for suffix in [
         ";unix:path=/tmp/foreign",
