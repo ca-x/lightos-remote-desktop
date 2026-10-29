@@ -109,6 +109,22 @@ Files: `src/session.rs`, `src/session/niri.rs`,
 
 ## Evidence
 
+- After integrating concurrent upstream performance/resize work without
+  overwriting it, 396b6ad/40796928186 reaches the intended actual-owner RED:
+  doctor prerequisites pass, then native startup refuses the unimplemented
+  owner. Implement the real branch, not a generated Hyprland fallback.
+- Strengthen the actual fixture after independent review: subreaper fallback
+  runs only in its isolated test process; normal stop signals the main PID
+  alone and checks original live identities before fallback. Put required foot
+  startup inside the relative include, verify Niri's original --config argv,
+  verify foot UID/executable inode and decode only JPEG. Accept no cleanup or
+  include-preservation claim based only on a file-content comparison.
+- Add actual CLI admission regressions with a private real bus and controlled
+  forged readiness: wrong executable, wrong process origin, split kernel
+  peers, public record, escaped socket and unknown fields. Native code must
+  reject these before publishing descriptor v1; old records are cleared only
+  under the exclusive owner lock. These are not real compositor positives.
+
 - Initial actual-owner probe e9c7e22/40795985718 is a real RED, but not the
   intended missing-owner RED: Config incorrectly reserves a 64-byte Hyprland
   signature for a Niri runtime before startup. Fix the compositor-specific

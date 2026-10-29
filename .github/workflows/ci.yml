@@ -38,7 +38,7 @@ jobs:
             printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
           fi
           sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libpulse-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev cmake nasm pkg-config ffmpeg xvfb xauth libxtst6 python3 openssl
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libpulse-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev cmake nasm pkg-config ffmpeg xvfb xauth libxtst6 python3 openssl dbus
           if apt-cache show freerdp3-x11 >/dev/null 2>&1; then
             sudo apt-get install -y freerdp3-x11
           else

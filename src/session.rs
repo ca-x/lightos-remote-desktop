@@ -62,6 +62,7 @@ pub struct Session {
     children: Vec<Child>,
     temporary: Option<tempfile::TempDir>,
     lock: Option<File>,
+    native_lifetime: Option<File>,
     cancelled: Arc<AtomicBool>,
 }
 
@@ -86,6 +87,7 @@ impl Session {
             children: vec![],
             temporary: None,
             lock: None,
+            native_lifetime: None,
             cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -171,6 +173,7 @@ impl Session {
                 children: Vec::new(),
                 temporary: None,
                 lock: Some(lifetime),
+                native_lifetime: None,
                 cancelled,
             });
         }
@@ -189,6 +192,7 @@ impl Session {
                 children: Vec::new(),
                 temporary: None,
                 lock: None,
+                native_lifetime: None,
                 cancelled,
             });
         }
@@ -243,11 +247,12 @@ impl Session {
                 children: Vec::new(),
                 temporary: None,
                 lock: None,
+                native_lifetime: None,
                 cancelled,
             });
         }
         if config.compositor == Compositor::Niri {
-            bail!("native Niri owner startup is not implemented yet");
+            return niri::start(config, cancelled);
         }
         let temporary = if config.runtime_dir.is_none() {
             Some(
@@ -294,6 +299,7 @@ impl Session {
             children: Vec::new(),
             temporary,
             lock: Some(lock),
+            native_lifetime: None,
             cancelled,
         };
         let bus_path = session.runtime.join("bus");
@@ -309,7 +315,7 @@ impl Session {
         session.wait_for(Duration::from_secs(5), || bus_path.exists())?;
         if config.audio {
             session
-                .setup_audio()
+                .setup_audio(Compositor::Hyprland)
                 .context("starting private desktop audio")?;
         }
         let prepared = crate::desktop::prepare(config, &session.runtime)?;
@@ -545,7 +551,7 @@ impl Session {
         .join("\n")
     }
 
-    fn setup_audio(&mut self) -> Result<()> {
+    fn setup_audio(&mut self, compositor: Compositor) -> Result<()> {
         let configuration = self.runtime.join("audio-config");
         let fragments = configuration.join("wireplumber/wireplumber.conf.d");
         fs::create_dir_all(&fragments)?;
@@ -574,6 +580,9 @@ impl Session {
             ),
         ] {
             let mut command = Command::new(program);
+            if compositor == Compositor::Niri {
+                niri::isolate(&mut command);
+            }
             command
                 .args(arguments)
                 .env("XDG_RUNTIME_DIR", &self.runtime)
@@ -593,6 +602,9 @@ impl Session {
         }
         let sink = format!("lightos_remote_{}", std::process::id());
         let mut command = Command::new("timeout");
+        if compositor == Compositor::Niri {
+            niri::isolate(&mut command);
+        }
         command
             .args([
                 "--kill-after=1",
@@ -629,7 +641,8 @@ impl Session {
         {
             return self.lock.as_ref().is_some_and(crate::owned_wayland::alive);
         }
-        self.children
+        self.native_lifetime.as_ref().is_none_or(crate::owned_wayland::alive)
+            && self.children
             .iter()
             .all(|child| matches!(child_exited(child), Ok(false)))
             && (self
@@ -1645,6 +1658,7 @@ mod tests {
             children: vec![child],
             temporary: None,
             lock: None,
+            native_lifetime: None,
             cancelled: Arc::new(AtomicBool::new(false)),
         };
         drop(session);

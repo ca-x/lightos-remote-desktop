@@ -139,7 +139,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn incomplete_niri_owner_cannot_silently_start_hyprland() {
+    fn native_owner_rejects_missing_launcher_before_creating_runtime() {
         let directory = tempfile::tempdir().unwrap();
         let native = directory.path().join("config.kdl");
         let runtime = directory.path().join("session");
@@ -157,9 +157,11 @@ mod tests {
                 runtime.to_str().unwrap(),
                 "--audio",
                 audio,
+                "--cage",
+                "/nonexistent/lightos-native-cage",
             ]);
             let error = crate::session::Session::start(&settings).err().unwrap();
-            assert!(error.to_string().contains("not implemented yet"));
+            assert!(error.to_string().contains("missing native desktop executable"));
             assert!(!runtime.exists());
         }
     }

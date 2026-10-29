@@ -5,7 +5,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     os::{
-        fd::AsRawFd,
+        fd::{AsRawFd, FromRawFd},
         unix::{
             fs::{MetadataExt, PermissionsExt},
             net::UnixStream,
@@ -29,16 +29,72 @@ use tokio_tungstenite::{
 const PASSWORD: &str = "niri-owner-isolated-fixture";
 const APPLICATION: &str = "lightos-niri-owner-fixture";
 
-struct Process(Child);
+struct FixtureCleanup;
+
+fn direct_children() -> Vec<u32> {
+    fs::read_dir("/proc/self/task").unwrap().filter_map(Result::ok).flat_map(|task| {
+        fs::read_to_string(task.path().join("children")).unwrap_or_default()
+            .split_whitespace().filter_map(|pid| pid.parse().ok()).collect::<Vec<_>>()
+    }).collect()
+}
+
+impl FixtureCleanup {
+    fn new() -> Self {
+        assert_eq!(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) }, 0);
+        Self
+    }
+
+    fn live_children(&self) -> Vec<u32> {
+        direct_children().into_iter().filter(|pid| {
+            snapshot(*pid).is_some_and(|(state, _)| state != "Z" && state != "X")
+        }).collect()
+    }
+}
+
+impl Drop for FixtureCleanup {
+    fn drop(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < deadline {
+            let children = direct_children();
+            if children.is_empty() {
+                break;
+            }
+            for pid in children {
+                let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) as i32 };
+                if raw < 0 {
+                    continue;
+                }
+                let lifetime = unsafe { fs::File::from_raw_fd(raw) };
+                let parent = fs::read_to_string(format!("/proc/{pid}/stat")).ok().and_then(|stat| {
+                    stat.rsplit_once(") ")?.1.split_whitespace().nth(1)?.parse::<u32>().ok()
+                });
+                if parent == Some(std::process::id()) {
+                    unsafe { libc::syscall(libc::SYS_pidfd_send_signal, lifetime.as_raw_fd(), libc::SIGKILL, std::ptr::null::<libc::siginfo_t>(), 0) };
+                }
+            }
+            while unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) } > 0 {}
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+struct Process {
+    child: Child,
+    reaped: bool,
+}
 
 impl Process {
+    fn id(&self) -> u32 {
+        self.child.id()
+    }
+
     fn exited(&self) -> bool {
         let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };
         assert_eq!(
             unsafe {
                 libc::waitid(
                     libc::P_PID,
-                    self.0.id(),
+                    self.id(),
                     &mut status,
                     libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
                 )
@@ -47,24 +103,41 @@ impl Process {
         );
         unsafe { status.si_pid() != 0 }
     }
-}
 
-impl Drop for Process {
-    fn drop(&mut self) {
-        unsafe { libc::kill(-(self.0.id() as i32), libc::SIGTERM) };
+    fn stop(mut self) {
+        unsafe { libc::kill(self.id() as i32, libc::SIGTERM) };
         let deadline = Instant::now() + Duration::from_secs(10);
         while !self.exited() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(20));
         }
-        unsafe { libc::kill(-(self.0.id() as i32), libc::SIGKILL) };
-        let _ = self.0.wait();
+        assert!(self.exited(), "candidate did not stop after signaling its main process");
+        let status = self.child.wait().unwrap();
+        self.reaped = true;
+        assert!(status.success(), "candidate returned failure while stopping: {status}");
+    }
+}
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        if self.reaped {
+            return;
+        }
+        unsafe { libc::kill(self.id() as i32, libc::SIGTERM) };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !self.exited() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        if !self.exited() {
+            unsafe { libc::kill(-(self.id() as i32), libc::SIGKILL) };
+        }
+        let _ = self.child.wait();
     }
 }
 
 fn start(action: &str, home: &Path, arguments: &[&str], log: &Path) -> Process {
     let output = fs::File::create(log).unwrap();
-    Process(
-        Command::new(env!("CARGO_BIN_EXE_lightos-remoted"))
+    Process {
+        child: Command::new(env!("CARGO_BIN_EXE_lightos-remoted"))
             .env_clear()
             .env("PATH", "/usr/bin")
             .env("HOME", home)
@@ -88,7 +161,8 @@ fn start(action: &str, home: &Path, arguments: &[&str], log: &Path) -> Process {
             .process_group(0)
             .spawn()
             .unwrap(),
-    )
+        reaped: false,
+    }
 }
 
 fn await_condition(process: &Process, log: &Path, ready: impl Fn() -> bool) {
@@ -107,10 +181,14 @@ fn await_condition(process: &Process, log: &Path, ready: impl Fn() -> bool) {
     }
 }
 
+fn snapshot(pid: u32) -> Option<(String, String)> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let mut fields = stat.rsplit_once(") ")?.1.split_whitespace();
+    Some((fields.next()?.to_owned(), fields.nth(18)?.to_owned()))
+}
+
 fn identity(pid: u32) -> (u32, String) {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
-    let mut fields = stat.rsplit_once(") ").unwrap().1.split_whitespace();
-    (pid, fields.nth(19).unwrap().to_owned())
+    (pid, snapshot(pid).unwrap().1)
 }
 
 fn socket_pid(path: &Path) -> u32 {
@@ -226,7 +304,7 @@ async fn colored_frame(port: u16, red: bool, output: &Path) -> Value {
                 }
                 Message::Binary(bytes) if bytes.first() == Some(&1) => {
                     assert!(ready);
-                    let image = image::load_from_memory(&bytes[1..]).unwrap().to_rgb8();
+                    let image = image::load_from_memory_with_format(&bytes[1..], image::ImageFormat::Jpeg).unwrap().to_rgb8();
                     let expected = image.pixels().filter(|pixel| {
                         if red {
                             pixel[0] > 200 && pixel[1] < 60 && pixel[2] < 60
@@ -254,6 +332,7 @@ async fn colored_frame(port: u16, red: bool, output: &Path) -> Value {
 #[ignore = "requires the isolated non-root GitHub Niri/Cage/foot candidate"]
 fn persistent_niri_owner_survives_two_transport_generations() {
     assert_ne!(unsafe { libc::geteuid() }, 0);
+    let cleanup = FixtureCleanup::new();
     let report = PathBuf::from(std::env::var_os("LRD_NIRI_PROBE_REPORT").unwrap());
     let directory = tempfile::Builder::new()
         .prefix("lrd.owner.")
@@ -265,11 +344,6 @@ fn persistent_niri_owner_survives_two_transport_generations() {
     let config_dir = home.join(".config/niri");
     fs::create_dir_all(&config_dir).unwrap();
     let included = config_dir.join("included.kdl");
-    fs::write(
-        &included,
-        "input { keyboard { xkb { layout \"us\"; }; }; }\n",
-    )
-    .unwrap();
     let marker = directory.path().join("color");
     fs::write(&marker, "red\n").unwrap();
     let painter = directory.path().join("paint.sh");
@@ -291,11 +365,13 @@ done
 "#,
     )
     .unwrap();
-    let configuration = format!(
-        "include \"included.kdl\"\nspawn-at-startup \"/usr/bin/foot\" \"--app-id={APPLICATION}\" \"/bin/sh\" {} {}\n",
+    let include_source = format!(
+        "spawn-at-startup \"/usr/bin/foot\" \"--app-id={APPLICATION}\" \"/bin/sh\" {} {}\n",
         serde_json::to_string(&painter).unwrap(),
         serde_json::to_string(&marker).unwrap()
     );
+    fs::write(&included, &include_source).unwrap();
+    let configuration = "include \"included.kdl\"\n";
     let config = config_dir.join("config.kdl");
     fs::write(&config, &configuration).unwrap();
     let owner_log = report.join("owner.log");
@@ -327,9 +403,18 @@ done
         (executable.dev(), executable.ino()),
         (expected.dev(), expected.ino())
     );
+    let arguments = fs::read(format!("/proc/{niri}/cmdline")).unwrap();
+    let arguments: Vec<_> = arguments.split(|byte| *byte == 0).collect();
+    assert!(arguments.windows(2).any(|pair| {
+        pair[0] == b"--config" && pair[1] == config.as_os_str().as_encoded_bytes()
+    }));
     await_condition(&owner, &owner_log, || application(&ipc).is_some());
     let window = application(&ipc).unwrap();
-    let identities = [identity(owner.0.id()), identity(niri), identity(window.1)];
+    let application_exe = fs::metadata(format!("/proc/{}/exe", window.1)).unwrap();
+    let expected_exe = fs::metadata("/usr/bin/foot").unwrap();
+    assert_eq!((application_exe.dev(), application_exe.ino()), (expected_exe.dev(), expected_exe.ino()));
+    assert_eq!(fs::metadata(format!("/proc/{}", window.1)).unwrap().uid(), unsafe { libc::geteuid() });
+    let identities = [identity(owner.id()), identity(niri), identity(window.1)];
     let executor = tokio::runtime::Runtime::new().unwrap();
     let mut generations = Vec::new();
     for generation in 1..=2 {
@@ -363,7 +448,7 @@ done
             assert_eq!(&identity(expected.0), expected);
         }
         assert_eq!(application(&ipc), Some(window));
-        drop(transport);
+        transport.stop();
         assert!(!owner.exited());
         assert_eq!(application(&ipc), Some(window));
         generations.push(frame);
@@ -371,12 +456,22 @@ done
     assert_eq!(fs::read_to_string(&config).unwrap(), configuration);
     assert_eq!(
         fs::read_to_string(&included).unwrap(),
-        "input { keyboard { xkb { layout \"us\"; }; }; }\n"
+        include_source
     );
-    drop(owner);
+    owner.stop();
     assert!(!runtime.join("session.json").exists());
-    for expected in &identities {
-        assert!(!Path::new(&format!("/proc/{}", expected.0)).exists());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let remaining = identities.iter().any(|expected| {
+            snapshot(expected.0).is_some_and(|(state, start)| {
+                start == expected.1 && state != "Z" && state != "X"
+            })
+        });
+        if !remaining && cleanup.live_children().is_empty() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "owner left live fixture processes before independent fallback cleanup");
+        thread::sleep(Duration::from_millis(20));
     }
     let result = json!({"identities":identities,"window":window,"generations":generations,"native_includes_preserved":true,"pond_shell_tested":false,"platform_proxy_tested":false});
     fs::write(
