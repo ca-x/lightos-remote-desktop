@@ -1,7 +1,7 @@
 # Maintainer: ca-x <https://github.com/ca-x>
 pkgname=lightos-remoted-bin
-pkgver=0.1.22
-pkgrel=2
+pkgver=0.1.23
+pkgrel=1
 pkgdesc='Cross-platform Rust remote desktop host for browser clients (Linux binary)'
 arch=('x86_64')
 url='https://github.com/ca-x/lightos-remote-desktop'

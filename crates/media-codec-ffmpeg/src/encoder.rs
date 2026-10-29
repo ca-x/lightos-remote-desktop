@@ -32,13 +32,31 @@ impl Drop for Bitstream {
 // sws_scale's legacy slice API keeps RGBA conversion on one CPU thread.
 struct PixelConverter(*mut ffi::SwsContext);
 impl PixelConverter {
-    fn new() -> Result<Self> {
+    fn new(width: u32, height: u32) -> Result<Self> {
         let converter = Self(unsafe { ffi::sws_alloc_context() });
         ensure!(!converter.0.is_null(), "allocate pixel converter");
         unsafe {
+            for (option, value) in [
+                (c"srcw", i64::from(width)),
+                (c"srch", i64::from(height)),
+                (c"dstw", i64::from(width)),
+                (c"dsth", i64::from(height)),
+                (c"src_format", ffi::AVPixelFormat::AV_PIX_FMT_RGBA as i64),
+                (c"dst_format", ffi::AVPixelFormat::AV_PIX_FMT_NV12 as i64),
+                (
+                    c"sws_flags",
+                    i64::from(ffmpeg::software::scaling::flag::Flags::BILINEAR.bits()),
+                ),
+                (c"threads", 2),
+            ] {
+                check(
+                    ffi::av_opt_set_int(converter.0.cast(), option.as_ptr(), value, 0),
+                    "configure pixel conversion",
+                )?;
+            }
             check(
-                ffi::av_opt_set_int(converter.0.cast(), c"threads".as_ptr(), 2, 0),
-                "configure pixel conversion threads",
+                ffi::sws_init_context(converter.0, ptr::null_mut(), ptr::null_mut()),
+                "initialize pixel converter",
             )?;
         }
         Ok(converter)
@@ -345,7 +363,7 @@ impl NativeEncoder {
             );
         }
         let filter = Bitstream::new(&encoder)?;
-        let scaler = PixelConverter::new()?;
+        let scaler = PixelConverter::new(settings.width, settings.height)?;
         Ok(Self {
             name,
             backend,
@@ -581,6 +599,47 @@ fn verify(
 mod tests {
     use super::*;
     use ffmpeg::software::scaling;
+
+    #[test]
+    fn native_pixel_converter_initializes_geometry_and_formats_before_first_frame() {
+        ffmpeg::init().unwrap();
+        let settings = EncoderSettings {
+            width: 640,
+            height: 360,
+            fps: 30,
+            quality: 75,
+        };
+        let rate = EncoderRate {
+            bitrate_bps: 900_000,
+            fps: 30,
+        };
+        let encoder =
+            NativeEncoder::open("libx264", EncoderBackend::OpenH264, settings, rate).unwrap();
+        for (option, expected) in [
+            (c"srcw", i64::from(settings.width)),
+            (c"srch", i64::from(settings.height)),
+            (c"dstw", i64::from(settings.width)),
+            (c"dsth", i64::from(settings.height)),
+            (c"src_format", ffi::AVPixelFormat::AV_PIX_FMT_RGBA as i64),
+            (c"dst_format", ffi::AVPixelFormat::AV_PIX_FMT_NV12 as i64),
+        ] {
+            let mut configured = 0;
+            unsafe {
+                check(
+                    ffi::av_opt_get_int(
+                        encoder.scaler.0.cast(),
+                        option.as_ptr(),
+                        0,
+                        &mut configured,
+                    ),
+                    "read pixel conversion option",
+                )
+                .unwrap();
+            }
+            assert_eq!(configured, expected, "{option:?}");
+        }
+    }
+
     #[test]
     fn vaapi_device_selection_continues_after_frame_or_encoding_failure() {
         let paths = ["renderD128", "renderD129", "renderD130"]
@@ -783,7 +842,7 @@ mod reuse_tests {
     fn cpu_frames_reuse_allocations_without_mutating_referenced_output() {
         ffmpeg::init().unwrap();
         let mut frames = CpuFrames::new(640, 360);
-        let mut scaler = PixelConverter::new().unwrap();
+        let mut scaler = PixelConverter::new(640, 360).unwrap();
         let pixels = vec![80; 640 * 360 * 4];
         frames.convert(&pixels, &mut scaler).unwrap();
         #[cfg(not(all(target_os = "linux", feature = "fast-yuv")))]

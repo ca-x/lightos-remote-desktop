@@ -25,6 +25,9 @@ jobs:
           bash scripts/build-hyprland-cursor.sh "$RUNNER_TEMP/lightos-cursor.so"
           test -s "$RUNNER_TEMP/lightos-cursor.so"
           readelf -h "$RUNNER_TEMP/lightos-cursor.so" | grep -q 'DYN (Shared object file)'
+          capture_hook=$(strings "$RUNNER_TEMP/lightos-cursor.so" | grep -E '^_ZN11Screenshare17CScreenshareFrame13renderMonitor')
+          readelf --dyn-syms --wide "$(command -v Hyprland)" | awk '{print $NF}' > "$RUNNER_TEMP/hyprland-symbols"
+          grep -Fx "$capture_hook" "$RUNNER_TEMP/hyprland-symbols"
   test:
     runs-on: ubuntu-latest
     env:
