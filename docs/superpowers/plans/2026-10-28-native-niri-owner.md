@@ -109,6 +109,10 @@ Files: `src/session.rs`, `src/session/niri.rs`,
 
 ## Evidence
 
+- Publisher candidate 0ab363e/40792935194 stops at rustfmt before behavior.
+  Apply only the reported GitHub formatting diff; no local formatter or test
+  runs. Keep the publisher unaccepted until the subprocess suite actually runs.
+
 - Task-3 publisher behavior RED is 52e2030/40790727648: all three process
   cases run and fail for the missing niri-session-environment action, not
   formatting. Implement only the private publisher first. Its controlled

@@ -182,9 +182,17 @@ fn accepts_the_private_bus_guid_without_importing_into_user_systemd() {
         ),
     );
     let output = run(command);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(fixture.record().exists());
-    assert!(!fs::read_to_string(&fixture.calls).unwrap().contains("--systemd"));
+    assert!(
+        !fs::read_to_string(&fixture.calls)
+            .unwrap()
+            .contains("--systemd")
+    );
 }
 
 #[test]
@@ -193,21 +201,38 @@ fn publishes_without_an_x11_display() {
     let mut command = fixture.command();
     command.env_remove("DISPLAY");
     let output = run(command);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    let document: serde_json::Value = serde_json::from_slice(&fs::read(fixture.record()).unwrap()).unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture.record()).unwrap()).unwrap();
     assert_eq!(document.as_object().unwrap().len(), 2);
     assert!(document.get("display").is_none());
-    assert!(fs::read_to_string(&fixture.calls).unwrap().lines().any(|line| line == "DISPLAY="));
+    assert!(
+        fs::read_to_string(&fixture.calls)
+            .unwrap()
+            .lines()
+            .any(|line| line == "DISPLAY=")
+    );
 }
 
 #[test]
 fn rejects_ambiguous_or_non_filesystem_bus_addresses() {
-    for suffix in [";unix:path=/tmp/foreign", ",path=/tmp/foreign", ",unused=yes"] {
+    for suffix in [
+        ";unix:path=/tmp/foreign",
+        ",path=/tmp/foreign",
+        ",unused=yes",
+    ] {
         let fixture = Fixture::new();
         let mut command = fixture.command();
         command.env(
             "DBUS_SESSION_BUS_ADDRESS",
-            format!("unix:path={}{suffix}", fixture.runtime.join("bus").display()),
+            format!(
+                "unix:path={}{suffix}",
+                fixture.runtime.join("bus").display()
+            ),
         );
         let output = run(command);
         assert!(!output.status.success());
@@ -217,7 +242,10 @@ fn rejects_ambiguous_or_non_filesystem_bus_addresses() {
     }
     let fixture = Fixture::new();
     let mut command = fixture.command();
-    command.env("DBUS_SESSION_BUS_ADDRESS", "unix:abstract=not-the-private-bus");
+    command.env(
+        "DBUS_SESSION_BUS_ADDRESS",
+        "unix:abstract=not-the-private-bus",
+    );
     let output = run(command);
     assert!(!output.status.success());
     assert!(!fixture.calls.exists());
@@ -288,7 +316,11 @@ fn never_replaces_existing_readiness_or_activates_for_a_stale_record() {
 #[test]
 fn activation_failure_never_publishes_readiness() {
     let fixture = Fixture::new();
-    fs::write(fixture.bin.join("dbus-update-activation-environment"), "#!/bin/sh\nexit 42\n").unwrap();
+    fs::write(
+        fixture.bin.join("dbus-update-activation-environment"),
+        "#!/bin/sh\nexit 42\n",
+    )
+    .unwrap();
     let output = run(fixture.command());
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("activation failed"));
@@ -301,15 +333,26 @@ fn activation_deadline_kills_and_reaps_its_owned_helper_without_publishing() {
     let pid_file = fixture._directory.path().join("activator.pid");
     fs::write(
         fixture.bin.join("dbus-update-activation-environment"),
-        format!("#!/bin/sh\nprintf '%s\\n' \"$$\" > '{}'\nexec /bin/sleep 30\n", pid_file.display()),
-    ).unwrap();
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$$\" > '{}'\nexec /bin/sleep 30\n",
+            pid_file.display()
+        ),
+    )
+    .unwrap();
     let start = Instant::now();
     let output = run(fixture.command());
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("timed out"));
     assert!(start.elapsed() < Duration::from_secs(8));
     assert!(!fixture.record().exists());
-    let pid: i32 = fs::read_to_string(pid_file).unwrap().trim().parse().unwrap();
+    let pid: i32 = fs::read_to_string(pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
     assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
-    assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
 }
