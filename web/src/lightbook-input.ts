@@ -1,13 +1,9 @@
 import { createTouchPair, type TouchPairSample } from "./touch-pair";
+import { isMobilePlatform } from "./platform";
 
 export function supportsLightBook() {
   if ((navigator.maxTouchPoints ?? 0) < 1) return false;
-  // Use touch capability, not viewport size: unfolded phones and tablet
-  // browsers can be wider than a laptop. Mobile OS hints retain availability
-  // when an iPad/Android tablet has a mouse attached.
-  return !!window.matchMedia?.("(pointer: coarse)").matches
-    || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent ?? "")
-    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  return isMobilePlatform();
 }
 
 type Point = { x: number; y: number };

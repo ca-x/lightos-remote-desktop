@@ -4,6 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
 
+const platformSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/platform.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const lightBookSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/lightbook-input.ts", import.meta.url), "utf8")).replace(/^export /gm, "").replace(/^import .* from .*;$/gm, "");
 const zoomSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/picture-zoom.ts", import.meta.url), "utf8")).replace(/^export /gm, "").replace(/^import .* from .*;$/gm, "");
 const cursorSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/cursor.ts", import.meta.url), "utf8")).replace(/^export /gm, "").replace(/^import .* from .*;$/gm, "");
@@ -16,7 +17,7 @@ const preferenceSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/p
 const geometrySource = stripTypeScriptTypes(readFileSync(new URL("../web/src/picture-geometry.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const rotationSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/screen-rotation.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const touchPairSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/touch-pair.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
-const source = touchPairSource + "\n" + geometrySource + "\n" + rotationSource + "\n" + lightBookSource + "\n" + zoomSource + "\n" + cursorSource + "\n" + updatesSource + "\n" + resolutionSource + "\n" + mobileSource + "\n" + clipboardSource + "\n" + preferenceSource + "\n" + codecSource + "\n" + stripTypeScriptTypes(readFileSync(new URL("../web/src/client.ts", import.meta.url), "utf8"))
+const source = platformSource + "\n" + touchPairSource + "\n" + geometrySource + "\n" + rotationSource + "\n" + lightBookSource + "\n" + zoomSource + "\n" + cursorSource + "\n" + updatesSource + "\n" + resolutionSource + "\n" + mobileSource + "\n" + clipboardSource + "\n" + preferenceSource + "\n" + codecSource + "\n" + stripTypeScriptTypes(readFileSync(new URL("../web/src/client.ts", import.meta.url), "utf8"))
 
   .replace(/^import .* from .*;$/gm, "")
   .replace(/^export /gm, "") + '\nconst audioWorkerUrl = "./audio-worker.js"; const audioWorkletUrl = "./audio-worklet.js"; const client = createClient(clientOptions);';
@@ -2207,7 +2208,7 @@ test("remote input-method shortcut sends Ctrl+Space without requiring an OS-rese
 
 
 test("rotated mobile fullscreen negotiates landscape encoding bounds while controls retain their screen axes", async () => {
-  const app = harness("/", new Map(), {}, 2, 5);
+  const app = harness("/", new Map(), {}, 2, 5, "Android");
   app.window.innerWidth=390; app.window.innerHeight=844;
   const socket=app.ready();
   socket.json({type:"ready",width:1280,height:720,desktop:"virtual",resize:false,frame_ack:true,frame_ids:true,video_scaling:true});

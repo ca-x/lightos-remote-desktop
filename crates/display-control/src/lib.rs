@@ -9,6 +9,8 @@ mod kscreen;
 #[cfg(target_os = "linux")]
 mod mutter;
 #[cfg(target_os = "linux")]
+mod nested;
+#[cfg(target_os = "linux")]
 mod session;
 #[cfg(target_os = "linux")]
 mod wayland;

@@ -73,7 +73,7 @@ impl HardwareEncoders {
                     "backend is unsupported on this operating system"
                 );
                 self.check_path()?;
-                let mut worker = Worker::spawn(&self.path)?;
+                let mut worker = Worker::spawn(&self.path, None)?;
                 let result = worker
                     .exchange(Request::Probe { backend }, self.deadlines.probe)
                     .await;
@@ -170,14 +170,42 @@ impl HardwareEncoders {
 }
 
 struct Worker {
+    #[cfg(target_os = "linux")]
+    shared: Option<wire::shared_frame::SharedFrame>,
     child: Child,
     input: FramedWrite<ChildStdin, LengthDelimitedCodec>,
     output: FramedRead<ChildStdout, LengthDelimitedCodec>,
     poisoned: bool,
 }
 impl Worker {
-    fn spawn(path: &PathBuf) -> Result<Self> {
-        let mut child = Command::new(path)
+    fn spawn(path: &PathBuf, frame_size: Option<usize>) -> Result<Self> {
+        let mut command = Command::new(path);
+        #[cfg(target_os = "linux")]
+        let shared = {
+            use wire::shared_frame::{CHILD_FD, ENV, SharedFrame};
+            let shared = frame_size.and_then(|length| SharedFrame::new(length).ok());
+            command.env_remove(ENV);
+            if let Some(frame) = &shared {
+                let fd = frame.fd();
+                command.env(ENV, CHILD_FD.to_string());
+                // SAFETY: only async-signal-safe descriptor operations run
+                // between fork and exec. The parent keeps the original file.
+                unsafe {
+                    command.pre_exec(move || {
+                        if (fd != CHILD_FD && libc::dup2(fd, CHILD_FD) < 0)
+                            || libc::fcntl(CHILD_FD, libc::F_SETFD, 0) < 0
+                        {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+            }
+            shared
+        };
+        #[cfg(not(target_os = "linux"))]
+        let _ = frame_size;
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -197,6 +225,8 @@ impl Worker {
                 .new_codec(),
         );
         Ok(Self {
+            #[cfg(target_os = "linux")]
+            shared,
             child,
             input,
             output,
@@ -214,6 +244,14 @@ impl Worker {
         }
         self.poisoned = true;
         let result = timeout(deadline, async {
+            #[cfg(target_os = "linux")]
+            let request = match request {
+                Request::Frame { pixels, rate } if self.shared.is_some() => {
+                    self.shared.as_mut().unwrap().write(pixels)?;
+                    Request::Frame { pixels: &[], rate }
+                }
+                request => request,
+            };
             self.input
                 .send(Bytes::from(wire::pack(&request)?))
                 .await
@@ -260,7 +298,8 @@ impl VideoEncoder for HardwareEncoder {
         Box::pin(async move {
             wire::validate_pixels(self.settings, &pixels)?;
             if self.worker.is_none() {
-                let mut worker = Worker::spawn(&self.factory.path)?;
+                let frame_size = self.settings.width as usize * self.settings.height as usize * 4;
+                let mut worker = Worker::spawn(&self.factory.path, Some(frame_size))?;
                 ensure!(
                     matches!(
                         worker

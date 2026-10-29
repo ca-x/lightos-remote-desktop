@@ -1,10 +1,13 @@
 //! Local native-worker protocol. Both peers bound lengths before deserializing.
 use crate::{EncoderBackend, EncoderRate, EncoderSettings};
 use anyhow::{Result, ensure};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 
 pub const VERSION: u16 = 1;
 pub const MAX_MESSAGE: usize = 64 * 1024 * 1024;
+
+#[cfg(target_os = "linux")]
+pub mod shared_frame;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(bound(
@@ -48,10 +51,10 @@ pub fn pack(value: &impl Serialize) -> Result<Vec<u8>> {
     ensure!(bytes.len() <= MAX_MESSAGE, "worker message too large");
     Ok(bytes)
 }
-pub fn unpack<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+pub fn unpack<'de, T: Deserialize<'de>>(bytes: &'de [u8]) -> Result<T> {
     ensure!(bytes.len() <= MAX_MESSAGE, "worker message too large");
     let ((version, value), read): ((u16, T), _) =
-        bincode::serde::decode_from_slice(bytes, config())?;
+        bincode::serde::borrow_decode_from_slice(bytes, config())?;
     ensure!(version == VERSION, "incompatible codec worker protocol");
     ensure!(read == bytes.len(), "trailing codec worker data");
     Ok(value)

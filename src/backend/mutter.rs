@@ -19,6 +19,7 @@ const REMOTE: &str = "org.gnome.Mutter.RemoteDesktop";
 const CAST: &str = "org.gnome.Mutter.ScreenCast";
 const CALL: Duration = Duration::from_secs(3);
 const MAX_IMAGE: usize = 8 * 1024 * 1024;
+type Selection = Option<(bool, Arc<[u8]>)>;
 
 struct InputViewport {
     size: (i32, i32),
@@ -32,6 +33,7 @@ enum Control {
 }
 struct Shared {
     stopped: Arc<AtomicBool>,
+    reconfiguring: AtomicBool,
     clipboard: AtomicBool,
     revision: AtomicU64,
     epoch: u64,
@@ -56,6 +58,7 @@ impl Backend {
         let (control, requests) = mpsc::channel(8);
         let shared = Arc::new(Shared {
             stopped: Arc::new(AtomicBool::new(false)),
+            reconfiguring: AtomicBool::new(false),
             clipboard: AtomicBool::new(false),
             revision: AtomicU64::new(0),
             epoch: rand::random(),
@@ -70,17 +73,34 @@ impl Backend {
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()?;
-                    let result = runtime.block_on(run(
-                        target,
-                        pid,
-                        frames_tx.clone(),
-                        cursors_tx,
-                        commands,
-                        requests,
-                        state.clone(),
-                        cancelled,
-                        &mut ready,
-                    ));
+                    let mut commands = commands;
+                    let mut requests = requests;
+                    let mut selection = None;
+                    let result = loop {
+                        let mut reconfigure = false;
+                        let result = runtime.block_on(run(
+                            target.clone(),
+                            pid,
+                            frames_tx.clone(),
+                            cursors_tx.clone(),
+                            &mut commands,
+                            &mut requests,
+                            state.clone(),
+                            cancelled.clone(),
+                            &mut ready,
+                            &mut reconfigure,
+                            &mut selection,
+                        ));
+                        if reconfigure
+                            && result.is_ok()
+                            && !state.stopped.load(Ordering::Acquire)
+                            && !cancelled.load(Ordering::Acquire)
+                        {
+                            tracing::info!("refreshing owned GNOME capture after display change");
+                            continue;
+                        }
+                        break result;
+                    };
                     runtime.shutdown_timeout(Duration::from_secs(1));
                     result
                 })();
@@ -169,7 +189,8 @@ impl DesktopBackend for Backend {
     fn frame_is_fresh(&self, _max_age: Duration) -> bool {
         // PipeWire stops publishing pixels on a static desktop. The session
         // Closed/error signals and worker lifetime establish liveness instead.
-        !self.is_stopped() && self.frames.borrow().is_some()
+        !self.is_stopped()
+            && (self.shared.reconfiguring.load(Ordering::Acquire) || self.frames.borrow().is_some())
     }
     fn is_stopped(&self) -> bool {
         self.shared.stopped.load(Ordering::Acquire)
@@ -257,11 +278,13 @@ async fn run(
     pid: u32,
     frames: watch::Sender<Option<Arc<Frame>>>,
     cursors: watch::Sender<Option<Arc<CursorFrame>>>,
-    mut input: mpsc::Receiver<InputCommand>,
-    mut control: mpsc::Receiver<Control>,
+    input: &mut mpsc::Receiver<InputCommand>,
+    control: &mut mpsc::Receiver<Control>,
     shared: Arc<Shared>,
     requested: Arc<AtomicBool>,
     ready: &mut Option<sync_mpsc::SyncSender<std::result::Result<(), String>>>,
+    reconfigure: &mut bool,
+    selection: &mut Selection,
 ) -> Result<()> {
     let cursor_position = cursors.subscribe();
     let bus = timeout(
@@ -274,11 +297,30 @@ async fn run(
     .await??;
     let rd_owner = timeout(CALL, owner(&bus, REMOTE, pid)).await??;
     let cast_owner = timeout(CALL, owner(&bus, CAST, pid)).await??;
+    let display = proxy(
+        &bus,
+        &cast_owner,
+        "/org/gnome/Mutter/DisplayConfig",
+        "org.gnome.Mutter.DisplayConfig",
+    )
+    .await?;
+    let mut monitors = display.receive_signal("MonitorsChanged").await?;
     let api = proxy(&bus, &rd_owner, "/org/gnome/Mutter/RemoteDesktop", REMOTE).await?;
     let path: OwnedObjectPath = timeout(CALL, api.call("CreateSession", &())).await??;
     let session = proxy(&bus, &rd_owner, path.as_str(), &format!("{REMOTE}.Session")).await?;
     let mut closed = session.receive_signal("Closed").await?;
     let mut capture = None;
+    let capture_stopped = Arc::new(AtomicBool::new(false));
+    let (capture_frames, mut capture_updates) = watch::channel(None::<Arc<Frame>>);
+    let published = frames.clone();
+    let relay = tokio::spawn(async move {
+        while capture_updates.changed().await.is_ok() {
+            let frame = capture_updates.borrow_and_update().clone();
+            if let Some(frame) = frame {
+                published.send_replace(Some(frame));
+            }
+        }
+    });
     let mut held_keys = BTreeSet::new();
     let mut held_buttons = BTreeSet::new();
     let operation = async {
@@ -340,8 +382,9 @@ async fn run(
             connection.set_nonblocking(true)?;
             let fd: OwnedFd = connection.into();
             let (failed, failure) = watch::channel(None);
-            let captured = frames.clone();
-            let stopped = shared.stopped.clone();
+            let captured = capture_frames.clone();
+            let capture_cursors = cursors.clone();
+            let stopped = capture_stopped.clone();
             capture = Some(
                 std::thread::Builder::new()
                     .name("gnome-pipewire".into())
@@ -350,7 +393,7 @@ async fn run(
                             fd,
                             node,
                             captured,
-                            cursors,
+                            capture_cursors,
                             failed.clone(),
                             stopped,
                         ) {
@@ -358,7 +401,7 @@ async fn run(
                         }
                     })?,
             );
-            let mut first = frames.subscribe();
+            let mut first = capture_frames.subscribe();
             loop {
                 if first.borrow().is_some() {
                     break;
@@ -375,6 +418,9 @@ async fn run(
             timeout(Duration::from_secs(12), start)
                 .await
                 .context("GNOME startup timed out")??;
+        if let Some(frame) = capture_frames.borrow().clone() {
+            frames.send_replace(Some(frame));
+        }
         // Drain the initial selection before admitting a client, so connecting
         // does not copy an old remote clipboard over the local one.
         let _: String = timeout(CALL, session.get_property("SessionId")).await??;
@@ -383,15 +429,36 @@ async fn run(
             let (mut props,): (HashMap<String, OwnedValue>,) = event.body().deserialize()?;
             mime_types = clipboard_types(props.remove("mime-types"));
         }
+        if let Some((image, _)) = selection.as_ref() {
+            let types = if *image {
+                vec!["image/png"]
+            } else {
+                vec!["text/plain;charset=utf-8", "text/plain"]
+            };
+            timeout(
+                CALL,
+                session.call::<_, _, ()>(
+                    "SetSelection",
+                    &(HashMap::from([("mime-types", Value::from(types))]),),
+                ),
+            )
+            .await??;
+        }
+        shared.reconfiguring.store(false, Ordering::Release);
         if let Some(ready) = ready.take() {
             let _ = ready.send(Ok(()));
         }
-        let mut selection: Option<(bool, Arc<[u8]>)> = None;
         let mut legacy_focus: Option<super::x11::Backend> = None;
         let mut work = tokio::task::JoinSet::new();
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         loop {
             tokio::select! {
+                biased;
+                changed=monitors.next()=>{
+                    changed.context("GNOME display observer closed")?;
+                    *reconfigure=true;
+                    break Ok(());
+                },
                 _=tick.tick()=>{if let Some(error)=failure.borrow().as_ref(){bail!("{error}");}},
                 _=closed.next()=>bail!("GNOME remote session closed"),
                 Some(command)=input.recv()=>{
@@ -399,10 +466,10 @@ async fn run(
                     if let Some((command,guard))=command.into_active(){
                         let command = if let InputCommand::Text { text } = command {
                             release(&session,&mut held_keys,&mut held_buttons).await?;
-                            selection=Some((false,text.into_bytes().into()));
+                            *selection=Some((false,text.into_bytes().into()));
                             let props=HashMap::from([("mime-types",Value::from(vec!["text/plain;charset=utf-8","text/plain"]))]);
                             timeout(CALL,session.call::<_,_,()>("SetSelection",&(props,))).await??;
-                            InputCommand::Chord { codes: paste_keys(&mut legacy_focus,pid,&target,shared.stopped.clone(),false).await }
+                            InputCommand::Chord { codes: paste_keys(&mut legacy_focus,pid,&target,capture_stopped.clone(),false).await }
                         } else { command };
                         if guard.as_ref().is_some_and(|guard| !guard.active()) { if let Some(guard)=guard {guard.text_done.notify_one();} continue; }
                         // NotifyPointerMotionAbsolute consumes stream pixels; the
@@ -413,14 +480,22 @@ async fn run(
                             cursor.x*f64::from(cursor.units_width)<=2.0 || cursor.y*f64::from(cursor.units_height)<=2.0 ||
                             (1.0-cursor.x)*f64::from(cursor.units_width)<=2.0 || (1.0-cursor.y)*f64::from(cursor.units_height)<=2.0));
                         let viewport=InputViewport { size: live_size, retry_boundary };
-                        let result=timeout(CALL,apply_input(&session,&stream,viewport,command,guard.as_ref(),&mut held_keys,&mut held_buttons)).await;
+                        let result=timeout(CALL,apply_input(&session,&stream,viewport,command,guard.as_ref(),&mut held_keys,&mut held_buttons)).await.context("GNOME input timed out").and_then(|result|result);
                         if let Some(guard)=guard{guard.text_done.notify_one();}
-                        result??;
+                        if let Err(error)=result {
+                            // Mutter can retire a stream before delivering the
+                            // corresponding monitor-change notification.
+                            if error.to_string().contains("Unknown stream") {
+                                *reconfigure=true;
+                                break Ok(());
+                            }
+                            return Err(error);
+                        }
                     }
                 },
                 Some(request)=control.recv()=>match request {
                     Control::PasteKeys(shift,reply)=>{
-                        if !reply.is_closed(){let keys=paste_keys(&mut legacy_focus,pid,&target,shared.stopped.clone(),shift).await;let _=reply.send(keys);}
+                        if !reply.is_closed(){let keys=paste_keys(&mut legacy_focus,pid,&target,capture_stopped.clone(),shift).await;let _=reply.send(keys);}
                     },
                     Control::Read(image,mut reply)=>{
                         if reply.is_closed(){continue;}
@@ -443,9 +518,9 @@ async fn run(
                         if reply.is_closed(){continue;}
                         let types=if image{vec!["image/png"]}else{vec!["text/plain;charset=utf-8","text/plain"]};
                         let props=HashMap::from([("mime-types",Value::from(types))]);
-                        selection=Some((image,bytes.into()));
+                        *selection=Some((image,bytes.into()));
                         let result=timeout(CALL,session.call::<_,_,()>("SetSelection",&(props,))).await.context("GNOME clipboard write timed out").and_then(|r|r.map_err(Into::into));
-                        if result.is_err()||reply.is_closed(){selection=None;}
+                        if result.is_err()||reply.is_closed(){*selection=None;}
                         let _=reply.send(result);
                     },
                 },
@@ -454,7 +529,7 @@ async fn run(
                     let (mut props,):(HashMap<String,OwnedValue>,)=event.body().deserialize()?;
                     mime_types=clipboard_types(props.remove("mime-types"));
                     if !props.get("session-is-owner").is_some_and(|v|bool::try_from(v).unwrap_or(false)) {
-                        selection=None;shared.revision.fetch_add(1,Ordering::AcqRel);
+                        *selection=None;shared.revision.fetch_add(1,Ordering::AcqRel);
                     }
                 },
                 event=transfers.next()=>{
@@ -476,13 +551,25 @@ async fn run(
         }
     };
     let result = tokio::select! {result=operation=>result,_=cancelled(&shared,&requested)=>Ok(())};
-    shared.stopped.store(true, Ordering::Release);
+    if *reconfigure {
+        // The foreground health monitor must distinguish capture renegotiation
+        // from an exited desktop while the next stream's first frame arrives.
+        shared.reconfiguring.store(true, Ordering::Release);
+    } else {
+        shared.stopped.store(true, Ordering::Release);
+    }
+    capture_stopped.store(true, Ordering::Release);
+    relay.abort();
+    let _ = relay.await;
     let _ = timeout(CALL, release(&session, &mut held_keys, &mut held_buttons)).await;
     let _ = timeout(CALL, session.call::<_, _, ()>("Stop", &())).await;
     if let Some(capture) = capture {
         let _ = capture.join();
     }
-    frames.send_replace(None);
+    if !*reconfigure {
+        frames.send_replace(None);
+        cursors.send_replace(None);
+    }
     result
 }
 

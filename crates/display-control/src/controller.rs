@@ -59,6 +59,12 @@ impl DisplayBackend {
             other => other,
         };
         let fallback_socket = target.wayland_socket.clone();
+        let nested = if owned && fallback_socket.is_some() {
+            std::env::var_os("LIGHTOS_REMOTE_DESKTOP_NESTED_RESIZE_HELPER")
+                .map(|helper| (target.clone(), std::path::PathBuf::from(helper)))
+        } else {
+            None
+        };
         let controller: Arc<dyn DisplayController> = match backend {
             Self::Hyprland if !owned && signature.is_none() => Arc::new(WaylandDisplay::new(
                 target
@@ -105,6 +111,13 @@ impl DisplayBackend {
             } else {
                 controller
             };
+        let controller: Arc<dyn DisplayController> = if let Some((target, helper)) = nested {
+            Arc::new(crate::nested::NestedDisplay::new(
+                controller, target, helper,
+            ))
+        } else {
+            controller
+        };
         Ok(if owned {
             controller
         } else {

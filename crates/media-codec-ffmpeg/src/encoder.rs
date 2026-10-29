@@ -1,8 +1,5 @@
 use anyhow::{Context, Result, bail, ensure};
-use ffmpeg_next::{
-    self as ffmpeg, Dictionary, Packet, codec, encoder, ffi, format::Pixel, frame,
-    software::scaling,
-};
+use ffmpeg_next::{self as ffmpeg, Dictionary, Packet, codec, encoder, ffi, format::Pixel, frame};
 use media_codec::{
     EncodedFrame, EncoderBackend, EncoderRate, EncoderSettings, default_bitrate, h264_packet_info,
     worker_protocol::{validate_pixels, validate_settings},
@@ -29,6 +26,36 @@ impl Drop for Bitstream {
         unsafe {
             ffi::av_bsf_free(&mut self.0);
         }
+    }
+}
+// The frame API can split conversion across a bounded number of workers;
+// sws_scale's legacy slice API keeps RGBA conversion on one CPU thread.
+struct PixelConverter(*mut ffi::SwsContext);
+impl PixelConverter {
+    fn new() -> Result<Self> {
+        let converter = Self(unsafe { ffi::sws_alloc_context() });
+        ensure!(!converter.0.is_null(), "allocate pixel converter");
+        unsafe {
+            check(
+                ffi::av_opt_set_int(converter.0.cast(), c"threads".as_ptr(), 2, 0),
+                "configure pixel conversion threads",
+            )?;
+        }
+        Ok(converter)
+    }
+    #[cfg(not(all(target_os = "linux", feature = "fast-yuv")))]
+    fn convert(&mut self, source: &frame::Video, target: &mut frame::Video) -> Result<()> {
+        unsafe {
+            check(
+                ffi::sws_scale_frame(self.0, target.as_mut_ptr(), source.as_ptr()),
+                "convert RGBA to NV12",
+            )
+        }
+    }
+}
+impl Drop for PixelConverter {
+    fn drop(&mut self) {
+        unsafe { ffi::sws_freeContext(self.0) }
     }
 }
 impl Bitstream {
@@ -79,17 +106,20 @@ impl Bitstream {
 }
 /// Reuse CPU storage while respecting references retained by FFmpeg/drivers.
 struct CpuFrames {
+    #[cfg(not(all(target_os = "linux", feature = "fast-yuv")))]
     rgba: frame::Video,
     converted: frame::Video,
 }
 impl CpuFrames {
     fn new(width: u32, height: u32) -> Self {
         Self {
+            #[cfg(not(all(target_os = "linux", feature = "fast-yuv")))]
             rgba: frame::Video::new(Pixel::RGBA, width, height),
             converted: frame::Video::new(Pixel::NV12, width, height),
         }
     }
-    fn convert(&mut self, pixels: &[u8], scaler: &mut scaling::Context) -> Result<()> {
+    #[cfg(not(all(target_os = "linux", feature = "fast-yuv")))]
+    fn convert(&mut self, pixels: &[u8], scaler: &mut PixelConverter) -> Result<()> {
         unsafe {
             check(
                 ffi::av_frame_make_writable(self.rgba.as_mut_ptr()),
@@ -105,9 +135,51 @@ impl CpuFrames {
         for (y, source) in pixels.chunks_exact(row).enumerate() {
             self.rgba.data_mut(0)[y * stride..y * stride + row].copy_from_slice(source);
         }
-        scaler.run(&self.rgba, &mut self.converted)?;
+        scaler.convert(&self.rgba, &mut self.converted)?;
         Ok(())
     }
+    #[cfg(all(target_os = "linux", feature = "fast-yuv"))]
+    fn convert(&mut self, pixels: &[u8], _scaler: &mut PixelConverter) -> Result<()> {
+        // libyuv's ABGR name describes the word order; its byte input is RGBA.
+        // Conversion is synchronous, so the request's validated pixel slice can
+        // be used directly without allocating and copying another RGBA frame.
+        let width = self.converted.width() as i32;
+        let height = self.converted.height() as i32;
+        let y_stride = self.converted.stride(0) as i32;
+        let uv_stride = self.converted.stride(1) as i32;
+        unsafe {
+            check(
+                ffi::av_frame_make_writable(self.converted.as_mut_ptr()),
+                "make NV12 frame writable",
+            )?;
+            let status = ABGRToNV12(
+                pixels.as_ptr(),
+                width * 4,
+                self.converted.data_mut(0).as_mut_ptr(),
+                y_stride,
+                self.converted.data_mut(1).as_mut_ptr(),
+                uv_stride,
+                width,
+                height,
+            );
+            ensure!(status == 0, "convert RGBA to NV12: libyuv status {status}");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "fast-yuv"))]
+unsafe extern "C" {
+    fn ABGRToNV12(
+        source: *const u8,
+        source_stride: i32,
+        y: *mut u8,
+        y_stride: i32,
+        uv: *mut u8,
+        uv_stride: i32,
+        width: i32,
+        height: i32,
+    ) -> i32;
 }
 pub struct NativeEncoder {
     name: &'static str,
@@ -117,7 +189,7 @@ pub struct NativeEncoder {
     encoder: encoder::Video,
     filter: Bitstream,
     upload: Option<Buffer>,
-    scaler: scaling::Context,
+    scaler: PixelConverter,
     frames: CpuFrames,
     pts: i64,
     vaapi_device: Option<PathBuf>,
@@ -191,6 +263,17 @@ impl NativeEncoder {
         // Keep VBV bounded; this is a real native bitrate, not just FPS pacing.
         unsafe {
             (*encoder.as_mut_ptr()).rc_buffer_size = rate.bitrate_bps as i32;
+            #[cfg(all(target_os = "linux", feature = "fast-yuv"))]
+            {
+                // ABGRToNV12 uses the limited-range BT.601 matrix. Captured
+                // desktop RGB has sRGB/BT.709 primaries, not a BT.709 YUV matrix.
+                // Explicit VUI prevents browsers from guessing the HD matrix.
+                (*encoder.as_mut_ptr()).colorspace = ffi::AVColorSpace::AVCOL_SPC_SMPTE170M;
+                (*encoder.as_mut_ptr()).color_range = ffi::AVColorRange::AVCOL_RANGE_MPEG;
+                (*encoder.as_mut_ptr()).color_primaries = ffi::AVColorPrimaries::AVCOL_PRI_BT709;
+                (*encoder.as_mut_ptr()).color_trc =
+                    ffi::AVColorTransferCharacteristic::AVCOL_TRC_IEC61966_2_1;
+            }
         }
         let upload = if backend == EncoderBackend::Vaapi {
             Some(vaapi_frames(
@@ -262,15 +345,7 @@ impl NativeEncoder {
             );
         }
         let filter = Bitstream::new(&encoder)?;
-        let scaler = scaling::Context::get(
-            Pixel::RGBA,
-            settings.width,
-            settings.height,
-            Pixel::NV12,
-            settings.width,
-            settings.height,
-            scaling::flag::Flags::BILINEAR,
-        )?;
+        let scaler = PixelConverter::new()?;
         Ok(Self {
             name,
             backend,
@@ -505,6 +580,7 @@ fn verify(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ffmpeg::software::scaling;
     #[test]
     fn vaapi_device_selection_continues_after_frame_or_encoding_failure() {
         let paths = ["renderD128", "renderD129", "renderD130"]
@@ -707,21 +783,14 @@ mod reuse_tests {
     fn cpu_frames_reuse_allocations_without_mutating_referenced_output() {
         ffmpeg::init().unwrap();
         let mut frames = CpuFrames::new(640, 360);
-        let mut scaler = scaling::Context::get(
-            Pixel::RGBA,
-            640,
-            360,
-            Pixel::NV12,
-            640,
-            360,
-            scaling::flag::Flags::BILINEAR,
-        )
-        .unwrap();
+        let mut scaler = PixelConverter::new().unwrap();
         let pixels = vec![80; 640 * 360 * 4];
         frames.convert(&pixels, &mut scaler).unwrap();
+        #[cfg(not(all(target_os = "linux", feature = "fast-yuv")))]
         let rgba = frames.rgba.data(0).as_ptr();
         let output = frames.converted.data(0).as_ptr();
         frames.convert(&pixels, &mut scaler).unwrap();
+        #[cfg(not(all(target_os = "linux", feature = "fast-yuv")))]
         assert_eq!(rgba, frames.rgba.data(0).as_ptr());
         assert_eq!(output, frames.converted.data(0).as_ptr());
         let retained = frames.converted.clone();

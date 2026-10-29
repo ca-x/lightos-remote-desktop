@@ -26,7 +26,7 @@ it('gates by mobile touch capability, retaining tablets with desktop browser ide
  vi.stubGlobal('navigator',{maxTouchPoints:5,userAgent:'Android Tablet',platform:'Linux'});expect(supportsLightBook()).toBe(true);
  vi.stubGlobal('navigator',{maxTouchPoints:5,userAgent:'Macintosh',platform:'MacIntel'});expect(supportsLightBook()).toBe(true);
  vi.stubGlobal('navigator',{maxTouchPoints:5,userAgent:'Windows',platform:'Win32'});expect(supportsLightBook()).toBe(false);
- vi.stubGlobal('matchMedia',()=>({matches:true}));expect(supportsLightBook()).toBe(true);
+ vi.stubGlobal('matchMedia',()=>({matches:true}));expect(supportsLightBook()).toBe(false);
 });
 it('supports held Super+Space and one-shot tapped modifiers without stuck keys',()=>{
  pointer(key('MetaLeft'),'pointerdown',1);pointer(key('Space'),'pointerdown',2);pointer(key('Space'),'pointerup',2);pointer(key('MetaLeft'),'pointerup',1);

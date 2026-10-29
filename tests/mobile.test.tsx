@@ -29,6 +29,7 @@ beforeEach(() => {
   visual = Object.assign(new EventTarget(), { width: 390, height: 844, offsetTop: 0, offsetLeft: 0 });
   vi.stubGlobal("visualViewport", visual);
   vi.stubGlobal("innerHeight", 844);
+  vi.stubGlobal("navigator", { platform: "Android", userAgent: "Android", maxTouchPoints: 5 });
   vi.stubGlobal("matchMedia", () => Object.assign(new EventTarget(), { matches: true }));
   controls = createMobileControls({
     canvas: document.querySelector("canvas")!, viewport, input, bar: document.querySelector("nav")!, toggle,
