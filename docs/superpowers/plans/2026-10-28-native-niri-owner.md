@@ -109,6 +109,23 @@ Files: `src/session.rs`, `src/session/niri.rs`,
 
 ## Evidence
 
+- Publisher-only GREEN is edf216e/40794000163, Linux test job123185863015:
+  both bundled-jpeg and bundled-jpeg/rdp/portal run all twelve process cases
+  successfully, including all three malformed UUID spellings; both all-target
+  clippy runs, fmt, private FreeRDP/X11 and package/installer regressions pass.
+  Independent narrow re-review closes the GUID P2 without a new P1/P2.
+  This is not full repository CI: aur-native-cursor still fails against the
+  mutable Arch Hyprland ABI; other build/native-host jobs were still running.
+- Task 3 is not complete: the record consumer, same-Niri UID/PID/executable/
+  process-origin admission, previous-generation cleanup and real private-bus/
+  compositor acceptance remain to implement with the actual owner branch.
+  The native startup guard still refuses to launch an incomplete owner.
+  Stub socket/activator success cannot prove a real bus, capture or persistence.
+- Review coverage follow-ups: test owned activator descendants and unrelated
+  process-group isolation, concurrent destination creation, and startup
+  cancellation when the publisher has its activator in a separate group.
+  These are not claimed as covered by the current exec-sleep timeout fixture.
+
 - GUID behavior RED is 68e4abb/40793321370: eleven publisher cases pass and
   the added subprocess case rejects neither the hyphenated UUID nor activation,
   failing with non-D-Bus GUID accepted. Narrow the parsed optional GUID to
