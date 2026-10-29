@@ -55,6 +55,15 @@ jobs:
       - run: npm run build
       - run: npm test
       - run: cargo fmt --all --check
+      - name: Native owner cancellation and private log boundaries
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=0
+          cargo test --locked --features bundled-jpeg --test niri_activation_cancel -- --nocapture || status=1
+          cargo test --locked --features bundled-jpeg --lib session_logs_never_follow_aliases_or_truncate_an_unrelated_file -- --nocapture || status=1
+          exit "$status"
       - name: Test workspace including MCP HTTP, authorization and input cleanup
         run: cargo test --workspace --locked --features bundled-jpeg
       - run: cargo clippy --workspace --locked --features bundled-jpeg --all-targets -- -D warnings
