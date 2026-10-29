@@ -127,14 +127,26 @@ mod tests {
         let native = directory.path().join("config.kdl");
         std::fs::write(&native, "").unwrap();
         let runtime = "/tmp/lrd.owner.ABCDEF/session";
-        assert!(crate::session::validate_runtime_socket_paths(std::path::Path::new(runtime)).is_err());
+        assert!(
+            crate::session::validate_runtime_socket_paths(std::path::Path::new(runtime)).is_err()
+        );
         let settings = config(&[
-            "test", "--password", "some-long-secret", "--compositor", "niri",
-            "--desktop-config", native.to_str().unwrap(), "--runtime-dir", runtime,
+            "test",
+            "--password",
+            "some-long-secret",
+            "--compositor",
+            "niri",
+            "--desktop-config",
+            native.to_str().unwrap(),
+            "--runtime-dir",
+            runtime,
         ]);
         assert!(settings.validate().is_ok());
         let too_long = format!("/{}", "x".repeat(100));
-        assert!(crate::session::validate_niri_runtime_socket_paths(std::path::Path::new(&too_long)).is_err());
+        assert!(
+            crate::session::validate_niri_runtime_socket_paths(std::path::Path::new(&too_long))
+                .is_err()
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -161,7 +173,11 @@ mod tests {
                 "/nonexistent/lightos-native-cage",
             ]);
             let error = crate::session::Session::start(&settings).err().unwrap();
-            assert!(error.to_string().contains("missing native desktop executable"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("missing native desktop executable")
+            );
             assert!(!runtime.exists());
         }
     }

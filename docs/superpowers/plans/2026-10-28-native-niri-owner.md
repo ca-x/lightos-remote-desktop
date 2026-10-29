@@ -4,6 +4,16 @@ Status: resumed narrowly on 2026-10-29 after the kit and real Pond payload
 initialization/frame gates passed. Implement only the native owner seam needed
 by the current image goal; no codec/AUR research or unrelated refactoring.
 
+2026-10-29 owner evidence: `c8f317f` / probe `40798343643` started the
+actual Niri owner and included foot application, then established an authenticated
+transport. Its first ready message incorrectly advertised resize/scale through
+automatic wlroots controls, failing the existing behavioral assertion before
+colored-frame or two-generation acceptance. Native descriptor-v1 owners and their
+attachments now default to query-only Wayland output discovery; no native resize
+claim is made without its own implementation and behavioral acceptance. The
+probe explicitly requests JPEG before checking fresh red/blue application pixels.
+Full owner acceptance and production-image publication remain pending.
+
 > For agentic workers: use the executing-plans skill task by task. Do not start
 > implementation before the real capture/input/text-clipboard prerequisite.
 

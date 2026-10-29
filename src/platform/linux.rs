@@ -83,6 +83,9 @@ pub fn context(config: &Config, backend: Arc<dyn DesktopBackend>, session: Sessi
 
 fn session_displays(config: &Config, session: &Session) -> Arc<dyn DisplayController> {
     let target = session.target();
+    if config.display_backend == display_control::DisplayBackend::Auto && session.is_native_niri() {
+        return Arc::new(WaylandDisplay::new(session.socket.clone()));
+    }
     match config.display_backend.controller(
         target.clone(),
         environment(&target),

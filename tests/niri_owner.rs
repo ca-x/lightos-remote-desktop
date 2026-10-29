@@ -32,22 +32,33 @@ const APPLICATION: &str = "lightos-niri-owner-fixture";
 struct FixtureCleanup;
 
 fn direct_children() -> Vec<u32> {
-    fs::read_dir("/proc/self/task").unwrap().filter_map(Result::ok).flat_map(|task| {
-        fs::read_to_string(task.path().join("children")).unwrap_or_default()
-            .split_whitespace().filter_map(|pid| pid.parse().ok()).collect::<Vec<_>>()
-    }).collect()
+    fs::read_dir("/proc/self/task")
+        .unwrap()
+        .filter_map(Result::ok)
+        .flat_map(|task| {
+            fs::read_to_string(task.path().join("children"))
+                .unwrap_or_default()
+                .split_whitespace()
+                .filter_map(|pid| pid.parse().ok())
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 impl FixtureCleanup {
     fn new() -> Self {
-        assert_eq!(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) }, 0);
+        assert_eq!(
+            unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) },
+            0
+        );
         Self
     }
 
     fn live_children(&self) -> Vec<u32> {
-        direct_children().into_iter().filter(|pid| {
-            snapshot(*pid).is_some_and(|(state, _)| state != "Z" && state != "X")
-        }).collect()
+        direct_children()
+            .into_iter()
+            .filter(|pid| snapshot(*pid).is_some_and(|(state, _)| state != "Z" && state != "X"))
+            .collect()
     }
 }
 
@@ -65,11 +76,26 @@ impl Drop for FixtureCleanup {
                     continue;
                 }
                 let lifetime = unsafe { fs::File::from_raw_fd(raw) };
-                let parent = fs::read_to_string(format!("/proc/{pid}/stat")).ok().and_then(|stat| {
-                    stat.rsplit_once(") ")?.1.split_whitespace().nth(1)?.parse::<u32>().ok()
-                });
+                let parent = fs::read_to_string(format!("/proc/{pid}/stat"))
+                    .ok()
+                    .and_then(|stat| {
+                        stat.rsplit_once(") ")?
+                            .1
+                            .split_whitespace()
+                            .nth(1)?
+                            .parse::<u32>()
+                            .ok()
+                    });
                 if parent == Some(std::process::id()) {
-                    unsafe { libc::syscall(libc::SYS_pidfd_send_signal, lifetime.as_raw_fd(), libc::SIGKILL, std::ptr::null::<libc::siginfo_t>(), 0) };
+                    unsafe {
+                        libc::syscall(
+                            libc::SYS_pidfd_send_signal,
+                            lifetime.as_raw_fd(),
+                            libc::SIGKILL,
+                            std::ptr::null::<libc::siginfo_t>(),
+                            0,
+                        )
+                    };
                 }
             }
             while unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) } > 0 {}
@@ -110,10 +136,16 @@ impl Process {
         while !self.exited() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(20));
         }
-        assert!(self.exited(), "candidate did not stop after signaling its main process");
+        assert!(
+            self.exited(),
+            "candidate did not stop after signaling its main process"
+        );
         let status = self.child.wait().unwrap();
         self.reaped = true;
-        assert!(status.success(), "candidate returned failure while stopping: {status}");
+        assert!(
+            status.success(),
+            "candidate returned failure while stopping: {status}"
+        );
     }
 }
 
@@ -295,8 +327,15 @@ async fn colored_frame(port: u16, red: bool, output: &Path) -> Value {
                     assert_ne!(value["type"], "error", "{value}");
                     if value["type"] == "ready" {
                         assert_eq!(value["resize"], false, "{value}");
+                        assert_eq!(value["resize_scale"], false, "{value}");
                         assert!(value["width"].as_u64().unwrap() >= 100);
                         ready = true;
+                        socket
+                            .send(Message::Text(
+                                json!({"type":"video","codec":"jpeg"}).to_string().into(),
+                            ))
+                            .await
+                            .unwrap();
                     }
                     if value["type"] == "frame_id" {
                         frame_id = value["id"].as_u64();
@@ -403,6 +442,26 @@ done
         (executable.dev(), executable.ino()),
         (expected.dev(), expected.ino())
     );
+    let bus_pid = socket_pid(&runtime.join("bus"));
+    let launcher_bin = runtime.join("bin");
+    for (name, pid) in [("Niri", niri), ("private bus", bus_pid)] {
+        let process_environment = fs::read(format!("/proc/{pid}/environ")).unwrap();
+        let path = process_environment
+            .split(|byte| *byte == 0)
+            .find_map(|entry| entry.strip_prefix(b"PATH="))
+            .unwrap_or_else(|| panic!("{name} process {pid} has no PATH"));
+        let mut entries = path.split(|byte| *byte == b':');
+        assert_eq!(
+            entries.next(),
+            Some(launcher_bin.as_os_str().as_encoded_bytes()),
+            "{name} process {pid} bypasses session launchers"
+        );
+        assert_eq!(
+            entries.collect::<Vec<_>>(),
+            vec![b"/usr/bin".as_slice()],
+            "{name} process {pid} lost inherited PATH entries"
+        );
+    }
     let arguments = fs::read(format!("/proc/{niri}/cmdline")).unwrap();
     let arguments: Vec<_> = arguments.split(|byte| *byte == 0).collect();
     assert!(arguments.windows(2).any(|pair| {
@@ -412,8 +471,14 @@ done
     let window = application(&ipc).unwrap();
     let application_exe = fs::metadata(format!("/proc/{}/exe", window.1)).unwrap();
     let expected_exe = fs::metadata("/usr/bin/foot").unwrap();
-    assert_eq!((application_exe.dev(), application_exe.ino()), (expected_exe.dev(), expected_exe.ino()));
-    assert_eq!(fs::metadata(format!("/proc/{}", window.1)).unwrap().uid(), unsafe { libc::geteuid() });
+    assert_eq!(
+        (application_exe.dev(), application_exe.ino()),
+        (expected_exe.dev(), expected_exe.ino())
+    );
+    assert_eq!(
+        fs::metadata(format!("/proc/{}", window.1)).unwrap().uid(),
+        unsafe { libc::geteuid() }
+    );
     let identities = [identity(owner.id()), identity(niri), identity(window.1)];
     let executor = tokio::runtime::Runtime::new().unwrap();
     let mut generations = Vec::new();
@@ -454,23 +519,22 @@ done
         generations.push(frame);
     }
     assert_eq!(fs::read_to_string(&config).unwrap(), configuration);
-    assert_eq!(
-        fs::read_to_string(&included).unwrap(),
-        include_source
-    );
+    assert_eq!(fs::read_to_string(&included).unwrap(), include_source);
     owner.stop();
     assert!(!runtime.join("session.json").exists());
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let remaining = identities.iter().any(|expected| {
-            snapshot(expected.0).is_some_and(|(state, start)| {
-                start == expected.1 && state != "Z" && state != "X"
-            })
+            snapshot(expected.0)
+                .is_some_and(|(state, start)| start == expected.1 && state != "Z" && state != "X")
         });
         if !remaining && cleanup.live_children().is_empty() {
             break;
         }
-        assert!(Instant::now() < deadline, "owner left live fixture processes before independent fallback cleanup");
+        assert!(
+            Instant::now() < deadline,
+            "owner left live fixture processes before independent fallback cleanup"
+        );
         thread::sleep(Duration::from_millis(20));
     }
     let result = json!({"identities":identities,"window":window,"generations":generations,"native_includes_preserved":true,"pond_shell_tested":false,"platform_proxy_tested":false});

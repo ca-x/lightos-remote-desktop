@@ -143,6 +143,10 @@ impl Session {
         self.owned
     }
 
+    pub(crate) fn is_native_niri(&self) -> bool {
+        self.owned && self.target.is_none() && self.signature.is_none()
+    }
+
     pub fn start(config: &Config) -> Result<Self> {
         Self::start_cancellable(config, Arc::new(AtomicBool::new(false)))
     }
@@ -641,10 +645,13 @@ impl Session {
         {
             return self.lock.as_ref().is_some_and(crate::owned_wayland::alive);
         }
-        self.native_lifetime.as_ref().is_none_or(crate::owned_wayland::alive)
-            && self.children
-            .iter()
-            .all(|child| matches!(child_exited(child), Ok(false)))
+        self.native_lifetime
+            .as_ref()
+            .is_none_or(crate::owned_wayland::alive)
+            && self
+                .children
+                .iter()
+                .all(|child| matches!(child_exited(child), Ok(false)))
             && (self
                 .target
                 .as_ref()
@@ -1004,6 +1011,27 @@ fn child_exited(child: &Child) -> Result<bool> {
 mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn native_owner_and_attachment_do_not_inherit_hyprland_display_controls() {
+        let mut session = Session::attached(
+            "/nonexistent/native-runtime".into(),
+            "/nonexistent/native-runtime/wayland-1".into(),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(session.is_native_niri());
+        session.signature = Some("hyprland-owner".into());
+        assert!(!session.is_native_niri());
+        session.signature = None;
+        session.target = Some(session.target());
+        assert!(!session.is_native_niri());
+        session.target = None;
+        session.owned = false;
+        assert!(!session.is_native_niri());
+    }
 
     fn private_runtime() -> tempfile::TempDir {
         tempfile::Builder::new()
