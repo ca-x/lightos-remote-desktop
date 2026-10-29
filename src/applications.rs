@@ -262,8 +262,14 @@ mod tests {
     }
 
     fn command(runtime: &Path, program: &Path, output: &Path) -> Command {
-        let mut command = Command::new(program);
+        assert_ne!(
+            fs::metadata(program).unwrap().permissions().mode() & 0o111,
+            0
+        );
+        assert!(fs::read(program).unwrap().starts_with(b"#!/bin/sh\n"));
+        let mut command = Command::new("/bin/sh");
         command
+            .arg(program)
             .env("XDG_RUNTIME_DIR", runtime)
             .env("WAYLAND_DISPLAY", "wayland-1")
             .env("DISPLAY", ":93")
@@ -276,6 +282,31 @@ mod tests {
             .env("XDG_CONFIG_HOME", "/host/native-app-config")
             .env("TEST_OUTPUT", output);
         command
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn shell_fixture_runs_with_a_retained_writable_descriptor() {
+        let (root, runtime, host, data, _socket) = fixture();
+        prepare_in(&runtime, &data, host.as_os_str()).unwrap();
+        let launcher = runtime.join("bin/gtk-launch");
+        let writer = fs::OpenOptions::new().write(true).open(&launcher).unwrap();
+        assert_eq!(
+            Command::new(&launcher).status().unwrap_err().raw_os_error(),
+            Some(libc::ETXTBSY)
+        );
+        let output = root.path().join("arguments");
+        let result = command(&runtime, &launcher, &output)
+            .arg("fixture.desktop")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(fs::read(output).unwrap().ends_with(b"fixture.desktop\0"));
+        drop(writer);
     }
 
     #[test]
