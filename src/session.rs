@@ -1033,6 +1033,24 @@ mod tests {
         assert!(!session.is_native_niri());
     }
 
+    #[test]
+    fn session_logs_never_follow_aliases_or_truncate_an_unrelated_file() {
+        let directory = private_runtime();
+        let unrelated = directory.path().join("fixture-private-data");
+        fs::write(&unrelated, "must remain unchanged").unwrap();
+        symlink(&unrelated, directory.path().join("dbus.log")).unwrap();
+        let mut session = Session::attached(
+            directory.path().to_path_buf(),
+            directory.path().join("wayland-1"),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(session.spawn(Command::new("/bin/true"), "dbus.log").is_err());
+        assert_eq!(fs::read_to_string(&unrelated).unwrap(), "must remain unchanged");
+    }
+
     fn private_runtime() -> tempfile::TempDir {
         tempfile::Builder::new()
             .permissions(fs::Permissions::from_mode(0o700))
