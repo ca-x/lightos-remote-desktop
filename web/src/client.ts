@@ -956,6 +956,7 @@ export function createClient(options: ClientOptions = {}) {
       losslessAvailable = value.lossless_updates === true && frameAcknowledgements && sequencedFrames;
       serverVideoCodecs = Array.isArray(value.video_codecs) ? value.video_codecs.filter((codec: unknown) => typeof codec === "string") : [];
       backendSelection = value.backend_selection === true;
+      updateEncoderCapabilities(value.codec_capabilities);
       videoRequestIds = value.video_request_ids === true;
       videoScaling = value.video_scaling === true && frameAcknowledgements && sequencedFrames && !losslessAvailable;
       lastVideoBounds = null;
@@ -985,10 +986,11 @@ export function createClient(options: ClientOptions = {}) {
       void captureKeyboard();
     } else if (value.type === "codec_capabilities") {
       const hadH264 = serverVideoCodecs.includes("h264");
+      const backendChanged = updateEncoderCapabilities(value.codec_capabilities);
       serverVideoCodecs = Array.isArray(value.video_codecs) ? value.video_codecs.filter((codec: unknown) => typeof codec === "string") : [];
       // A background probe may enable H.264 after ready. Honor the saved codec
       // and backend choices through the normal negotiation path.
-      if (ready && !hadH264 && serverVideoCodecs.includes("h264") && videoPreference !== "jpeg") requestPreferredVideo();
+      if (ready && (backendChanged || !hadH264) && serverVideoCodecs.includes("h264") && videoPreference !== "jpeg") requestPreferredVideo();
     } else if (value.type === "desktop_state" && typeof value.available === "boolean") {
       desktopPaused = !value.available;
       if (desktopPaused) {
@@ -1142,6 +1144,25 @@ export function createClient(options: ClientOptions = {}) {
     if (!ready || !videoScaling) return;
     cancelTimer(videoScaleTimer);
     videoScaleTimer = setTimeout(() => { videoScaleTimer = null; configureVideoScale(); }, 250);
+  }
+
+  function updateEncoderCapabilities(raw: unknown): boolean {
+    const capabilities = Array.isArray(raw) ? raw : [];
+    const select = element("encoder-backend");
+    const known = capabilities.some(capability => capability?.hardware === true);
+    for (const option of Array.from(select.options)) {
+      if (option.value === "auto") continue;
+      const capability = capabilities.find(item => item?.backend === option.value);
+      option.disabled = capability?.available !== true;
+      option.title = capability?.available === true ? "" : String(capability?.reason || (known ? "Hardware encoder unavailable" : "Detecting hardware encoders..."));
+    }
+    if (known && backendPreference !== "auto" && !capabilities.some(capability => capability?.backend === backendPreference && capability.available === true)) {
+      backendPreference = "auto";
+      select.value = "auto";
+      savePreference(encoderBackendKey, "auto");
+      return true;
+    }
+    return false;
   }
 
   function requestVideo(codec: string, rejected?: string) {

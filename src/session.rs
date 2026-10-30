@@ -331,17 +331,6 @@ impl Session {
             .is_some_and(|extension| extension == "lua");
         let mut command = Command::new(&config.cage);
         command.arg("--");
-        if let Some(directory) = &config.aquamarine_dir {
-            let directory = fs::canonicalize(directory)?;
-            ensure!(
-                directory.join("libaquamarine.so.14").is_file(),
-                "missing private libaquamarine.so.14"
-            );
-            command
-                .arg("/usr/lib/ld-linux-x86-64.so.2")
-                .arg("--library-path")
-                .arg(format!("{}:/usr/lib", directory.display()));
-        }
         let hyprland = std::env::var_os("PATH")
             .and_then(|path| {
                 std::env::split_paths(&path)
@@ -349,8 +338,49 @@ impl Session {
                     .find(|path| path.is_file())
             })
             .context("Hyprland not found in PATH")?;
+        let aquamarine = config
+            .aquamarine_dir
+            .as_ref()
+            .map(fs::canonicalize)
+            .transpose()?;
+        if let Some(directory) = &aquamarine {
+            ensure!(
+                directory.join("libaquamarine.so.14").is_file(),
+                "missing private libaquamarine.so.14"
+            );
+        }
+        if let Some(launcher) = platform_detect::find_executable(Path::new("start-hyprland")) {
+            let target = if let Some(directory) = &aquamarine {
+                // Keep the matching private library on the compositor only;
+                // the standard watchdog and desktop applications use system libraries.
+                let target = session.runtime.join("hyprland-start-target");
+                let quote =
+                    |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
+                crate::applications::write_atomic(
+                    &target,
+                    &format!(
+                        "#!/bin/sh\nexec /usr/lib/ld-linux-x86-64.so.2 --library-path {} {} \"$@\"\n",
+                        quote(Path::new(&format!("{}:/usr/lib", directory.display()))),
+                        quote(&hyprland),
+                    ),
+                    0o700,
+                )?;
+                target
+            } else {
+                hyprland
+            };
+            command.arg(launcher).arg("--path").arg(target).arg("--");
+        } else {
+            // Older compositors did not ship a separate startup watchdog.
+            if let Some(directory) = &aquamarine {
+                command
+                    .arg("/usr/lib/ld-linux-x86-64.so.2")
+                    .arg("--library-path")
+                    .arg(format!("{}:/usr/lib", directory.display()));
+            }
+            command.arg(hyprland);
+        }
         command
-            .arg(hyprland)
             .arg("--config")
             .arg(desktop_config)
             .env_remove("WAYLAND_DISPLAY")

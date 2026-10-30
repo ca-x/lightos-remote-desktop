@@ -52,6 +52,18 @@ impl CapabilityCache {
     pub fn initialized(&self) -> bool {
         self.software.initialized() && self.hardware.lock().unwrap().cached.is_some()
     }
+    pub fn initialized_snapshot(&self) -> Option<Vec<CodecCapability>> {
+        let software = self.software.get()?;
+        let hardware = self.hardware.lock().unwrap();
+        let cached = hardware.cached.as_ref()?;
+        Some(
+            software
+                .iter()
+                .chain(cached.capabilities.iter())
+                .cloned()
+                .collect(),
+        )
+    }
     /// Only software's real test frame is on the handshake path. Native probes
     /// retain their full decode/rate checks and deadlines in a single background job.
     pub async fn capabilities(

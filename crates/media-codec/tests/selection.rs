@@ -46,7 +46,7 @@ fn auto_selects_a_validated_hardware_encoder_then_software() {
 }
 
 #[test]
-fn manual_choice_is_respected_and_an_unusable_choice_falls_back_to_software() {
+fn manual_hardware_choice_falls_back_to_other_hardware_before_software() {
     let caps = [
         capability(EncoderBackend::OpenH264, true),
         capability(EncoderBackend::Nvenc, true),
@@ -54,7 +54,7 @@ fn manual_choice_is_respected_and_an_unusable_choice_falls_back_to_software() {
     ];
     assert_eq!(
         choose_h264_backend(BackendPreference::Software, &caps, &[]),
-        Some(EncoderBackend::OpenH264)
+        Some(EncoderBackend::Nvenc)
     );
     assert_eq!(
         choose_h264_backend(BackendPreference::Vaapi, &caps, &[]),
@@ -62,11 +62,11 @@ fn manual_choice_is_respected_and_an_unusable_choice_falls_back_to_software() {
     );
     assert_eq!(
         choose_h264_backend(BackendPreference::Amf, &caps, &[]),
-        Some(EncoderBackend::OpenH264)
+        Some(EncoderBackend::Nvenc)
     );
     assert_eq!(
         choose_h264_backend(BackendPreference::Vaapi, &caps, &[EncoderBackend::Vaapi]),
-        Some(EncoderBackend::OpenH264)
+        Some(EncoderBackend::Nvenc)
     );
 }
 
