@@ -154,7 +154,7 @@ fn doctor(config: &Config) -> Result<()> {
         lightos_remote_desktop::session::validate_wayland_socket(socket)?;
     }
     if mode == SessionMode::ExternalX11 {
-        lightos_remote_desktop::session::Session::physical_target(config)?;
+        lightos_remote_desktop::session::Session::configured_target(config)?;
     }
     if mode == SessionMode::OwnedVirtual
         && let Some(directory) = &config.aquamarine_dir

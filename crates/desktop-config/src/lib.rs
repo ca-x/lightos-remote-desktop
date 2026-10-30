@@ -42,10 +42,9 @@ hl.env("GDK_SCALE", "1")
 hl.env("PATH", {path})
 hl.env("XDG_RUNTIME_DIR", os.getenv("XDG_RUNTIME_DIR"))
 hl.env("DBUS_SESSION_BUS_ADDRESS", os.getenv("DBUS_SESSION_BUS_ADDRESS"))
-hl.env("XDG_STATE_HOME", os.getenv("XDG_STATE_HOME"))
 local chrome_config = os.getenv("CHROME_CONFIG_HOME")
 if chrome_config then hl.env("CHROME_CONFIG_HOME", chrome_config) end
-for _, name in ipairs({{ "PULSE_SERVER", "PULSE_SINK", "PIPEWIRE_RUNTIME_DIR" }}) do
+for _, name in ipairs({{ "XDG_STATE_HOME", "PULSE_SERVER", "PULSE_SINK", "PIPEWIRE_RUNTIME_DIR" }}) do
   local value = os.getenv(name)
   if value then hl.env(name, value) end
 end

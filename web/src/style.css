@@ -261,8 +261,8 @@ button { transition: background-color 125ms ease, color 125ms ease, opacity 125m
 .custom-select-trigger[data-open] > svg { transform: rotate(180deg); }
 .custom-select-options { --anchor-max-height: 320px; z-index: 50; display: flex; flex-direction: column; width: var(--button-width); max-width: calc(100vw - 24px); max-height: min(320px, calc(100dvh - 24px)); overflow: hidden; border: 0; border-radius: 12px; background: var(--surface); color: var(--text); box-shadow: var(--shadow); outline: none; transition: opacity 125ms var(--ease-out); }
 .custom-select-options[data-closed] { opacity: 0; }
-.custom-select-list { display: grid; gap: 4px; padding: 6px 12px 6px 6px; }
-.custom-select-option { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 8px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; line-height: 1.5; user-select: none; outline: none; overflow-wrap: anywhere; transition: background-color 125ms ease; }
+.custom-select-list { display: flex; flex-direction: column; justify-content: flex-start; gap: 4px; padding: 6px 12px 6px 6px; }
+.custom-select-option { display: flex; flex: none; align-items: center; gap: 8px; min-height: 36px; padding: 8px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; line-height: 1.5; user-select: none; outline: none; overflow-wrap: anywhere; transition: background-color 125ms ease; }
 .custom-select-check { flex: none; visibility: hidden; }
 .custom-select-option[data-selected] { background: var(--selected); }
 .custom-select-option[data-selected] .custom-select-check { visibility: visible; }
@@ -280,6 +280,7 @@ button { transition: background-color 125ms ease, color 125ms ease, opacity 125m
 .workspace-scroll-area { width: 100%; height: 100%; }
 .settings-scroll-area, .menu-scroll-area, .select-scroll-area { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; }
 .menu-scroll-area, .select-scroll-area { max-height: inherit; }
+.select-scroll-area, .select-scroll-area > .scroll-viewport { flex: 0 1 auto; }
 .scroll-viewport { min-width: 0; min-height: 0; scrollbar-width: none; overscroll-behavior: contain; }
 .scroll-viewport[data-scroll-axis] { flex: 1; }
 .scroll-viewport[data-scroll-axis=y] { overflow-x: hidden; overflow-y: auto; }

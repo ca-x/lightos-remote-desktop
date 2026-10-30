@@ -11,8 +11,10 @@
 //! See upstream desktop-portal/xdp-portal-config.c and older src/xdp-impl.c.
 //!
 //! Scope still needs independent proof: the implementation's exact Wayland
-//! environment AND the selected socket's peer PID must match Mutter's two
-//! compositor services or KWin. The frontend environment alone never suffices.
+//! environment AND the selected listening socket must match the compositor
+//! services. Socket activation can retain its creator PID while the compositor
+//! inherits the listener; that case requires proof of the actual kernel socket
+//! descriptor. The frontend environment alone never suffices.
 //! Multiple providers, custom installation prefixes/implementations, changed
 //! descriptors, and unavailable identity evidence remain explicitly unavailable.
 use std::{
@@ -204,7 +206,16 @@ pub(super) async fn validate_target_identity(
     ];
     for service in provider.compositor_services() {
         let compositor = peer(&bus, service, uid).await?;
-        verify_compositor_peer(service, compositor_pid, uid, compositor.pid, compositor.uid)?;
+        if compositor.pid == compositor_pid {
+            verify_compositor_peer(service, compositor_pid, uid, compositor.pid, compositor.uid)?;
+        } else {
+            // SO_PEERCRED identifies the process that created the listener,
+            // which can hand it to another process. Prove that the D-Bus owner
+            // holds this exact listener rather than guessing a wrapper name
+            // or accepting another process on the same user bus.
+            crate::session::wayland_endpoint::verify_listener(socket, compositor.pid, uid)
+                .with_context(|| format!("Portal compositor service {service} does not own the selected Wayland endpoint"))?;
+        }
         owners.push((service, compositor.owner));
     }
     snapshot.verify()?;

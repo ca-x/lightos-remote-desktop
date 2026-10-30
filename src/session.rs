@@ -22,6 +22,9 @@ use display_control::SessionTarget;
 use crate::config::{Compositor, Config};
 
 mod niri;
+mod physical;
+#[cfg(feature = "portal")]
+pub(crate) mod wayland_endpoint;
 pub use niri::publish_environment as publish_niri_environment;
 
 pub const DEFAULT_SESSION_RUNTIME: &str = "/run/lrd-session";
@@ -67,6 +70,29 @@ pub struct Session {
 }
 
 impl Session {
+    pub(crate) fn attach_physical(
+        target: SessionTarget,
+        audio: bool,
+        cancelled: Arc<AtomicBool>,
+    ) -> Self {
+        let (pulse_server, audio_source) = physical_audio(&target.runtime, audio);
+        Self {
+            socket: target.wayland_socket.clone().unwrap_or_default(),
+            runtime: target.runtime.clone(),
+            signature: None,
+            pulse_server,
+            pulse_client_config: None,
+            audio_source,
+            target: Some(target),
+            owned: false,
+            children: Vec::new(),
+            temporary: None,
+            lock: None,
+            native_lifetime: None,
+            cancelled,
+        }
+    }
+
     pub(crate) fn attached(
         runtime: PathBuf,
         socket: PathBuf,
@@ -106,6 +132,14 @@ impl Session {
     }
 
     pub fn physical_target(config: &Config) -> Result<SessionTarget> {
+        if let Some(runtime) = &config.physical_runtime_dir {
+            return physical::target(runtime, config.physical_wayland_socket.as_deref());
+        }
+        Self::configured_target(config)
+    }
+
+    /// Resolve an explicitly attached display, including a service-owned virtual one.
+    pub fn configured_target(config: &Config) -> Result<SessionTarget> {
         let owner = unsafe { libc::geteuid() };
         let login_runtime = PathBuf::from(format!("/run/user/{owner}"));
         let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
@@ -182,7 +216,7 @@ impl Session {
             });
         }
         if config.x11_display.is_some() {
-            let target = Self::physical_target(config)?;
+            let target = Self::configured_target(config)?;
             let (pulse_server, audio_source) = physical_audio(&target.runtime, config.audio);
             return Ok(Self {
                 socket: PathBuf::new(),
@@ -331,17 +365,6 @@ impl Session {
             .is_some_and(|extension| extension == "lua");
         let mut command = Command::new(&config.cage);
         command.arg("--");
-        if let Some(directory) = &config.aquamarine_dir {
-            let directory = fs::canonicalize(directory)?;
-            ensure!(
-                directory.join("libaquamarine.so.14").is_file(),
-                "missing private libaquamarine.so.14"
-            );
-            command
-                .arg("/usr/lib/ld-linux-x86-64.so.2")
-                .arg("--library-path")
-                .arg(format!("{}:/usr/lib", directory.display()));
-        }
         let hyprland = std::env::var_os("PATH")
             .and_then(|path| {
                 std::env::split_paths(&path)
@@ -349,8 +372,49 @@ impl Session {
                     .find(|path| path.is_file())
             })
             .context("Hyprland not found in PATH")?;
+        let aquamarine = config
+            .aquamarine_dir
+            .as_ref()
+            .map(fs::canonicalize)
+            .transpose()?;
+        if let Some(directory) = &aquamarine {
+            ensure!(
+                directory.join("libaquamarine.so.14").is_file(),
+                "missing private libaquamarine.so.14"
+            );
+        }
+        if let Some(launcher) = platform_detect::find_executable(Path::new("start-hyprland")) {
+            let target = if let Some(directory) = &aquamarine {
+                // Keep the matching private library on the compositor only;
+                // the standard watchdog and desktop applications use system libraries.
+                let target = session.runtime.join("hyprland-start-target");
+                let quote =
+                    |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
+                crate::applications::write_atomic(
+                    &target,
+                    &format!(
+                        "#!/bin/sh\nexec /usr/lib/ld-linux-x86-64.so.2 --library-path {} {} \"$@\"\n",
+                        quote(Path::new(&format!("{}:/usr/lib", directory.display()))),
+                        quote(&hyprland),
+                    ),
+                    0o700,
+                )?;
+                target
+            } else {
+                hyprland
+            };
+            command.arg(launcher).arg("--path").arg(target).arg("--");
+        } else {
+            // Older compositors did not ship a separate startup watchdog.
+            if let Some(directory) = &aquamarine {
+                command
+                    .arg("/usr/lib/ld-linux-x86-64.so.2")
+                    .arg("--library-path")
+                    .arg(format!("{}:/usr/lib", directory.display()));
+            }
+            command.arg(hyprland);
+        }
         command
-            .arg(hyprland)
             .arg("--config")
             .arg(desktop_config)
             .env_remove("WAYLAND_DISPLAY")
@@ -745,7 +809,7 @@ fn physical_socket_from_environment(
     }
 }
 
-fn wayland_sockets(directory: &Path, owner: u32) -> Result<Vec<PathBuf>> {
+pub(crate) fn wayland_sockets(directory: &Path, owner: u32) -> Result<Vec<PathBuf>> {
     let mut sockets: Vec<_> = fs::read_dir(directory)?
         .filter_map(Result::ok)
         .map(|entry| entry.path())

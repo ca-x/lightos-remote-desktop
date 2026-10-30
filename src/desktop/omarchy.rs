@@ -2,7 +2,11 @@ use super::{DesktopInitializer, PreparedDesktop, configuration_directory};
 use crate::config::Config;
 use anyhow::{Context, Result};
 use platform_detect::{ConfigFormat, OmarchyInstallation, user_config_home};
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 pub struct OmarchyInitializer {
     pub installation: OmarchyInstallation,
@@ -19,16 +23,11 @@ impl DesktopInitializer for OmarchyInitializer {
         let path = std::env::join_paths(paths)?
             .into_string()
             .map_err(|_| anyhow::anyhow!("non-UTF8 session PATH"))?;
-        let state = runtime.join("state");
-        std::fs::create_dir_all(&state)?;
+        prepare_background(&self.installation.root)?;
         let environment = vec![
             (
                 "OMARCHY_PATH".into(),
                 self.installation.root.to_string_lossy().into_owned(),
-            ),
-            (
-                "XDG_STATE_HOME".into(),
-                state.to_string_lossy().into_owned(),
             ),
             ("PATH".into(), path.clone()),
             (
@@ -97,4 +96,50 @@ impl DesktopInitializer for OmarchyInitializer {
             environment,
         })
     }
+}
+
+// Omarchy's background command and shell both use this persistent user path.
+// The command assumes its parent already exists: otherwise IPC changes only
+// the live shell and the choice disappears at the next session startup.
+fn prepare_background(installation: &Path) -> Result<()> {
+    let home = PathBuf::from(std::env::var_os("HOME").context("HOME required for Omarchy state")?);
+    let current = home.join(".local/state/omarchy/current");
+    fs::create_dir_all(&current).context("prepare persistent Omarchy background state")?;
+    let background = current.join("background");
+    match fs::symlink_metadata(&background) {
+        Ok(_) => return Ok(()), // Preserve even an unavailable user selection.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let theme = if current.join("theme/backgrounds").is_dir() {
+        current.join("theme/backgrounds")
+    } else {
+        installation.join("themes/tokyo-night/backgrounds")
+    };
+    let Ok(entries) = fs::read_dir(theme) else {
+        return Ok(());
+    };
+    let mut images = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path.extension().is_some_and(|extension| {
+                    matches!(
+                        extension.to_string_lossy().to_ascii_lowercase().as_str(),
+                        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp"
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    images.sort();
+    if let Some(image) = images.first() {
+        let image = fs::canonicalize(image)?;
+        match std::os::unix::fs::symlink(image, background) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
 }

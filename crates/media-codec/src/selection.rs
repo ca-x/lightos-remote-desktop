@@ -89,10 +89,13 @@ pub fn choose_h264_backend(
             })
     };
     if let Some(backend) = preference.requested_backend() {
-        if usable(backend) {
+        if backend.is_hardware() && usable(backend) {
             return Some(backend);
         }
-    } else if let Some(backend) = EncoderBackend::HARDWARE.into_iter().find(|&b| usable(b)) {
+    }
+    // A failed manual choice (or a saved legacy software preference) must not
+    // bypass another verified hardware encoder. Software is the final fallback.
+    if let Some(backend) = EncoderBackend::HARDWARE.into_iter().find(|&b| usable(b)) {
         return Some(backend);
     }
     usable(EncoderBackend::OpenH264).then_some(EncoderBackend::OpenH264)

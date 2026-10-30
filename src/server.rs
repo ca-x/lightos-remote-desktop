@@ -941,8 +941,25 @@ async fn connection(
             let refresh_requested = !capture_paused && pacing.borrow().refresh_requested();
             let mut outgoing_epoch = None;
             let outgoing = tokio::select! {
-                changed = wait_for_video_frame(&mut frames, refresh_requested, frame_deadline), if !pacing.borrow().waiting() || state.backend.paused() => {
+                changed = wait_for_video_frame(&mut frames, refresh_requested, frame_deadline), if state.codec_capabilities.initialized() && (!pacing.borrow().waiting() || state.backend.paused()) => {
                     if changed.is_err() { break; }
+                    // A frame can win this select before the capability update.
+                    // Select from the completed probe before encoding that frame.
+                    let Some(current_capabilities) = state.codec_capabilities.initialized_snapshot() else { continue; };
+                    codec_capabilities = current_capabilities;
+                    if h264 {
+                        let next = choose_h264_backend(backend_preference, &codec_capabilities, &excluded_backends);
+                        if next != selected_backend {
+                            selected_backend = next;
+                            encoder.take(); codec = None; applied_rate = None;
+                            pacing_tx.send_modify(FrameScheduler::reset);
+                        }
+                        h264_dynamic_rate = selected_backend.is_some_and(|backend| codec_capabilities.iter().any(|cap| cap.backend == backend.id() && cap.available && cap.dynamic_bitrate));
+                        pacing_tx.send_modify(|flow| flow.set_quality_scalable(h264_dynamic_rate));
+                        if backend_preference.requested_backend().is_some_and(|backend| Some(backend) == selected_backend) {
+                            fallback_reason = None;
+                        }
+                    }
                     let frame_epoch = state.backend.privacy_epoch();
                     let frame = frames.borrow_and_update().clone();
                     let Some(frame) = frame else {

@@ -76,23 +76,26 @@ impl SessionLock {
                 .and_then(|environment| verified_peer_login(target, environment).ok().flatten())
         });
         let wayland_login = if peer.is_some() && peer_session.is_none() {
-            Some(match peer_login.clone() {
-                Some(id) => id,
-                None => exact_wayland_login(
+            peer_login.clone().or_else(|| {
+                exact_wayland_login(
                     target,
                     std::env::var_os("WAYLAND_DISPLAY").map(std::path::PathBuf::from),
                     std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from),
                     std::env::var("XDG_SESSION_ID").ok(),
-                )?
-                .context("selected Wayland socket has no exact login session")?,
+                )
+                .ok()
+                .flatten()
             })
         } else {
             None
         };
+        let user_manager_login =
+            peer.is_some() && peer_session.is_none() && wayland_login.is_none();
         let sessions: Vec<(String, u32, String, String, OwnedObjectPath)> =
             manager.call("ListSessions", &()).await?;
         let uid = unsafe { libc::geteuid() };
         let mut matches = Vec::new();
+        let mut graphical_logins = 0;
         for (id, owner, _, _, path) in sessions {
             if owner != uid
                 || peer_session
@@ -113,8 +116,12 @@ impl SessionLock {
             .await?;
             let kind: String = session.get_property("Type").await?;
             let remote: bool = session.get_property("Remote").await?;
-            if remote {
+            let state: String = session.get_property("State").await?;
+            if remote || state == "closing" {
                 continue;
+            }
+            if matches!(kind.as_str(), "wayland" | "x11") {
+                graphical_logins += 1;
             }
             let matches_target = if target.wayland_socket.is_some() {
                 wayland_login_kind(&kind, &id, peer_login.as_deref())
@@ -139,6 +146,21 @@ impl SessionLock {
             !matches.is_empty(),
             "no graphical login session matches the selected desktop"
         );
+        if user_manager_login {
+            ensure!(
+                graphical_logins == 1,
+                "selected Wayland server has no login ID and multiple graphical logins are possible"
+            );
+            verify_user_manager_login(
+                &connection,
+                &manager,
+                target,
+                peer.as_ref().unwrap().0,
+                uid,
+                &matches[0],
+            )
+            .await?;
+        }
         Ok(matches.pop().map(|path| Self { connection, path }))
     }
     async fn locked(&self) -> Result<bool> {
@@ -152,6 +174,80 @@ impl SessionLock {
         Ok(session.get_property("LockedHint").await?)
     }
 }
+
+// A user-service compositor need not inherit XDG_SESSION_ID or belong to a
+// login scope. Associate it only when logind names one local graphical login,
+// its user service actually contains the socket peer, and that peer serves the
+// sole Wayland socket in logind's private runtime. Never use the remote
+// transport's virtual display or simply pick the user's default session.
+async fn verify_user_manager_login(
+    connection: &zbus::Connection,
+    manager: &zbus::Proxy<'_>,
+    target: &SessionTarget,
+    pid: u32,
+    uid: u32,
+    session: &OwnedObjectPath,
+) -> Result<()> {
+    let path: OwnedObjectPath = manager.call("GetUser", &(uid,)).await?;
+    let user = zbus::Proxy::new(
+        connection,
+        "org.freedesktop.login1",
+        path.as_str(),
+        "org.freedesktop.login1.User",
+    )
+    .await?;
+    let runtime: String = user.get_property("RuntimePath").await?;
+    let service: String = user.get_property("Service").await?;
+    let display: (String, OwnedObjectPath) = user.get_property("Display").await?;
+    ensure!(
+        display.1 == *session && !display.0.is_empty(),
+        "logind does not associate the selected desktop with its graphical login"
+    );
+    let runtime = std::path::PathBuf::from(runtime);
+    ensure!(
+        target.runtime == runtime
+            && target
+                .wayland_socket
+                .as_ref()
+                .and_then(|socket| socket.parent())
+                == Some(runtime.as_path()),
+        "selected Wayland socket is outside the logind user runtime"
+    );
+    let directory = std::fs::symlink_metadata(&runtime)?;
+    ensure!(
+        directory.is_dir()
+            && !directory.file_type().is_symlink()
+            && directory.uid() == uid
+            && directory.mode() & 0o077 == 0,
+        "logind user runtime is not private or belongs to another user"
+    );
+    let sockets = crate::session::wayland_sockets(&runtime, uid)?;
+    ensure!(
+        sockets.len() == 1 && target.wayland_socket.as_ref() == sockets.first(),
+        "login has multiple Wayland servers; lock-state identity is ambiguous"
+    );
+    let file = File::open(format!("/proc/{pid}/cgroup"))?;
+    ensure!(
+        file.metadata()?.uid() == uid,
+        "Wayland server identity changed during login discovery"
+    );
+    let mut bytes = Vec::new();
+    file.take(64 * 1024 + 1).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() <= 64 * 1024 && !service.is_empty(),
+        "Wayland user-service identity is unavailable"
+    );
+    let cgroup = std::str::from_utf8(&bytes)?;
+    ensure!(
+        cgroup.lines().any(|line| line
+            .splitn(3, ':')
+            .nth(2)
+            .is_some_and(|group| group.split('/').any(|part| part == service))),
+        "Wayland server is outside logind's user service"
+    );
+    Ok(())
+}
+
 async fn selected_wayland_peer(socket: &std::path::Path) -> Result<(u32, tokio::net::UnixStream)> {
     let stream = tokio::time::timeout(
         Duration::from_secs(1),
