@@ -67,6 +67,14 @@ and one provider can be tied to the selected compositor. The frontend, actual
 implementation and Mutter/KWin service identities must match that target; sharing
 a UID, runtime or user bus alone is insufficient.
 
+A compositor can inherit a Wayland listener from a launcher or socket-activated
+service, so the listener's recorded creator PID need not own the compositor's
+D-Bus connection. When those PIDs differ, admission verifies that the D-Bus
+process holds the exact selected listening Unix socket in its network namespace,
+with the same user and unchanged process identity. Connected client sockets do
+not qualify. This check uses kernel endpoint ownership rather than launcher,
+desktop, distribution or OCI image names.
+
 The Portal frontend must share the service's filesystem mount namespace and use
 a recognized installation prefix or an explicit descriptor directory. Its
 provider registry is checked across the conservative union of descriptor paths,

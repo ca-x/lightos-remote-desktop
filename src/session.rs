@@ -23,6 +23,8 @@ use crate::config::{Compositor, Config};
 
 mod niri;
 mod physical;
+#[cfg(feature = "portal")]
+pub(crate) mod wayland_endpoint;
 pub use niri::publish_environment as publish_niri_environment;
 
 pub const DEFAULT_SESSION_RUNTIME: &str = "/run/lrd-session";
@@ -807,7 +809,7 @@ fn physical_socket_from_environment(
     }
 }
 
-fn wayland_sockets(directory: &Path, owner: u32) -> Result<Vec<PathBuf>> {
+pub(crate) fn wayland_sockets(directory: &Path, owner: u32) -> Result<Vec<PathBuf>> {
     let mut sockets: Vec<_> = fs::read_dir(directory)?
         .filter_map(Result::ok)
         .map(|entry| entry.path())

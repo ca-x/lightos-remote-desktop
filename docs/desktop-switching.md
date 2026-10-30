@@ -94,6 +94,13 @@ input; the connection remains open for unlock and cannot return cached frames
 or clipboard results across a lock transition. Failure to query a running
 logind is not treated as an unlocked session.
 
+When a user-service compositor has no inherited login ID and logind cannot map
+its PID directly, lock monitoring requires one local graphical login, logind's
+matching user display/runtime, the socket peer's membership in the registered
+user service, and exactly one owned Wayland socket in that runtime. Ambiguous
+or unavailable evidence fails explicitly; the virtual transport's environment
+does not identify the physical login and never bypasses the lock guard.
+
 The physical source lists active outputs when native output discovery is
 available, including pixel dimensions, position and scale. Wayland selected
 outputs also constrain virtual-pointer v2 mapping. X11 can fall back to the
