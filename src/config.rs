@@ -434,6 +434,9 @@ pub struct Config {
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_PHYSICAL_WAYLAND_SOCKET")]
     #[arg(hide = !cfg!(target_os = "linux"))]
     pub physical_wayland_socket: Option<PathBuf>,
+    /// Discover the physical login independently of the service's virtual display.
+    #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_PHYSICAL_RUNTIME_DIR", hide = !cfg!(target_os = "linux"))]
+    pub physical_runtime_dir: Option<PathBuf>,
     /// Display protocol override, independent of distribution and desktop configuration flavor.
     #[arg(
         long,
@@ -562,6 +565,7 @@ impl Config {
             self.wayland_socket.is_none()
                 && self.virtual_wayland_server_pid.is_none()
                 && self.physical_wayland_socket.is_none()
+                && self.physical_runtime_dir.is_none()
                 && self.x11_display.is_none()
                 && self.xauthority.is_none()
                 && self.runtime_dir.is_none()

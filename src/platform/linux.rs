@@ -241,29 +241,24 @@ impl HostPlatform for LinuxHost {
             !cancelled.load(Ordering::Acquire),
             "desktop connection cancelled"
         );
-        let mut settings = config.clone();
-        settings.session_runtime = None;
-        settings.wayland_socket = target.wayland_socket.clone();
-        settings.x11_display = target.x11_display.clone();
-        settings.xauthority = target.xauthority.clone();
-        let session = Session::start_cancellable(&settings, cancelled.clone())?;
+        let session = Session::attach_physical(target.clone(), config.audio, cancelled.clone());
         if selected == BackendKind::Portal {
             let _ = authorization.send(());
         }
         let active = backend::start_selected(
             selected,
-            target,
-            settings.fps,
-            settings.quality,
+            target.clone(),
+            config.fps,
+            config.quality,
             output.clone(),
             cancelled.clone(),
         )?;
-        let active = backend::guarded::attach(active, session.target())?;
+        let active = backend::guarded::attach(active, target)?;
         ensure!(
             !cancelled.load(Ordering::Acquire),
             "desktop connection cancelled"
         );
-        let mut host = context(&settings, active, session);
+        let mut host = context(config, active, session);
         host.displays = displays;
         host.output = output;
         host.outputs = outputs;

@@ -22,6 +22,7 @@ use display_control::SessionTarget;
 use crate::config::{Compositor, Config};
 
 mod niri;
+mod physical;
 pub use niri::publish_environment as publish_niri_environment;
 
 pub const DEFAULT_SESSION_RUNTIME: &str = "/run/lrd-session";
@@ -67,6 +68,29 @@ pub struct Session {
 }
 
 impl Session {
+    pub(crate) fn attach_physical(
+        target: SessionTarget,
+        audio: bool,
+        cancelled: Arc<AtomicBool>,
+    ) -> Self {
+        let (pulse_server, audio_source) = physical_audio(&target.runtime, audio);
+        Self {
+            socket: target.wayland_socket.clone().unwrap_or_default(),
+            runtime: target.runtime.clone(),
+            signature: None,
+            pulse_server,
+            pulse_client_config: None,
+            audio_source,
+            target: Some(target),
+            owned: false,
+            children: Vec::new(),
+            temporary: None,
+            lock: None,
+            native_lifetime: None,
+            cancelled,
+        }
+    }
+
     pub(crate) fn attached(
         runtime: PathBuf,
         socket: PathBuf,
@@ -106,6 +130,14 @@ impl Session {
     }
 
     pub fn physical_target(config: &Config) -> Result<SessionTarget> {
+        if let Some(runtime) = &config.physical_runtime_dir {
+            return physical::target(runtime, config.physical_wayland_socket.as_deref());
+        }
+        Self::configured_target(config)
+    }
+
+    /// Resolve an explicitly attached display, including a service-owned virtual one.
+    pub fn configured_target(config: &Config) -> Result<SessionTarget> {
         let owner = unsafe { libc::geteuid() };
         let login_runtime = PathBuf::from(format!("/run/user/{owner}"));
         let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
@@ -182,7 +214,7 @@ impl Session {
             });
         }
         if config.x11_display.is_some() {
-            let target = Self::physical_target(config)?;
+            let target = Self::configured_target(config)?;
             let (pulse_server, audio_source) = physical_audio(&target.runtime, config.audio);
             return Ok(Self {
                 socket: PathBuf::new(),
