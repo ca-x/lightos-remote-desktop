@@ -5,7 +5,7 @@
     title: "懒猫远程", subtitle: "懒猫微服网络保障您的隐私和数据安全。", devices: "我的设备", empty: "暂无设备",
     help: "在电脑上登录懒猫微服客户端，即可在这里管理。", loading: "正在获取设备…", connect: "连接桌面", consent: "需本机授权",
     failed: "操作失败，请确认设备在线后重试。", login_required: "登录已失效，请重新登录后刷新。", unavailable: "部分桌面来源暂不可用，其他设备仍可使用。",
-    count: n => `${n} 台设备`, noPreview: "暂无预览", lastSession: "上次连接", start: "开启", stop: "关闭", working: "处理中…",
+    count: n => `${n} 台设备`, noPreview: "暂无预览", start: "开启", stop: "关闭", working: "处理中…",
     screen: "屏幕录制", input: "键盘与鼠标", granted: "已授权", denied: "未授权", needs_user_action: "待确认", unknown: "待检查",
     updating: "正在更新", disabled: "已关闭", running: "运行中", starting: "启动中", permission_required: "待授权", error: "启动失败", offline: "离线",
     permissions: "申请系统权限", requesting: "请在设备上确认权限", container: "LightOS实例桌面", footnote: "桌面仅在开启后运行，系统权限由设备本机确认。",
@@ -16,7 +16,7 @@
     title: "Lazycat Remote", subtitle: "The Lazycat network protects your privacy and data security.", devices: "My devices", empty: "No devices yet",
     help: "Sign in to the Lazycat client on your computer to manage it here.", loading: "Loading devices…", connect: "Connect", consent: "Local consent required",
     failed: "Operation failed. Check that the device is online and try again.", login_required: "Your session expired. Sign in again.", unavailable: "Some desktop sources are unavailable. Other devices remain available.",
-    count: n => `${n} devices`, noPreview: "No preview", lastSession: "Last session", start: "Enable", stop: "Disable", working: "Working…",
+    count: n => `${n} devices`, noPreview: "No preview", start: "Enable", stop: "Disable", working: "Working…",
     screen: "Screen", input: "Input", granted: "Granted", denied: "Not granted", needs_user_action: "Needs approval", unknown: "Not checked",
     updating: "Updating", disabled: "Disabled", running: "Running", starting: "Starting", permission_required: "Needs permission", error: "Failed", offline: "Offline",
     permissions: "Request permissions", requesting: "Approve permissions on the device", container: "LightOS instance desktop", footnote: "Desktop capture runs only when enabled. System permissions require approval on the device.",
@@ -47,14 +47,14 @@
     });
   }
   function createCard(item) {
-    const card = element("article", "device-card"), cover = element("div", "cover"), image = element("img", "cover-image"), placeholder = element("div", "no-preview", copy.noPreview), caption = element("span", "preview-caption", copy.lastSession);
+    const card = element("article", "device-card"), cover = element("div", "cover"), image = element("img", "cover-image"), placeholder = element("div", "no-preview", copy.noPreview);
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", "0 0 32 32"); svg.setAttribute("fill", "none"); svg.setAttribute("stroke", "currentColor"); svg.setAttribute("stroke-width", "1.4"); svg.setAttribute("aria-hidden", "true");
     const path = document.createElementNS(svg.namespaceURI, "path"); path.setAttribute("d", "M5 5h22a2 2 0 0 1 2 2v15a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2ZM11 29h10M16 24v5"); svg.append(path); placeholder.prepend(svg);
-    image.alt = ""; image.hidden = true; image.loading = "lazy"; caption.hidden = true;
-    image.addEventListener("load", () => { image.hidden = false; placeholder.hidden = true; caption.hidden = false; });
-    image.addEventListener("error", () => { image.hidden = true; placeholder.hidden = false; caption.hidden = true; });
-    cover.append(image, placeholder, caption);
+    image.alt = ""; image.hidden = true; image.loading = "lazy";
+    image.addEventListener("load", () => { image.hidden = false; placeholder.hidden = true; });
+    image.addEventListener("error", () => { image.hidden = true; placeholder.hidden = false; });
+    cover.append(image, placeholder);
     const body = element("div", "card-body"), heading = element("div", "device-heading"), name = element("h2", "device-name"), badge = element("span", "badge"), platform = element("p", "platform"), permissions = element("div", "permissions"), screen = element("span", "permission"), input = element("span", "permission"), actions = element("div", "card-actions"), connect = element("a", "connect", copy.connect), toggle = element("button", "toggle"), request = element("button", "request-permissions"), error = element("p", "device-error");
     toggle.type = request.type = "button"; connect.target = "_blank"; connect.rel = "noopener noreferrer";
     const version = element("p", "runtime-version"), install = element("button", "install-runtime"), operation = element("div", "deployment"), operationLabel = element("span", "deployment-label"), operationValue = element("span", "deployment-value"), operationHeading = element("div", "deployment-heading"), progress = element("progress", "deployment-progress");
@@ -67,7 +67,7 @@
     const permissionStates = element("div", "permission-states");
     permissionStates.append(screen, input); permissions.append(permissionStates, request);
     heading.append(name, badge); actions.append(toggle, install, connect); body.append(heading, platform, version, permissions, operation, error, actions); card.append(cover, body);
-    card.parts = { version, install, operation, operationLabel, operationValue, progress, image, placeholder, caption, name, badge, platform, permissions, screen, input, connect, toggle, request, error };
+    card.parts = { version, install, operation, operationLabel, operationValue, progress, image, placeholder, name, badge, platform, permissions, screen, input, connect, toggle, request, error };
     toggle.addEventListener("click", () => act(card.target.id, card.target.enabled ? "stop" : "start"));
     request.addEventListener("click", () => act(card.target.id, "permissions"));
     grid.append(card); return card;
