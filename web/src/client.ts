@@ -1,3 +1,4 @@
+import { createSessionPreview } from "./preview";
 import { pictureNormalizedPoint, pictureScrollDelta } from "./picture-geometry";
 import { createScreenRotation } from "./screen-rotation";
 import { createLightBookInput, supportsLightBook } from "./lightbook-input";
@@ -58,6 +59,7 @@ export function createClient(options: ClientOptions = {}) {
   type Timer = ReturnType<typeof setTimeout>;
   const cancelTimer = (timer: Timer | null) => { if (timer !== null) clearTimeout(timer); };
   const canvas = element("desktop");
+  const preview = createSessionPreview(canvas);
   const drawing = canvas.getContext("2d", { alpha: false });
   const viewport = element("viewport");
   const textBox = element("text");
@@ -435,6 +437,7 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   function recordFrame(codec: string, started?: number, id?: number | null) {
+    preview.frame();
     if (typeof id === "number") {
       const embedded = frameCursorModes.get(id);
       if (typeof embedded === "boolean") cursor.present(embedded);
@@ -2031,6 +2034,7 @@ export function createClient(options: ClientOptions = {}) {
   listen(element("paste-local"), "click", () => { localPasteShift = false; setToolsOpen(false, true); void clipboard.read(true); });
 
   function destroy() {
+    preview.destroy();
     if (destroyed) return;
     screenRotation.dispose();
     disconnect();
@@ -2058,6 +2062,7 @@ export function createClient(options: ClientOptions = {}) {
   });
 
   listen(window, "pagehide", (event) => {
+    preview.flush();
     resumeWanted = wanted;
     if (event.persisted) disconnect();
     else destroy();

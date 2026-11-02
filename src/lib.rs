@@ -1,3 +1,4 @@
+pub mod agent;
 #[cfg(target_os = "linux")]
 mod applications;
 pub mod audio;

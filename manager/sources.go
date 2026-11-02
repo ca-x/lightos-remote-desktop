@@ -110,7 +110,7 @@ func (s desktopSource) targets(ctx context.Context, headers http.Header) ([]desk
 		if platform == "" {
 			platform = item.Distro
 		}
-		targets = append(targets, desktopTarget{ID: hex.EncodeToString(sum[:16]), Name: item.Name, Platform: platform, URL: resolved.String()})
+		targets = append(targets, desktopTarget{ID: hex.EncodeToString(sum[:16]), Name: item.Name, Platform: platform, URL: resolved.String(), Online: true, Enabled: true, Ready: true, Status: "running"})
 	}
 	return targets, nil
 }

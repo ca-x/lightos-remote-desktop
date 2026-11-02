@@ -23,6 +23,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
+    #[command(about = "Keep device management online; start desktop capture only on request")]
+    Agent(lightos_remote_desktop::agent::Options),
     #[command(
         about = "Check native screen and input permissions; optionally request system consent"
     )]
@@ -92,6 +94,7 @@ async fn main() -> Result<()> {
         _ => {}
     }
     match cli.command {
+        Action::Agent(options) => lightos_remote_desktop::agent::run(options).await,
         Action::Permissions { request, config } => {
             #[cfg(target_os = "linux")]
             let report = tokio::task::spawn_blocking(move || {

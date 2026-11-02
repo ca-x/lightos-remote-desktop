@@ -1,7 +1,7 @@
 package: cloud.lazycat.lightos.remote-desktop
-version: 0.1.24
-name: 远程桌面
-description: 查看和连接自己的容器及物理机远程桌面
+version: 0.1.27
+name: 懒猫远程
+description: 管理、开启和连接自己的远程设备
 min_os_version: v1.5.2
 admin_only: false
 permissions:
@@ -9,6 +9,6 @@ permissions:
     - lzcapp.user_delegate
 locales:
   zh:
-    name: 远程桌面
+    name: 懒猫远程
   en:
-    name: Remote Desktop
+    name: Lazycat Remote

@@ -17,11 +17,18 @@ import (
 var webAssets embed.FS
 
 type desktopTarget struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Platform        string `json:"platform,omitempty"`
-	URL             string `json:"url"`
-	RequiresConsent bool   `json:"requires_consent,omitempty"`
+	ID              string         `json:"id"`
+	Name            string         `json:"name"`
+	Platform        string         `json:"platform,omitempty"`
+	URL             string         `json:"url"`
+	RequiresConsent bool           `json:"requires_consent,omitempty"`
+	Managed         bool           `json:"managed"`
+	Online          bool           `json:"online"`
+	Enabled         bool           `json:"enabled"`
+	Ready           bool           `json:"ready"`
+	Status          string         `json:"status,omitempty"`
+	Permissions     map[string]any `json:"permissions,omitempty"`
+	Preview         string         `json:"preview,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
@@ -80,6 +87,8 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/targets", s.targets)
 	mux.HandleFunc("/api/hosts", s.hosts.register)
+	mux.HandleFunc("/api/hosts/{id}/{action}", s.hosts.control)
+	mux.HandleFunc("/api/previews/{id}", s.hosts.preview)
 	mux.HandleFunc("/desktop/", s.hosts.proxy)
 	mux.Handle("/", http.FileServer(http.FS(web)))
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1,0 +1,9 @@
+[target.x86_64-pc-windows-msvc]
+# The standalone host must also run on machines without the VC++ redistributable.
+rustflags = [
+  "-C", "target-feature=+crt-static",
+  "-C", "link-arg=/NODEFAULTLIB:msvcrt",
+  "-C", "link-arg=/NODEFAULTLIB:vcruntime",
+  "-C", "link-arg=/DEFAULTLIB:libcmt",
+  "-C", "link-arg=/DEFAULTLIB:libvcruntime",
+]

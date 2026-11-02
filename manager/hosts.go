@@ -21,16 +21,19 @@ import (
 )
 
 type hostRegistration struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	Platform       string `json:"platform"`
-	DeviceID       string `json:"device_id"`
-	Service        string `json:"terminal_service_name"`
-	DesktopService string `json:"desktop_service_name"`
-	Epoch          string `json:"terminal_epoch"`
-	Secret         string `json:"terminal_secret"`
-	BoxID          string `json:"box_id"`
-	Desktop        struct {
+	ID              string         `json:"id"`
+	Name            string         `json:"name"`
+	Platform        string         `json:"platform"`
+	DeviceID        string         `json:"device_id"`
+	Service         string         `json:"terminal_service_name"`
+	DesktopService  string         `json:"desktop_service_name"`
+	ControlService  string         `json:"control_service_name"`
+	ControlPassword string         `json:"control_password"`
+	Agent           map[string]any `json:"agent,omitempty"`
+	Epoch           string         `json:"terminal_epoch"`
+	Secret          string         `json:"terminal_secret"`
+	BoxID           string         `json:"box_id"`
+	Desktop         struct {
 		Enabled         bool   `json:"enabled"`
 		Ready           bool   `json:"ready"`
 		Port            int    `json:"port"`
@@ -45,11 +48,16 @@ type hostRecord struct {
 	until        time.Time
 }
 type hostRegistry struct {
-	mu    sync.Mutex
-	hosts map[string]hostRecord
+	mu        sync.Mutex
+	hosts     map[string]hostRecord
+	persisted []byte
 }
 
-func newHostRegistry() *hostRegistry { return &hostRegistry{hosts: make(map[string]hostRecord)} }
+func newHostRegistry() *hostRegistry {
+	h := &hostRegistry{hosts: make(map[string]hostRecord)}
+	h.restore()
+	return h
+}
 func hostID(owner, id string) string {
 	sum := sha256.Sum256([]byte(owner + "\x00" + id))
 	return hex.EncodeToString(sum[:16])
@@ -59,7 +67,7 @@ func (h *hostRegistry) list(owner string) []desktopTarget {
 	defer h.mu.Unlock()
 	targets := make([]desktopTarget, 0)
 	for id, record := range h.hosts {
-		if !record.until.After(time.Now()) {
+		if !record.until.After(time.Now()) && record.registration.ControlService == "" {
 			delete(h.hosts, id)
 			continue
 		}
@@ -67,7 +75,18 @@ func (h *hostRegistry) list(owner string) []desktopTarget {
 			continue
 		}
 		r := record.registration
-		targets = append(targets, desktopTarget{ID: id, Name: r.Name, Platform: r.Platform, URL: "/desktop/" + id + "/", RequiresConsent: r.Desktop.RequiresConsent})
+		online := record.until.After(time.Now())
+		permissions, _ := r.Agent["permissions"].(map[string]any)
+		state, _ := r.Agent["status"].(string)
+		if !online {
+			state = "offline"
+		}
+		target := desktopTarget{ID: id, Name: r.Name, Platform: r.Platform, URL: "/desktop/" + id + "/", RequiresConsent: r.Desktop.RequiresConsent,
+			Managed: r.ControlService != "", Online: online, Enabled: r.Desktop.Enabled, Ready: online && r.Desktop.Ready, Status: state, Permissions: permissions}
+		if stamp := previewStamp(id); stamp != "" {
+			target.Preview = "/api/previews/" + id + "?v=" + stamp
+		}
+		targets = append(targets, target)
 	}
 	return targets
 }
@@ -109,7 +128,7 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := hostID(owner(r), registration.ID)
-	if !registration.Desktop.Enabled || !registration.Desktop.Ready {
+	if registration.ControlService == "" && (!registration.Desktop.Enabled || !registration.Desktop.Ready) {
 		h.mu.Lock()
 		// Late cleanup from a previous runtime must not withdraw its replacement.
 		if current, ok := h.hosts[id]; ok && (registration.DesktopService == "" || current.registration.DesktopService == registration.DesktopService) {
@@ -120,22 +139,34 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d := registration.Desktop
+	managed := registration.ControlService != ""
+	if managed && (!strings.HasPrefix(registration.ControlService, "cloud.lazycat.remote-desktop.control."+registration.ID+".") || strings.ContainsAny(registration.ControlService, "/\\\r\n?#") || len(registration.ControlService) > 256 || len(registration.ControlPassword) < 32 || len(registration.ControlPassword) > 256) {
+		writeFailure(w, 400, "invalid_control_registration")
+		return
+	}
 	direct := registration.DesktopService != ""
+	if managed && d.Ready && !direct {
+		writeFailure(w, 400, "missing_desktop_service")
+		return
+	}
 	if direct {
 		if registration.DesktopService != "cloud.lazycat.remote-desktop.managed."+registration.ID+"."+d.Epoch || d.Epoch == "" || strings.ContainsAny(registration.DesktopService, "/\\\r\n?#") {
 			writeFailure(w, 400, "invalid_registration")
 			return
 		}
-	} else if registration.Service != "cloud.lazycat.lightos.client-terminal.managed."+registration.ID+"."+registration.Epoch || d.Epoch != registration.Epoch || len(registration.Secret) < 32 || len(registration.Secret) > 256 {
+	} else if !managed && (registration.Service != "cloud.lazycat.lightos.client-terminal.managed."+registration.ID+"."+registration.Epoch || d.Epoch != registration.Epoch || len(registration.Secret) < 32 || len(registration.Secret) > 256) {
 		writeFailure(w, 400, "invalid_registration")
 		return
 	}
-	if d.Port < 1 || d.Port > 65535 || len(d.Password) < 32 || len(d.Password) > 256 || len(registration.Name) > 256 {
+	if len(registration.Name) > 256 || (d.Ready && (d.Port < 1 || d.Port > 65535 || len(d.Password) < 32 || len(d.Password) > 256 || !d.Enabled)) {
 		writeFailure(w, 400, "invalid_registration")
 		return
 	}
-	values := []string{d.Epoch, registration.DeviceID, registration.BoxID, d.Password}
-	if !direct {
+	values := []string{registration.DeviceID, registration.BoxID}
+	if d.Ready {
+		values = append(values, d.Epoch, d.Password)
+	}
+	if !direct && !managed {
 		values = append(values, registration.Epoch, registration.Secret, registration.Service)
 	}
 	for _, value := range values {
@@ -155,6 +186,7 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 	registration.DeviceID = device.GetUniqueDeivceId()
 	h.mu.Lock()
 	h.hosts[id] = hostRecord{registration: registration, owner: owner(r), until: time.Now().Add(35 * time.Second)}
+	h.persist()
 	h.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -172,7 +204,7 @@ func (h *hostRegistry) proxy(w http.ResponseWriter, r *http.Request) {
 	h.mu.Lock()
 	record, ok := h.hosts[id]
 	h.mu.Unlock()
-	if !ok || record.owner != owner(r) || !record.until.After(time.Now()) {
+	if !ok || record.owner != owner(r) || !record.until.After(time.Now()) || !record.registration.Desktop.Ready {
 		writeFailure(w, 403, "desktop_unavailable")
 		return
 	}
