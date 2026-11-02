@@ -46,6 +46,8 @@ type hostRecord struct {
 	registration hostRegistration
 	owner        string
 	until        time.Time
+	source       *desktopSource
+	sourceURL    string
 }
 type hostRegistry struct {
 	mu        sync.Mutex
@@ -67,6 +69,9 @@ func (h *hostRegistry) list(owner string) []desktopTarget {
 	defer h.mu.Unlock()
 	targets := make([]desktopTarget, 0)
 	for id, record := range h.hosts {
+		if record.source != nil {
+			continue
+		}
 		if !record.until.After(time.Now()) && record.registration.ControlService == "" {
 			delete(h.hosts, id)
 			continue
@@ -81,7 +86,7 @@ func (h *hostRegistry) list(owner string) []desktopTarget {
 		if !online {
 			state = "offline"
 		}
-		target := desktopTarget{ID: id, Name: r.Name, Platform: r.Platform, URL: "/desktop/" + id + "/", RequiresConsent: r.Desktop.RequiresConsent,
+		target := desktopTarget{Kind: "device", ID: id, Name: r.Name, Platform: r.Platform, URL: "/desktop/" + id + "/", RequiresConsent: r.Desktop.RequiresConsent,
 			Managed: r.ControlService != "", Online: online, Enabled: r.Desktop.Enabled, Ready: online && r.Desktop.Ready, Status: state, Permissions: permissions}
 		if stamp := previewStamp(id); stamp != "" {
 			target.Preview = "/api/previews/" + id + "?v=" + stamp

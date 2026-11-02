@@ -17,6 +17,7 @@ import (
 var webAssets embed.FS
 
 type desktopTarget struct {
+	Kind            string         `json:"kind"`
 	ID              string         `json:"id"`
 	Name            string         `json:"name"`
 	Platform        string         `json:"platform,omitempty"`
@@ -62,7 +63,9 @@ func (s *server) targets(w http.ResponseWriter, r *http.Request) {
 			log.Printf("desktop source %s: %v", source.AppID, err)
 			continue
 		}
-		targets = append(targets, items...)
+		for _, item := range items {
+			targets = append(targets, s.rememberSource(owner(r), source, item))
+		}
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].Name < targets[j].Name })
 	writeJSON(w, http.StatusOK, map[string]any{"targets": targets, "unavailable": warnings})
@@ -88,8 +91,8 @@ func main() {
 	mux.HandleFunc("/api/targets", s.targets)
 	mux.HandleFunc("/api/hosts", s.hosts.register)
 	mux.HandleFunc("/api/hosts/{id}/{action}", s.hosts.control)
-	mux.HandleFunc("/api/previews/{id}", s.hosts.preview)
-	mux.HandleFunc("/desktop/", s.hosts.proxy)
+	mux.HandleFunc("/api/previews/{id}", s.preview)
+	mux.HandleFunc("/desktop/", s.desktop)
 	mux.Handle("/", http.FileServer(http.FS(web)))
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")

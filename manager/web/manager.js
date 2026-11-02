@@ -2,28 +2,28 @@
   "use strict";
   const zh = navigator.language.toLowerCase().startsWith("zh");
   const copy = zh ? {
-    title: "懒猫远程", subtitle: "远程设备", devices: "我的设备", refresh: "刷新设备", empty: "暂无设备",
+    title: "懒猫远程", subtitle: "懒猫微服网络保障您的隐私和数据安全。", devices: "我的设备", empty: "暂无设备",
     help: "在电脑上运行懒猫远程，即可在这里管理。", loading: "正在获取设备…", connect: "连接桌面", consent: "需本机授权",
     failed: "操作失败，请确认设备在线后重试。", login_required: "登录已失效，请重新登录后刷新。", unavailable: "部分桌面来源暂不可用，其他设备仍可使用。",
     count: n => `${n} 台设备`, noPreview: "暂无预览", lastSession: "上次连接", start: "开启", stop: "关闭", working: "处理中…",
     screen: "屏幕录制", input: "键盘与鼠标", granted: "已授权", denied: "未授权", needs_user_action: "待确认", unknown: "待检查",
     disabled: "已关闭", running: "运行中", starting: "启动中", permission_required: "待授权", error: "启动失败", offline: "离线",
-    permissions: "申请系统权限", requesting: "请在设备上确认权限", container: "容器桌面", footnote: "桌面仅在开启后运行，系统权限由设备本机确认。",
+    permissions: "申请系统权限", requesting: "请在设备上确认权限", container: "LightOS实例桌面", footnote: "桌面仅在开启后运行，系统权限由设备本机确认。",
     stopped: "桌面进程已停止，可重新开启。",
   } : {
-    title: "Lazycat Remote", subtitle: "Remote devices", devices: "My devices", refresh: "Refresh", empty: "No devices yet",
+    title: "Lazycat Remote", subtitle: "The Lazycat network protects your privacy and data security.", devices: "My devices", empty: "No devices yet",
     help: "Run Lazycat Remote on your computer to manage it here.", loading: "Loading devices…", connect: "Connect", consent: "Local consent required",
     failed: "Operation failed. Check that the device is online and try again.", login_required: "Your session expired. Sign in again.", unavailable: "Some desktop sources are unavailable. Other devices remain available.",
     count: n => `${n} devices`, noPreview: "No preview", lastSession: "Last session", start: "Enable", stop: "Disable", working: "Working…",
     screen: "Screen", input: "Input", granted: "Granted", denied: "Not granted", needs_user_action: "Needs approval", unknown: "Not checked",
     disabled: "Disabled", running: "Running", starting: "Starting", permission_required: "Needs permission", error: "Failed", offline: "Offline",
-    permissions: "Request permissions", requesting: "Approve permissions on the device", container: "Container desktop", footnote: "Desktop capture runs only when enabled. System permissions require approval on the device.",
+    permissions: "Request permissions", requesting: "Approve permissions on the device", container: "LightOS instance desktop", footnote: "Desktop capture runs only when enabled. System permissions require approval on the device.",
     stopped: "The desktop process stopped. Try enabling it again.",
   };
   document.documentElement.lang = zh ? "zh-CN" : "en";
   document.title = copy.title;
   document.querySelectorAll("[data-text]").forEach(node => { node.textContent = copy[node.dataset.text]; });
-  const grid = document.getElementById("desktops"), status = document.getElementById("status"), warning = document.getElementById("warning"), empty = document.getElementById("empty"), refresh = document.getElementById("refresh");
+  const grid = document.getElementById("desktops"), status = document.getElementById("status"), warning = document.getElementById("warning"), empty = document.getElementById("empty");
   const cards = new Map(), pendingActions = new Map();
   let busy = false, pending;
   const platforms = { darwin: "macOS", macos: "macOS", win32: "Windows", windows: "Windows", linux: "Linux" };
@@ -44,7 +44,9 @@
     cover.append(image, placeholder, caption);
     const body = element("div", "card-body"), heading = element("div", "device-heading"), name = element("h2", "device-name"), badge = element("span", "badge"), platform = element("p", "platform"), permissions = element("div", "permissions"), screen = element("span", "permission"), input = element("span", "permission"), actions = element("div", "card-actions"), connect = element("a", "connect", copy.connect), toggle = element("button", "toggle"), request = element("button", "request-permissions"), error = element("p", "device-error");
     toggle.type = request.type = "button"; connect.target = "_blank"; connect.rel = "noopener noreferrer";
-    permissions.append(screen, input); heading.append(name, badge); actions.append(toggle, connect); body.append(heading, platform, permissions, actions, request, error); card.append(cover, body);
+    const permissionStates = element("div", "permission-states");
+    permissionStates.append(screen, input); permissions.append(permissionStates, request);
+    heading.append(name, badge); actions.append(toggle, connect); body.append(heading, platform, permissions, error, actions); card.append(cover, body);
     card.parts = { image, placeholder, caption, name, badge, platform, permissions, screen, input, connect, toggle, request, error };
     toggle.addEventListener("click", () => act(card.target.id, card.target.enabled ? "stop" : "start"));
     request.addEventListener("click", () => act(card.target.id, "permissions"));
@@ -57,7 +59,7 @@
     if (pending && (Date.now() > pending.until || pending.action === "start" && item.enabled || pending.action === "stop" && !item.enabled || pending.action === "permissions" && permissions.requesting)) pendingActions.delete(item.id);
     const processing = pendingActions.has(item.id);
     p.name.textContent = item.name; p.name.title = item.name;
-    p.platform.textContent = platforms[item.platform] || item.platform || copy.container;
+    p.platform.textContent = item.kind === "instance" ? copy.container : platforms[item.platform] || item.platform || "";
     const state = item.online === false ? "offline" : item.status || (item.ready ? "running" : "disabled");
     p.badge.textContent = copy[state] || copy.disabled; p.badge.dataset.state = state;
     if (item.preview) {
@@ -72,12 +74,12 @@
       const value = ["granted", "denied", "needs_user_action"].includes(permissions[kind]) ? permissions[kind] : "unknown";
       node.textContent = `${copy[kind]} · ${copy[value]}`; node.dataset.granted = String(value === "granted");
     }
-    p.permissions.hidden = !item.managed;
+    p.permissions.hidden = false;
     p.toggle.hidden = !item.managed;
     p.toggle.textContent = processing ? copy.working : item.enabled ? copy.stop : copy.start;
     p.toggle.disabled = !item.online || processing;
     p.toggle.ariaLabel = `${item.enabled ? copy.stop : copy.start}: ${item.name}`;
-    p.request.hidden = !item.managed;
+    p.request.hidden = !item.managed || ![permissions.screen, permissions.input].some(value => value === "denied" || value === "needs_user_action");
     p.request.textContent = permissions.requesting ? copy.requesting : copy.permissions;
     p.request.disabled = !item.online || processing || permissions.requesting === true;
     const ready = item.online !== false && item.ready !== false;
@@ -114,7 +116,7 @@
   }
   async function load() {
     if (busy || document.hidden) return;
-    busy = true; refresh.disabled = true;
+    busy = true;
     if (!cards.size) status.textContent = copy.loading;
     const controller = new AbortController(); pending = controller;
     const timeout = setTimeout(() => controller.abort(), 20000);
@@ -133,12 +135,11 @@
       if (document.hidden && controller.signal.aborted) return;
       status.textContent = ""; warning.textContent = copy[error.message] || copy.failed; warning.hidden = false;
       if (error.message === "login_required") render([]);
-    } finally { clearTimeout(timeout); busy = false; refresh.disabled = false; pending = undefined; }
+    } finally { clearTimeout(timeout); busy = false; pending = undefined; }
   }
-  refresh.addEventListener("click", load);
   document.addEventListener("visibilitychange", () => { if (document.hidden) pending?.abort(); else void load(); });
-  const timer = setInterval(load, 4000);
-  window.addEventListener("pagehide", () => { pending?.abort(); clearInterval(timer); });
-  window.addEventListener("pageshow", event => { if (event.persisted) void load(); });
+  let timer = setInterval(load, 4000);
+  window.addEventListener("pagehide", () => { pending?.abort(); clearInterval(timer); timer = undefined; });
+  window.addEventListener("pageshow", event => { if (event.persisted) { timer ??= setInterval(load, 4000); void load(); } });
   void load();
 })();
