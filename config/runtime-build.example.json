@@ -1,0 +1,11 @@
+{
+  "macos": {
+    "host": "mac-builder",
+    "port": 22,
+    "identity": "Developer ID Application: Your Organization (TEAMID)",
+    "ssh_options": ["-o", "BatchMode=yes"]
+  },
+  "windows": {
+    "compiler_directory": "/opt/llvm"
+  }
+}

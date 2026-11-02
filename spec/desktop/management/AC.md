@@ -14,9 +14,9 @@ And 物理机在桌面关闭时仍可见，权限状态可查看，已就绪桌�
 ID: SC-PERSISTS-PHYSICAL-DESKTOP-ENABLEMENT
 Profile: draft
 Gate: required
-Given 用户首次运行包含当前系统运行时的控制程序，已登录微服，“接入 LightOS”保持关闭
+Given 用户首次运行包含常驻控制模块的客户端，已登录微服，“接入 LightOS”保持关闭
 When 用户在懒猫远程查看该设备
-Then 桌面显示已关闭，控制程序仍在线，PC 设置页没有远程桌面开关
+Then 尚未安装桌面时设备仍可见并显示安装入口，安装后桌面显示已关闭，控制模块仍在线，PC 设置页没有远程桌面开关
 When 用户开启桌面并完成本机必要的系统权限授权
 Then 桌面进入可连接状态，用户可查看并操作对应机器
 When 用户关闭桌面，再重启控制程序
@@ -40,3 +40,44 @@ Given 当前账号曾管理一台物理机并保存过连接预览
 When 该设备离线或管理应用重启
 Then 卡片与封面保留，离线状态明确，不提供当前不可执行的启停与连接操作
 And 其他账号不能读取该设备的控制信息或预览
+
+# 场景 5：从微服安装匹配平台的桌面程序
+ID: SC-INSTALLS-MATCHING-RUNTIME-FROM-LPK
+Profile: draft
+Gate: required
+Given 当前账号拥有一台尚未安装远程桌面的在线设备，客户端控制模块已运行，LPK 已构建当前系统和架构的程序
+When 用户在设备卡片点击安装远程桌面
+Then 卡片显示真实安装进度和状态，设备只从当前微服应用域名下载匹配平台的程序并校验
+And 安装完成后显示已安装版本，桌面仍保持关闭，未授权权限可从卡片主动申请
+And 未安装或版本不一致时只提供对应的安装或更新入口，不额外展示客户端升级提示，底部操作与同排实例卡片保持对齐
+
+# 场景 6：确认中断后更新正在运行的桌面
+ID: SC-CONFIRMS-INTERRUPTION-BEFORE-UPDATE
+Profile: draft
+Gate: required
+Given 设备已开启远程桌面且正在被连接，LPK 提供不同版本
+When 用户在卡片点击更新远程桌面
+Then 弹窗说明更新会中断当前连接，并提供取消和确认
+When 用户取消
+Then 桌面与当前连接保持可用，安装没有开始
+When 用户再次点击更新并确认
+Then 当前连接被结束，服务自动停止并开始下载安装，无需手动断开或停留在等待连接结束的进度
+And 完成后恢复原有开启状态、显示新版本、删除旧版本二进制并立即隐藏进度和完成提示
+
+# 场景 7：更新失败时保留可用的旧版本
+ID: SC-RETAINS-WORKING-RUNTIME-ON-UPDATE-FAILURE
+Profile: draft
+Gate: required
+Given 当前版本可用，但本次下载包损坏、签名身份不匹配或无法正常运行
+When 用户尝试更新远程桌面
+Then 卡片明确显示失败原因和可重试状态，原有已安装版本及其二进制仍保留
+And 不会把未通过检查的版本用于桌面服务
+
+# 场景 8：直接更新已关闭的桌面
+ID: SC-UPDATES-DISABLED-DESKTOP-DIRECTLY
+Profile: draft
+Gate: required
+Given 设备已经关闭远程桌面且 LPK 提供不同版本
+When 用户点击更新远程桌面
+Then 直接开始更新，不显示中断连接确认弹窗
+And 完成后保持关闭、显示新版本并立即隐藏进度和完成提示

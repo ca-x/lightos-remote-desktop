@@ -17,6 +17,17 @@ import (
 var webAssets embed.FS
 
 type desktopTarget struct {
+	RuntimeVersion     string         `json:"runtime_version,omitempty"`
+	AvailableVersion   string         `json:"available_version,omitempty"`
+	Installed          bool           `json:"installed"`
+	CanInstall         bool           `json:"can_install"`
+	RuntimeSupported   bool           `json:"runtime_supported"`
+	ControllerProtocol int            `json:"controller_protocol,omitempty"`
+	UpdateAvailable    bool           `json:"update_available"`
+	Deployment         map[string]any `json:"deployment,omitempty"`
+	RuntimeError       string         `json:"runtime_error,omitempty"`
+	agent              map[string]any
+
 	Kind            string         `json:"kind"`
 	ID              string         `json:"id"`
 	Name            string         `json:"name"`
@@ -43,8 +54,9 @@ func writeFailure(w http.ResponseWriter, status int, code string) {
 func owner(r *http.Request) string { return strings.TrimSpace(r.Header.Get("X-HC-User-ID")) }
 
 type server struct {
-	hosts   *hostRegistry
-	sources []desktopSource
+	hosts    *hostRegistry
+	sources  []desktopSource
+	runtimes *runtimeCatalog
 }
 
 func (s *server) targets(w http.ResponseWriter, r *http.Request) {
@@ -67,6 +79,9 @@ func (s *server) targets(w http.ResponseWriter, r *http.Request) {
 			targets = append(targets, s.rememberSource(owner(r), source, item))
 		}
 	}
+	for index := range targets {
+		s.runtimes.decorate(&targets[index])
+	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].Name < targets[j].Name })
 	writeJSON(w, http.StatusOK, map[string]any{"targets": targets, "unavailable": warnings})
 }
@@ -86,9 +101,14 @@ func main() {
 			}
 		}
 	}
-	s := &server{hosts: newHostRegistry(), sources: sources}
+	runtimes, err := loadRuntimeCatalog()
+	if err != nil {
+		log.Fatal("Unable to load the bundled runtime catalog: ", err)
+	}
+	s := &server{hosts: newHostRegistry(), sources: sources, runtimes: runtimes}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/targets", s.targets)
+	mux.HandleFunc("/api/runtimes/{target}/{file}", runtimes.serve)
 	mux.HandleFunc("/api/hosts", s.hosts.register)
 	mux.HandleFunc("/api/hosts/{id}/{action}", s.hosts.control)
 	mux.HandleFunc("/api/previews/{id}", s.preview)

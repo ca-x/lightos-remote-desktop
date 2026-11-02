@@ -260,6 +260,23 @@ async fn shutdown_signal(stop_event: Option<String>) {
     }
 }
 
+// A managed capture process must not outlive its supervising client.
+async fn managed_parent_closed() {
+    if std::env::var("LIGHTOS_REMOTE_DESKTOP_PARENT_PIPE").as_deref() != Ok("1") {
+        std::future::pending::<()>().await;
+        return;
+    }
+    use tokio::io::AsyncReadExt;
+    let mut input = tokio::io::stdin();
+    let mut buffer = [0u8; 64];
+    loop {
+        match input.read(&mut buffer).await {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+    }
+}
+
 async fn serve(config: Config, stop_event: Option<String>) -> Result<()> {
     config.validate()?;
     #[cfg(target_os = "linux")]
@@ -287,7 +304,12 @@ async fn serve(config: Config, stop_event: Option<String>) -> Result<()> {
     let mut startup = tokio::task::spawn_blocking(move || {
         lightos_remote_desktop::platform::current().open(&settings, stopping)
     });
-    let mut shutdown = Box::pin(shutdown_signal(stop_event));
+    let mut shutdown = Box::pin(async move {
+        tokio::select! {
+            _ = shutdown_signal(stop_event) => {},
+            _ = managed_parent_closed() => {},
+        }
+    });
     let host = tokio::select! {
         result = &mut startup => result??,
         _ = &mut shutdown => {

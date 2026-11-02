@@ -86,7 +86,7 @@ func (h *hostRegistry) list(owner string) []desktopTarget {
 		if !online {
 			state = "offline"
 		}
-		target := desktopTarget{Kind: "device", ID: id, Name: r.Name, Platform: r.Platform, URL: "/desktop/" + id + "/", RequiresConsent: r.Desktop.RequiresConsent,
+		target := desktopTarget{agent: r.Agent, Kind: "device", ID: id, Name: r.Name, Platform: r.Platform, URL: "/desktop/" + id + "/", RequiresConsent: r.Desktop.RequiresConsent,
 			Managed: r.ControlService != "", Online: online, Enabled: r.Desktop.Enabled, Ready: online && r.Desktop.Ready, Status: state, Permissions: permissions}
 		if stamp := previewStamp(id); stamp != "" {
 			target.Preview = "/api/previews/" + id + "?v=" + stamp
@@ -190,6 +190,15 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 	api.Close()
 	registration.DeviceID = device.GetUniqueDeivceId()
 	h.mu.Lock()
+	if previous, ok := h.hosts[id]; ok && previous.until.After(time.Now()) {
+		prior, _ := previous.registration.Agent["controller_protocol"].(float64)
+		incoming, _ := registration.Agent["controller_protocol"].(float64)
+		if prior >= 2 && incoming < 2 {
+			h.mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}
 	h.hosts[id] = hostRecord{registration: registration, owner: owner(r), until: time.Now().Add(35 * time.Second)}
 	h.persist()
 	h.mu.Unlock()

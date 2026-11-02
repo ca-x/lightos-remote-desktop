@@ -12,7 +12,7 @@ import (
 
 func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 	action := r.PathValue("action")
-	if r.Method != http.MethodPost || (action != "start" && action != "stop" && action != "permissions") {
+	if r.Method != http.MethodPost || (action != "start" && action != "stop" && action != "permissions" && action != "install" && action != "update" && action != "update-confirmed") {
 		writeFailure(w, http.StatusMethodNotAllowed, "invalid_action")
 		return
 	}
@@ -30,6 +30,13 @@ func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 	if !ok || record.owner != owner(r) || record.registration.ControlService == "" || !record.until.After(time.Now()) {
 		writeFailure(w, http.StatusConflict, "device_unavailable")
 		return
+	}
+	if action == "install" || action == "update" || action == "update-confirmed" {
+		protocol, _ := record.registration.Agent["controller_protocol"].(float64)
+		if protocol < 2 {
+			writeFailure(w, 409, "client_update_required")
+			return
+		}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
@@ -71,14 +78,31 @@ func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusConflict {
+		var failure struct {
+			Error string `json:"error"`
+		}
+		if json.NewDecoder(io.LimitReader(response.Body, 8192)).Decode(&failure) == nil && failure.Error == "update_confirmation_required" {
+			writeFailure(w, 409, failure.Error)
+			return
+		}
+	}
 	if response.StatusCode != http.StatusAccepted && response.StatusCode != http.StatusOK {
 		writeFailure(w, 502, "control_rejected")
 		return
 	}
-	var reply any
+	var reply map[string]any
 	if json.NewDecoder(io.LimitReader(response.Body, 8192)).Decode(&reply) != nil {
 		writeFailure(w, 502, "invalid_control_response")
 		return
+	}
+	if state, ok := reply["state"].(map[string]any); ok {
+		h.mu.Lock()
+		if current, exists := h.hosts[r.PathValue("id")]; exists && current.owner == owner(r) && current.registration.ControlService == record.registration.ControlService {
+			current.registration.Agent = state
+			h.hosts[r.PathValue("id")] = current
+		}
+		h.mu.Unlock()
 	}
 	writeJSON(w, http.StatusAccepted, reply)
 }

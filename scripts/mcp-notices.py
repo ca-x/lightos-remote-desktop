@@ -23,7 +23,7 @@ fallback_root = repository / "docs/licenses/protocols"
 fallbacks = {(entry["name"], entry["version"]): entry for entry in json.loads((fallback_root / "sources.json").read_text(encoding="utf-8"))}
 packages = {package["id"]: package for package in metadata["packages"]}
 nodes = {node["id"]: node for node in metadata["resolve"]["nodes"]}
-roots = {"rmcp", "schemars", "rand", "sha2", "tokio-util", "ironrdp-server", "ironrdp-pdu", "rustls-pemfile", "rcgen", "bincode", "x11rb", "enigo", "arboard", "zbus", "ashpd", "pipewire", "configparser", "fast_image_resize", "windows-capture", "windows-service", "wasapi", "screencapturekit", "windows", "keycode", "dirs", "opus"}
+roots = {"reqwest", "rmcp", "schemars", "rand", "sha2", "tokio-util", "ironrdp-server", "ironrdp-pdu", "rustls-pemfile", "rcgen", "bincode", "x11rb", "enigo", "arboard", "zbus", "ashpd", "pipewire", "configparser", "fast_image_resize", "windows-capture", "windows-service", "wasapi", "screencapturekit", "windows", "keycode", "dirs", "opus"}
 pending = [key for key, package in packages.items() if package["name"] in roots and key in nodes]
 visited = set()
 while pending:

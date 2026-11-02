@@ -24,8 +24,15 @@
     <div class="section-heading"><h2 data-text="devices">我的设备</h2><p id="status" role="status" aria-live="polite"></p></div>
     <p id="warning" role="alert" hidden></p>
     <section id="desktops" aria-label="Remote devices"></section>
-    <section id="empty" hidden><div class="empty-icon" aria-hidden="true">▣</div><h2 data-text="empty">暂无设备</h2><p data-text="help">在电脑上运行懒猫远程，即可在这里管理。</p></section>
+    <section id="empty" hidden><div class="empty-icon" aria-hidden="true">▣</div><h2 data-text="empty">暂无设备</h2><p data-text="help">在电脑上登录懒猫微服客户端，即可在这里管理。</p></section>
     <footer data-text="footnote">桌面仅在开启后运行，系统权限由设备本机确认。</footer>
   </main>
+  <dialog id="update-confirmation" aria-labelledby="update-title" aria-describedby="update-message">
+    <form method="dialog">
+      <h2 id="update-title" data-text="update">更新远程桌面</h2>
+      <p id="update-message" data-text="interruptNotice">更新会中断当前远程桌面连接。确认后将自动关闭服务并更新，完成后恢复服务。</p>
+      <div class="dialog-actions"><button value="cancel" data-text="cancel" autofocus>取消</button><button value="confirm" class="confirm-update" data-text="confirm">确认</button></div>
+    </form>
+  </dialog>
 </body>
 </html>
