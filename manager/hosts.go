@@ -64,7 +64,7 @@ func hostID(owner, id string) string {
 	sum := sha256.Sum256([]byte(owner + "\x00" + id))
 	return hex.EncodeToString(sum[:16])
 }
-func (h *hostRegistry) list(owner string) []desktopTarget {
+func (h *hostRegistry) list(owner, currentDevice string) []desktopTarget {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	targets := make([]desktopTarget, 0)
@@ -79,7 +79,13 @@ func (h *hostRegistry) list(owner string) []desktopTarget {
 		if record.owner != owner {
 			continue
 		}
+		if !record.until.After(time.Now()) {
+			continue
+		}
 		r := record.registration
+		if currentDevice != "" && r.DeviceID == currentDevice {
+			continue
+		}
 		online := record.until.After(time.Now())
 		permissions, _ := r.Agent["permissions"].(map[string]any)
 		state, _ := r.Agent["status"].(string)
@@ -220,6 +226,10 @@ func (h *hostRegistry) proxy(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 	if !ok || record.owner != owner(r) || !record.until.After(time.Now()) || !record.registration.Desktop.Ready {
 		writeFailure(w, 403, "desktop_unavailable")
+		return
+	}
+	if deviceID := currentDeviceID(r); deviceID != "" && deviceID == record.registration.DeviceID {
+		http.Error(w, "请从另一台设备连接此远程桌面。 / Connect to this desktop from another device.", http.StatusForbidden)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)

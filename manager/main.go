@@ -53,6 +53,12 @@ func writeFailure(w http.ResponseWriter, status int, code string) {
 }
 func owner(r *http.Request) string { return strings.TrimSpace(r.Header.Get("X-HC-User-ID")) }
 
+// The application gateway supplies the same stable device ID used by the
+// platform SDK's current-session device lookup. It is not a hostname or peer ID.
+func currentDeviceID(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get("X-HC-Device-ID"))
+}
+
 type server struct {
 	hosts    *hostRegistry
 	sources  []desktopSource
@@ -66,7 +72,7 @@ func (s *server) targets(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	targets := s.hosts.list(owner(r))
+	targets := s.hosts.list(owner(r), currentDeviceID(r))
 	warnings := make([]string, 0)
 	for _, source := range s.sources {
 		items, err := source.targets(ctx, r.Header)
