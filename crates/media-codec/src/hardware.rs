@@ -223,6 +223,19 @@ impl HardwareEncoders {
         backend: EncoderBackend,
         settings: EncoderSettings,
     ) -> Result<Box<dyn VideoEncoder>> {
+        #[cfg(target_os = "macos")]
+        if backend == EncoderBackend::VideoToolbox
+            && std::env::var("LIGHTOS_MACOS_MEDIA_BACKEND").as_deref() != Ok("compat")
+        {
+            return Ok(Box::new(crate::videotoolbox::VideoToolbox::new(settings)?));
+        }
+        self.create_compat(backend, settings)
+    }
+    pub fn create_compat(
+        &self,
+        backend: EncoderBackend,
+        settings: EncoderSettings,
+    ) -> Result<Box<dyn VideoEncoder>> {
         ensure!(
             backend.is_hardware() && backend.supported_platform(),
             "invalid native hardware backend"

@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "lightos-remote-desktop"
-version = "0.1.37"
+version = "0.1.38"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2821,8 +2821,10 @@ name = "media-codec"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "apple-cf",
  "bincode",
  "bytes",
+ "cc",
  "fast_image_resize",
  "futures-util",
  "image",

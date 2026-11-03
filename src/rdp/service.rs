@@ -400,16 +400,17 @@ impl RdpServerDisplayUpdates for Updates {
 }
 
 fn bitmap(frame: Arc<Frame>) -> Result<BitmapUpdate> {
+    let source = frame.rgba_pixels()?;
     let width = NonZeroU16::new(u16::try_from(frame.width)?).context("empty RDP frame")?;
     let height = NonZeroU16::new(u16::try_from(frame.height)?).context("empty RDP frame")?;
     ensure!(
-        frame.pixels.len() == usize::from(width.get()) * usize::from(height.get()) * 4,
+        source.len() == usize::from(width.get()) * usize::from(height.get()) * 4,
         "invalid RDP pixel length"
     );
     // Standard uncompressed RDP surface data is BGR(A). IronRDP's raw
     // surface encoder forwards bytes directly, so normalize here rather than
     // relying on format metadata to swizzle our RGBA capture for every codec.
-    let mut pixels = frame.pixels.to_vec();
+    let mut pixels = source.to_vec();
     for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }

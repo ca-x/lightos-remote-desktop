@@ -1,5 +1,7 @@
 # Optional native H.264 encoding
 
+> LPK 0.1.38: all four managed runtime packages include hardware encoding dependencies. macOS uses the native ScreenCaptureKit → VideoToolbox path by default, with the bundled FFmpeg worker as compatibility fallback. The optional distribution packages below have separate packaging requirements. See [the Mac pipeline comparison](research/2026-11-03-glass-macos.md).
+
 The portable service keeps its built-in OpenH264 and TurboJPEG encoders. The
 optional sibling executable `lightos-codec-ffmpeg` supplies VA-API, NVENC, Intel QSV, AMF and
 VideoToolbox through native `ffmpeg-next` bindings. No FFmpeg command-line codec

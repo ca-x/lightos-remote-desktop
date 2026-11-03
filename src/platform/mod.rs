@@ -125,6 +125,13 @@ pub trait NativePlatform: PermissionProvider {
     fn session_key(&self) -> Result<String>;
     /// False means locked or an inaccessible secure desktop. Errors end this host.
     fn session_active(&self) -> Result<bool>;
+    fn session_ready(&self, key: &str) -> Result<bool> {
+        ensure!(
+            self.session_key()? == key,
+            "interactive user session changed"
+        );
+        Ok(self.session_active()? && self.permissions()?.require_granted().is_ok())
+    }
     fn displays(&self) -> Result<Vec<DisplayOutput>>;
     fn refresh_display(&self, previous: &DisplayOutput) -> Result<DisplayOutput> {
         self.displays()?

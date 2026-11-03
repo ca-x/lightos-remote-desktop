@@ -164,7 +164,8 @@ impl Shared {
         self.paused.store(false, Ordering::Release);
         self.frames.send_if_modified(|latest| {
             let changed = latest.as_ref().is_none_or(|previous| {
-                previous.width != frame.width
+                frame.has_native_pixels()
+                    || previous.width != frame.width
                     || previous.height != frame.height
                     || previous.pixels.as_ref() != frame.pixels.as_ref()
             });
@@ -353,7 +354,8 @@ fn validate_frame(frame: &Frame) -> Result<()> {
             && frame.height > 0
             && frame.width <= 16384
             && frame.height <= 16384
-            && frame.pixels.len() == frame.width as usize * frame.height as usize * 4,
+            && (frame.has_native_pixels()
+                || frame.pixels.len() == frame.width as usize * frame.height as usize * 4),
         "invalid native RGBA frame"
     );
     Ok(())
@@ -463,11 +465,7 @@ fn join_until(worker: JoinHandle<()>, deadline: Instant) {
 }
 
 fn session_ready(platform: &dyn NativePlatform, key: &str) -> Result<bool> {
-    ensure!(
-        platform.session_key()? == key,
-        "interactive user session changed"
-    );
-    Ok(platform.session_active()? && platform.permissions()?.require_granted().is_ok())
+    platform.session_ready(key)
 }
 fn keep_running(shared: &Shared, cancelled: &AtomicBool) -> bool {
     !shared.stopped.load(Ordering::Acquire) && !cancelled.load(Ordering::Acquire)

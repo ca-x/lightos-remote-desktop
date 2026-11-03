@@ -17,7 +17,7 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use display_control::DisplayOutput;
 use futures_util::future::BoxFuture;
-use screencapturekit::{cm::SCFrameStatus, cv::CVPixelBufferLockFlags, prelude::*};
+use screencapturekit::{cm::SCFrameStatus, prelude::*};
 
 use super::{NativeCapture, NativePlatform, PermissionProvider, PermissionState, Permissions};
 use crate::{
@@ -120,6 +120,14 @@ impl NativePlatform for MacosPlatform {
     fn session_active(&self) -> Result<bool> {
         Ok(GuiSession::current()?.active)
     }
+    fn session_ready(&self, key: &str) -> Result<bool> {
+        let session = GuiSession::current()?;
+        ensure!(
+            format!("macos:{}:{}", session.uid, session.id) == key,
+            "interactive user session changed"
+        );
+        Ok(session.active && self.permissions()?.require_granted().is_ok())
+    }
 
     fn displays(&self) -> Result<Vec<DisplayOutput>> {
         ensure!(
@@ -172,7 +180,7 @@ impl NativePlatform for MacosPlatform {
             .with_pixel_format(PixelFormat::BGRA)
             .with_shows_cursor(false)
             .with_scales_to_fit(false)
-            .with_queue_depth(3)
+            .with_queue_depth(4)
             .with_fps(fps);
         let events = Arc::new(CaptureEvents::default());
         let mut stream =
@@ -340,24 +348,26 @@ fn copy_frame(
     let buffer = sample
         .pixel_buffer()
         .context("screen sample has no pixel buffer")?;
-    let guard = buffer
-        .lock(CVPixelBufferLockFlags::READ_ONLY)
-        .map_err(|e| anyhow::anyhow!("lock pixel buffer: {e:?}"))?;
-    let source = unsafe { guard.as_slice() }.context("pixel buffer has no packed bytes")?;
-    let width = u32::try_from(guard.width())?;
-    let height = u32::try_from(guard.height())?;
+    let width = u32::try_from(buffer.width())?;
+    let height = u32::try_from(buffer.height())?;
     ensure!(
         (width, height) == expected_size,
         "captured display resolution changed"
     );
-    let pixels = padded_bgra_to_rgba(source, width, height, guard.bytes_per_row())?;
     if !capture_allowed(session_id).unwrap_or(false) {
         events.clear_frame();
         return Ok(());
     }
     let mut state = events.state.lock().unwrap_or_else(|e| e.into_inner());
     if state.error.is_none() {
-        let mut frame = Frame::new(width, height, pixels.into());
+        let mut frame = Frame::new(width, height, Arc::from([]));
+        frame.native = Some(buffer);
+        let age = unsafe { media_codec::videotoolbox::lrd_capture_age(sample.as_ptr()) };
+        if age.is_finite() && (0.0..=60.0).contains(&age) {
+            frame.captured_at = Instant::now()
+                .checked_sub(Duration::from_secs_f64(age))
+                .unwrap_or_else(Instant::now);
+        }
         frame.cursor_embedded = false;
         state.frame = Some(frame);
         events.ready.notify_one();
@@ -365,6 +375,7 @@ fn copy_frame(
     Ok(())
 }
 
+#[cfg(test)]
 fn padded_bgra_to_rgba(source: &[u8], width: u32, height: u32, stride: usize) -> Result<Vec<u8>> {
     ensure!(
         (1..=16384).contains(&width) && (1..=16384).contains(&height),

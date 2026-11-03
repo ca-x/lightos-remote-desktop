@@ -5,6 +5,10 @@ mod hardware;
 mod jpeg;
 mod openh264;
 mod scaling;
+#[cfg(target_os = "macos")]
+pub mod videotoolbox;
+#[cfg(target_os = "macos")]
+pub use videotoolbox::NativePixelBuffer;
 mod selection;
 pub use scaling::{RgbaScaler, fit_dimensions};
 pub mod worker_protocol;
@@ -71,6 +75,13 @@ pub struct CodecCapability {
 }
 
 pub trait VideoEncoder: Send {
+    fn accepts_native(&self) -> bool {
+        false
+    }
+    #[cfg(target_os = "macos")]
+    fn encode_native(&mut self, _pixels: NativePixelBuffer) -> BoxFuture<'_, Result<EncodedFrame>> {
+        Box::pin(async { anyhow::bail!("native pixels are unsupported") })
+    }
     fn set_rate(&mut self, _rate: EncoderRate) -> Result<()> {
         anyhow::bail!("encoder does not support dynamic bitrate changes")
     }

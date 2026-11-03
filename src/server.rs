@@ -915,6 +915,7 @@ async fn connection(
     let mut video_bounds = None;
     let mut scaler = None;
     let mut encoder: Option<Box<dyn VideoEncoder>> = None;
+    let mut native_disabled = false;
     let mut codec = None;
     let video_started = std::time::Instant::now();
     let mut frame_id = 0_u64;
@@ -1009,10 +1010,12 @@ async fn connection(
                     let captured_at = frame.captured_at;
                     capture_age_samples.record(encode_started.saturating_duration_since(captured_at));
                     pacing_tx.send_modify(|flow| flow.frame_started(encode_started));
-                    let scaled_pixels = if (width, height) != source_size {
+                    let native_path = h264 && frame.has_native_pixels() && selected_backend == Some(EncoderBackend::VideoToolbox) && !native_disabled && std::env::var("LIGHTOS_MACOS_MEDIA_BACKEND").as_deref() != Ok("compat");
+                    let scaled_pixels = if !native_path && (width, height) != source_size {
                         let mut worker = scaler.take().unwrap_or_else(RgbaScaler::default);
-                        let pixels = frame.pixels.clone();
+                        let source_frame = frame.clone();
                         let result = tokio::task::spawn_blocking(move || {
+                            let pixels = match source_frame.rgba_pixels() { Ok(pixels) => pixels, Err(error) => return (worker, Err(error)) };
                             let pixels = worker.resize(pixels, source_size, (width, height));
                             (worker, pixels)
                         }).await;
@@ -1038,12 +1041,17 @@ async fn connection(
                             if encoder.as_ref().is_none_or(|encoder| encoder.dimensions() != (width, height)) {
                                 let settings = EncoderSettings {width,height,fps:encoder_fps,quality:state.config.quality};
                                 let backend = selected_backend.ok_or_else(|| anyhow::anyhow!("no validated H264 backend"))?;
-                                encoder = Some(if backend.is_hardware() { hardware.create(backend, settings)? } else { SoftwareEncoders.create(VideoCodec::H264, settings)? });
+                                encoder = Some(if backend.is_hardware() { if native_disabled { hardware.create_compat(backend, settings)? } else { hardware.create(backend, settings)? } } else { SoftwareEncoders.create(VideoCodec::H264, settings)? });
                                 codec = None;
                             }
                             let encoder = encoder.as_mut().ok_or_else(|| anyhow::anyhow!("encoder missing"))?;
                             let rate = encoder_rate(width, height, encoder_fps, target);
                             if h264_dynamic_rate { encoder.set_rate(rate)?; }
+                            #[cfg(target_os = "macos")]
+                            let native = if native_path && encoder.accepts_native() { frame.native.clone() } else { None };
+                            #[cfg(target_os = "macos")]
+                            let encoded = if let Some(pixels) = native { encoder.encode_native(pixels).await? } else { encoder.encode(match &scaled_pixels { Some(p) => p.clone(), None => frame.rgba_pixels()? }).await? };
+                            #[cfg(not(target_os = "macos"))]
                             let encoded = encoder.encode(scaled_pixels.as_ref().unwrap_or(&frame.pixels).clone()).await?;
                             applied_rate = h264_dynamic_rate.then_some(rate);
                             applied_jpeg_quality = None;
@@ -1075,6 +1083,13 @@ async fn connection(
                                 packet = Some(bytes);
                             }
                             Err(error) => {
+                                if native_path {
+                                    tracing::warn!(%error, "native VideoToolbox failed; selecting compatibility pipeline");
+                                    native_disabled = true;encoder.take();codec = None;applied_rate = None;
+                                    fallback_reason = Some(format!("Native VideoToolbox: {error:#}; using compatibility pipeline"));
+                                    pacing_tx.send_modify(FrameScheduler::reset);
+                                    continue;
+                                }
                                 tracing::warn!(%error, ?selected_backend, "H264 backend failed; selecting fallback");
                                 if let Some(backend) = selected_backend.take() {
                                     excluded_backends.push(backend);
@@ -1197,6 +1212,7 @@ async fn connection(
                                     "ack":flow.ack_summary(),"encode":encode_samples.summary(),"send":send_samples.summary(),
                                     "capture_age":capture_age_samples.summary(),"capture_encode":capture_encode_samples.summary(),
                                     "in_flight":flow.in_flight(),"window":flow.window(),"strategy":flow.strategy(),
+                                    "encoder_pipeline":if encoder.as_ref().is_some_and(|encoder| encoder.accepts_native()) { "native" } else { "compatibility" },
                                     "qos":flow.qos_summary(),"encoder_backend":selected_backend.map(EncoderBackend::id).unwrap_or("turbojpeg"),"fallback_reason":fallback_reason,"encoder_rate":applied_rate,"jpeg_quality":applied_jpeg_quality
                                 }}).to_string().into());
                                 drop(flow);

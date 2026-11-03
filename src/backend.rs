@@ -256,6 +256,10 @@ pub struct Frame {
     pub pixels: Arc<[u8]>,
     pub captured_at: Instant,
     pub cursor_embedded: bool,
+    #[cfg(target_os = "macos")]
+    pub native: Option<media_codec::NativePixelBuffer>,
+    #[cfg(target_os = "macos")]
+    native_rgba: OnceLock<Arc<[u8]>>,
 }
 
 impl Frame {
@@ -267,6 +271,10 @@ impl Frame {
             jpeg: OnceLock::new(),
             captured_at: Instant::now(),
             cursor_embedded: false,
+            #[cfg(target_os = "macos")]
+            native: None,
+            #[cfg(target_os = "macos")]
+            native_rgba: OnceLock::new(),
         }
     }
 
@@ -279,12 +287,17 @@ impl Frame {
             pixels: [24, 64, 128, 255].repeat((width * height) as usize).into(),
             captured_at: Instant::now(),
             cursor_embedded: false,
+            #[cfg(target_os = "macos")]
+            native: None,
+            #[cfg(target_os = "macos")]
+            native_rgba: OnceLock::new(),
         }
     }
 
     pub fn jpeg(&self, quality: u8) -> Result<Arc<[u8]>> {
+        let pixels = self.rgba_pixels()?;
         ensure!(
-            self.pixels.len() == self.width as usize * self.height as usize * 4,
+            pixels.len() == self.width as usize * self.height as usize * 4,
             "invalid JPEG pixels"
         );
         if let Some((cached_quality, data)) = self.jpeg.get()
@@ -292,9 +305,31 @@ impl Frame {
         {
             return Ok(data.clone());
         }
-        let data = media_codec::encode_jpeg(self.width, self.height, &self.pixels, quality)?;
+        let data = media_codec::encode_jpeg(self.width, self.height, &pixels, quality)?;
         let _ = self.jpeg.set((quality, data.clone()));
         Ok(data)
+    }
+    pub fn has_native_pixels(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.native.is_some()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+    pub fn rgba_pixels(&self) -> Result<Arc<[u8]>> {
+        #[cfg(target_os = "macos")]
+        if let Some(buffer) = &self.native {
+            if let Some(pixels) = self.native_rgba.get() {
+                return Ok(pixels.clone());
+            }
+            let pixels = media_codec::videotoolbox::rgba(buffer)?;
+            let _ = self.native_rgba.set(pixels.clone());
+            return Ok(pixels);
+        }
+        Ok(self.pixels.clone())
     }
 }
 
