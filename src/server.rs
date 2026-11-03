@@ -339,6 +339,7 @@ pub fn router(state: AppState) -> Router {
             }),
         )
         .route("/ws", get(upgrade))
+        .route("/viewer-input", get(crate::viewer_input::route))
         .route(
             "/video-worker.js",
             get(|headers: HeaderMap| async move {

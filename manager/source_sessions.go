@@ -16,7 +16,7 @@ import (
 func (s *server) rememberSource(uid string, source desktopSource, target desktopTarget) desktopTarget {
 	id := hostID(uid, "source:"+target.ID)
 	registration := hostRegistration{ID: target.ID, Name: target.Name, Platform: target.Platform}
-	registration.Desktop.Enabled, registration.Desktop.Ready = true, true
+	registration.Desktop.Enabled, registration.Desktop.Ready = target.Enabled, target.Ready
 	record := hostRecord{registration: registration, owner: uid, until: time.Now().Add(10 * time.Second), source: &source, sourceURL: target.URL}
 	s.hosts.mu.Lock()
 	s.hosts.hosts[id] = record
@@ -65,6 +65,10 @@ func (s *server) desktop(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if suffix == "viewer-input" {
+		s.viewerInput(w, r, id)
+		return
+	}
 	s.hosts.mu.Lock()
 	record, exists := s.hosts.hosts[id]
 	s.hosts.mu.Unlock()
@@ -75,6 +79,10 @@ func (s *server) desktop(w http.ResponseWriter, r *http.Request) {
 	record, err := s.sourceSession(r, id)
 	if err != nil {
 		writeFailure(w, http.StatusForbidden, "desktop_unavailable")
+		return
+	}
+	if !record.registration.Desktop.Ready {
+		writeFailure(w, http.StatusConflict, "desktop_offline")
 		return
 	}
 	upstream, err := url.Parse(record.sourceURL)

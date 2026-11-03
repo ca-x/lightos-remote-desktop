@@ -6,6 +6,7 @@ import { createPictureZoom } from "./picture-zoom";
 import { encoderBackendKey, encoderBackends, readPreference, savePreference, videoCodecKey, videoCodecs, streamStrategyKey, streamStrategies } from "./preferences";
 import { supportedVideoConfig } from "./video-codec";
 import { createDesktopDecoder, type DesktopDecoder } from "./video-decoder";
+import { createNativeInput } from "./native-input";
 import type { ClientOptions, DesktopChoice, DesktopOutput, Elements, SessionView, ToolbarEdge } from "./types";
 import { createMobileControls, mobileResolution } from "./mobile";
 import { createCursorLayer } from "./cursor";
@@ -60,6 +61,7 @@ export function createClient(options: ClientOptions = {}) {
   type Timer = ReturnType<typeof setTimeout>;
   const cancelTimer = (timer: Timer | null) => { if (timer !== null) clearTimeout(timer); };
   const canvas = element("desktop");
+  canvas.setAttribute("inputmode", "none");
   const preview = createSessionPreview(canvas);
   const drawing = canvas.getContext("2d", { alpha: false, desynchronized: true });
   const viewport = element("viewport");
@@ -156,6 +158,7 @@ export function createClient(options: ClientOptions = {}) {
   let lastAutoResolution: string | null = null;
   let lastRequestedSize: string | null = null;
   let keyboardCaptured = false;
+  let pointerInsideDesktop = false;
   let keyboardCaptureWanted = true;
   let keyboardRequest = false;
   let keyboardToken = 0;
@@ -186,6 +189,21 @@ export function createClient(options: ClientOptions = {}) {
   let localPasteShift = false;
   const keyboardInput = element("mobile-input");
   const keyboardFocused = () => document.activeElement === canvas || document.activeElement === keyboardInput;
+  const nativeInput = createNativeInput((code, pressed) => {
+    if (!ready || desktopPaused || destroyed || !pointerInsideDesktop || (!document.hasFocus() && !nativeInput.ownsWaylandFocus())) return;
+    if (pressed) {
+      if (!keys.has(code) && send({ type: "key", code, pressed: true })) keys.add(code);
+    } else if (keys.delete(code)) send({ type: "key", code, pressed: false });
+  }, (reason) => {
+    keyboardCaptured = false;release();updateKeyboardCapture();
+    if (reason === "escape") { keyboardCaptureWanted = false;setToolsOpen(true);toolHandle.focus(); }
+  });
+  function focusDesktopInput() {
+    if (!mobile?.isTouch()) {
+      if (document.activeElement !== canvas) canvas.focus({ preventScroll: true });
+      void nativeInput.refresh().then(() => captureKeyboard());
+    } else mobile?.focusDesktop();
+  }
   const clipboard = createClipboard({ send, ready: () => ready && !desktopPaused && !destroyed, session: () => generation,
     images: () => imageClipboard, release, text: pasteText, message, signal: listeners.signal, shift: () => localPasteShift });
 
@@ -293,6 +311,7 @@ export function createClient(options: ClientOptions = {}) {
 
   function unlockKeyboard() {
     keyboardToken += 1;
+    nativeInput.stop();
     try { navigator.keyboard?.unlock(); } catch {}
     keyboardCaptured = false;
     setText("keyboard-state", "未捕获键盘。全屏可尝试捕获；系统拦截的按键可通过通用组合键发送器发送。");
@@ -300,7 +319,18 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   async function captureKeyboard() {
-    if (!ready || destroyed || keyboardRequest || keyboardCaptured || !keyboardCaptureWanted || document.hidden || !document.hasFocus() || !isDesktopFullscreen() || !keyboardFocused()) return;
+    if (!ready || destroyed || keyboardRequest || keyboardCaptured || !keyboardCaptureWanted || !pointerInsideDesktop || document.hidden || !document.hasFocus() || !keyboardFocused()) return;
+    if (options.isToolsOpen?.() ?? !element("tool-panel").hidden) return;
+    if (nativeInput.available && !mobile?.isTouch()) {
+      const token = keyboardToken;keyboardRequest = true;composing = false;
+      const result = await nativeInput.start();keyboardRequest = false;
+      if (token !== keyboardToken || !ready || destroyed) return;
+      if (!document.hasFocus() && !nativeInput.ownsWaylandFocus()) { release();unlockKeyboard();return; }
+      keyboardCaptured = result.ok;updateKeyboardCapture();
+      setText("keyboard-state", result.ok ? "Remote keyboard active. Shortcuts and input methods are handled by the remote computer. Ctrl+Alt+Shift+Esc releases capture." : result.reason || "Native keyboard capture unavailable.");
+      if (result.ok || !isDesktopFullscreen()) return;
+    }
+    if (!isDesktopFullscreen()) { setText("keyboard-state", nativeInput.reason);return; }
     if (!navigator.keyboard?.lock) {
       setText("keyboard-state", "浏览器不支持键盘捕获。系统截走的组合键可用下方通用发送器发送。");
       return;
@@ -308,9 +338,8 @@ export function createClient(options: ClientOptions = {}) {
     const token = keyboardToken;
     keyboardRequest = true;
     try {
-      // Keep native paste available. Locking KeyV suppresses the browser's
-      // trusted paste event on Chromium/Electron even when keydown is allowed.
-      await navigator.keyboard.lock(Object.keys(KEY_CODES).filter(code => code !== "KeyV"));
+      // Capture all keys the browser and host OS allow, including input-method chords.
+      await navigator.keyboard.lock();
       if (token !== keyboardToken || !ready || destroyed || document.hidden || !document.hasFocus() || !isDesktopFullscreen() || !keyboardFocused()) {
         navigator.keyboard.unlock();
         return;
@@ -520,7 +549,7 @@ export function createClient(options: ClientOptions = {}) {
   function message(value: string) { setText("message", value); }
 
   function setToolsOpen(open: boolean, focus = false) {
-    if (open) { lightBook?.cancel(); unlockKeyboard(); }
+    if (open) { lightBook?.cancel(); release(); unlockKeyboard(); }
     if (options.onToolsOpen) {
       options.onToolsOpen(open, focus);
       requestAnimationFrame(() => { if (!destroyed) layoutTools(); });
@@ -992,7 +1021,7 @@ export function createClient(options: ClientOptions = {}) {
       }
       clipboard.connect(clipboardSession,clipboardSync);
       updateControls();
-      if (document.activeElement === canvas) mobile?.focusDesktop();
+      if (document.activeElement === canvas) focusDesktopInput();
       scheduleAutoResize();
       void captureKeyboard();
     } else if (value.type === "codec_capabilities") {
@@ -1673,10 +1702,12 @@ export function createClient(options: ClientOptions = {}) {
   listen(canvas, "pointerdown", (event) => {
     if (mobile?.handlePointer(event, "down")) return;
     if (!ready || event.button < 0 || event.button > 2) return;
+    pointerInsideDesktop = true;
+    keyboardCaptureWanted = true;
     event.preventDefault();
     setToolsOpen(false);
     canvas.focus({ preventScroll: true });
-    mobile?.focusDesktop();
+    focusDesktopInput();
     void captureKeyboard();
     syncModifiers(event);
     canvas.setPointerCapture(event.pointerId);
@@ -1715,9 +1746,11 @@ export function createClient(options: ClientOptions = {}) {
     send({ type: "scroll", x: bounded(delta.x), y: bounded(delta.y) });
   }, { passive: false });
   function hardwareKey(event: KeyboardEvent, editable = false) {
+    if (!mobile?.isTouch() && !pointerInsideDesktop) return false;
+    if (nativeInput.active() || nativeInput.acquiring()) { event.preventDefault();return true; }
     clipboardKeyEvent = null;
     pendingHardwareKey = null;
-    if (!ready || desktopPaused || event.isComposing || composing || event.keyCode === 229) return false;
+    if (!ready || desktopPaused) return false;
     if (event.code === "Escape" && event.ctrlKey && event.altKey && event.shiftKey) {
       event.preventDefault();
       release();
@@ -1726,6 +1759,14 @@ export function createClient(options: ClientOptions = {}) {
       toolHandle.focus();
       return false;
     }
+    if (!mobile?.isTouch()) {
+      const code = Object.hasOwn(KEY_CODES, event.code) ? KEY_CODES[event.code] : undefined;
+      if (code === undefined) return false;
+      event.preventDefault();syncModifiers(event);
+      if (!event.repeat && !keys.has(code) && send({ type: "key", code, pressed: true })) keys.add(code);
+      return true;
+    }
+    if (event.isComposing || composing || event.keyCode === 229) return false;
     // A local Command+V must not become a bare Super tap in the remote
     // compositor. Defer Meta until a remote chord/click or a deliberate tap.
     if ((event.code === "MetaLeft" || event.code === "MetaRight") && !keys.has(KEY_CODES[event.code])) {
@@ -1768,6 +1809,7 @@ export function createClient(options: ClientOptions = {}) {
   }
   listen(canvas, "keydown", (event) => { hardwareKey(event); });
   listen(window, "keyup", (event) => {
+    if (nativeInput.active() || nativeInput.acquiring()) { event.preventDefault();return; }
     const code = KEY_CODES[event.code];
     if (!event.metaKey && (event.code==="MetaLeft"||event.code==="MetaRight")) localMeta=false;
     if (deferredMeta.delete(code) && !event.metaKey && ready && !desktopPaused && keyboardFocused()) {
@@ -1779,10 +1821,10 @@ export function createClient(options: ClientOptions = {}) {
       event.preventDefault();
       send({ type: "key", code, pressed: false });
     }
-    if (ready && keyboardFocused() && !(event.code === "KeyV" && (event.ctrlKey || event.metaKey))) syncModifiers(event, false);
+    if (ready && keyboardFocused() && (mobile?.isTouch() || pointerInsideDesktop) && !(event.code === "KeyV" && (event.ctrlKey || event.metaKey))) syncModifiers(event, false);
   });
-  listen(canvas, "compositionstart", () => { composing = true; release(); });
-  listen(canvas, "compositionend", (event) => { composing = false; typeText(event.data); });
+  listen(canvas, "compositionstart", (event) => { if (!mobile?.isTouch() || nativeInput.active() || nativeInput.acquiring()) { event.preventDefault();return; } composing = true; release(); });
+  listen(canvas, "compositionend", (event) => { composing = false;if (mobile?.isTouch() && !nativeInput.active() && !nativeInput.acquiring()) typeText(event.data); });
   listen(textBox, "compositionstart", () => { composing = true; });
   listen(textBox, "compositionend", () => { composing = false; });
   listen(textBox, "blur", () => { composing = false; });
@@ -1802,15 +1844,27 @@ export function createClient(options: ClientOptions = {}) {
     });
   }
   listen(canvas, "paste", (event) => { void clipboard.paste(event); });
-  listen(canvas, "focus", () => { mobile?.focusDesktop(); void captureKeyboard(); });
+  listen(canvas, "focus", () => { focusDesktopInput(); void captureKeyboard(); });
   listen(keyboardInput, "focus", () => { void captureKeyboard(); });
   listen(keyboardInput, "blur", () => { release(); unlockKeyboard(); });
   for (const type of ["copy","cut"] as const) listen(document,type,(event)=>{
     if(event.target!==canvas&&event.target!==keyboardInput&&!event.defaultPrevented)clipboard.localChanged();
   });
   listen(window, "focus", () => { clipboard.localFocusEntered(); void captureKeyboard(); });
-  listen(canvas, "blur", (event) => { if (event.relatedTarget !== keyboardInput) { release(); unlockKeyboard(); } });
-  listen(window, "blur", () => { composing = false; clipboard.localFocusLeft(); release(); unlockKeyboard(); });
+  listen(canvas, "blur", (event) => { if (!event.relatedTarget && nativeInput.ownsWaylandFocus()) return; if (event.relatedTarget !== keyboardInput) { release(); unlockKeyboard(); } });
+  listen(window, "blur", () => { if (nativeInput.ownsWaylandFocus()) return; composing = false; clipboard.localFocusLeft(); release(); unlockKeyboard(); });
+  listen(document, "pointermove", (event) => {
+    if (event.pointerType === "touch") return;
+    const bounds = canvas.getBoundingClientRect();
+    const inside = event.clientX >= bounds.left && event.clientX < bounds.right && event.clientY >= bounds.top && event.clientY < bounds.bottom;
+    if (inside === pointerInsideDesktop) return;
+    pointerInsideDesktop = inside;
+    if (!inside) { release();unlockKeyboard(); }
+    else if (ready && document.hasFocus() && !options.isToolsOpen?.()) { focusDesktopInput();void captureKeyboard(); }
+  }, { capture: true });
+  listen(document, "pointerout", (event) => {
+    if (!event.relatedTarget && event.pointerType !== "touch") { pointerInsideDesktop = false;release();unlockKeyboard(); }
+  });
   listen(document, "visibilitychange", () => {
     if (document.hidden) {
       composing = false; clipboard.localFocusLeft(); release(); stopAudio(); unlockKeyboard();
@@ -2081,7 +2135,7 @@ export function createClient(options: ClientOptions = {}) {
     lightBook?.dispose();
     mobile?.dispose();
     pictureZoom.dispose();
-    cursor.dispose();
+    cursor.dispose(); nativeInput.destroy();
     toolObserver?.disconnect();
     listeners.abort();
     if (socket) {

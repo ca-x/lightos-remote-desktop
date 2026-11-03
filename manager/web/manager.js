@@ -2,10 +2,10 @@
   "use strict";
   const zh = navigator.language.toLowerCase().startsWith("zh");
   const copy = zh ? {
-    title: "懒猫远程", subtitle: "懒猫微服网络保障您的隐私和数据安全。", devices: "我的设备", empty: "暂无设备",
+    title: "懒猫远程", subtitle: "懒猫微服网络保障您的隐私和数据安全。", devices: "在线设备", empty: "暂无在线设备", offlineDevices: "离线设备", offlineEmpty: "暂无离线设备",
     help: "在电脑上登录懒猫微服客户端，即可在这里管理。", loading: "正在获取设备…", connect: "连接桌面", consent: "需本机授权",
     failed: "操作失败，请确认设备在线后重试。", login_required: "登录已失效，请重新登录后刷新。", unavailable: "部分桌面来源暂不可用，其他设备仍可使用。",
-    count: n => `${n} 台设备`, noPreview: "暂无预览", start: "开启", stop: "关闭", working: "处理中…",
+    count: n => `${n} 台设备`, noPreview: "暂无预览", start: "开启", stop: "关闭", working: "处理中…", currentDevice: "当前设备",
     screen: "屏幕录制", input: "键盘与鼠标", granted: "已授权", denied: "未授权", needs_user_action: "待确认", unknown: "待检查",
     updating: "正在更新", disabled: "已关闭", running: "运行中", starting: "启动中", permission_required: "待授权", error: "启动失败", offline: "离线",
     permissions: "申请系统权限", requesting: "请在设备上确认权限", container: "LightOS实例桌面", footnote: "桌面仅在开启后运行，系统权限由设备本机确认。",
@@ -13,10 +13,10 @@
     interruptNotice: "更新会中断当前远程桌面连接。确认后将自动关闭服务并更新，完成后恢复服务。", cancel: "取消", confirm: "确认", stopping: "正在关闭远程桌面",
     preparing: "正在准备", downloading: "正在下载", verifying: "正在校验", installing: "正在安装", checking: "正在检查新版本", cleaning: "正在清理旧版本", failedInstall: "安装 / 更新失败，可重试", retryOperation: "重试",
   } : {
-    title: "Lazycat Remote", subtitle: "The Lazycat network protects your privacy and data security.", devices: "My devices", empty: "No devices yet",
+    title: "Lazycat Remote", subtitle: "The Lazycat network protects your privacy and data security.", devices: "Online devices", empty: "No online devices", offlineDevices: "Offline devices", offlineEmpty: "No offline devices",
     help: "Sign in to the Lazycat client on your computer to manage it here.", loading: "Loading devices…", connect: "Connect", consent: "Local consent required",
     failed: "Operation failed. Check that the device is online and try again.", login_required: "Your session expired. Sign in again.", unavailable: "Some desktop sources are unavailable. Other devices remain available.",
-    count: n => `${n} devices`, noPreview: "No preview", start: "Enable", stop: "Disable", working: "Working…",
+    count: n => `${n} devices`, noPreview: "No preview", start: "Enable", stop: "Disable", working: "Working…", currentDevice: "Current device",
     screen: "Screen", input: "Input", granted: "Granted", denied: "Not granted", needs_user_action: "Needs approval", unknown: "Not checked",
     updating: "Updating", disabled: "Disabled", running: "Running", starting: "Starting", permission_required: "Needs permission", error: "Failed", offline: "Offline",
     permissions: "Request permissions", requesting: "Approve permissions on the device", container: "LightOS instance desktop", footnote: "Desktop capture runs only when enabled. System permissions require approval on the device.",
@@ -28,6 +28,7 @@
   document.title = copy.title;
   document.querySelectorAll("[data-text]").forEach(node => { node.textContent = copy[node.dataset.text]; });
   const grid = document.getElementById("desktops"), status = document.getElementById("status"), warning = document.getElementById("warning"), empty = document.getElementById("empty");
+  const offlineGrid = document.getElementById("offline-desktops"), offlineStatus = document.getElementById("offline-status"), offlineEmpty = document.getElementById("offline-empty");
   const cards = new Map(), pendingActions = new Map();
   let busy = false, pending, reloadRequested = false, refreshedAt = 0, controlRevision = 0;
   const platforms = { darwin: "macOS", macos: "macOS", win32: "Windows", windows: "Windows", linux: "Linux" };
@@ -115,11 +116,12 @@
     p.request.hidden = !item.managed || !item.installed || ![permissions.screen, permissions.input].some(value => value === "denied" || value === "needs_user_action");
     p.request.textContent = permissions.requesting ? copy.requesting : copy.permissions;
     p.request.disabled = !item.online || processing || switching || permissions.requesting === true;
-    p.connect.hidden = item.kind === "device" && !item.installed;
-    const ready = item.online !== false && item.ready !== false && !switching && pending?.action !== "stop";
+    p.connect.hidden = item.kind === "device" && !item.installed && !item.current_device;
+    p.connect.textContent = item.current_device ? copy.currentDevice : copy.connect;
+    const ready = !item.current_device && item.online !== false && item.ready !== false && !switching && pending?.action !== "stop";
     p.connect.setAttribute("aria-disabled", String(!ready)); p.connect.tabIndex = ready ? 0 : -1;
     if (ready) p.connect.href = item.url; else p.connect.removeAttribute("href");
-    p.connect.ariaLabel = `${copy.connect}: ${item.name}`;
+    p.connect.ariaLabel = item.current_device ? copy.currentDevice : `${copy.connect}: ${item.name}`;
     p.error.textContent = deployment.stage === "failed" ? deployment.error || copy.failedInstall : item.runtime_error === "desktop_process_stopped" ? copy.stopped : item.runtime_error || "";
     p.error.hidden = !p.error.textContent;
   }
@@ -130,8 +132,12 @@
       let card = cards.get(item.id);
       if (!card) { card = createCard(item); cards.set(item.id, card); }
       updateCard(card, item);
+      const destination = item.online === false ? offlineGrid : grid;
+      if (card.parentElement !== destination) destination.appendChild(card);
     }
-    empty.hidden = targets.length > 0; status.textContent = copy.count(targets.length);
+    const offline = targets.filter(item => item.online === false).length, online = targets.length - offline;
+    empty.hidden = online > 0; status.textContent = copy.count(online);
+    offlineStatus.textContent = copy.count(offline); offlineEmpty.hidden = offline > 0;
   }
   async function act(id, action) {
     if (pendingActions.has(id)) return;

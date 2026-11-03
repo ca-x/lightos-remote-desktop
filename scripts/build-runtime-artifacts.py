@@ -12,6 +12,7 @@ import platform
 import shlex
 import shutil
 import subprocess
+import sys
 import tarfile
 import tomllib
 from runtime_codec import sdk, copy_libraries, notices
@@ -31,7 +32,8 @@ triples = {"linux-x64": "x86_64-unknown-linux-gnu", "win32-x64": "x86_64-pc-wind
 sources = [repo / "Cargo.toml", repo / "Cargo.lock"]
 sources += [repo / "scripts" / name for name in ["build-runtime-artifacts.py", "build-linux-runtime.py", "build-macos-runtimes.py", "build-macos-codec.py", "runtime_codec.py", "ffmpeg-videotoolbox-low-delay.patch"]]
 sources += [repo / ".github/scripts/prepare-spa-build-sdk.sh", repo / "config/codec-dependencies.json"]
-for name in ["src", "crates", "web/dist", ".cargo"]:
+sources += [repo / "scripts/build-viewer-input.py"]
+for name in ["src", "crates", "web/dist", ".cargo", "native"]:
     sources += [p for p in (repo / name).rglob("*") if p.is_file() and "target" not in p.relative_to(repo / name).parts]
 digest = hashlib.sha256()
 for path in sorted(sources):
@@ -70,6 +72,8 @@ def build_linux():
     directory.mkdir()
     shutil.copy2(binary, directory / "lightos-remoted")
     shutil.copy2(result["worker"], directory / "lightos-codec-ffmpeg")
+    shutil.copy2(result["input"], directory / "lightos-input-capture")
+    shutil.copy2(Path(result["input"]).with_name("NOTICE.input.txt"), directory / "NOTICE.input.txt")
     dependency = Path(result["ffmpeg"])
     copy_libraries("linux-x64", dependency, directory / "lib")
     notices("linux-x64", dependency, directory)
@@ -95,6 +99,7 @@ def build_windows():
     run(command + ["--release", "--locked", "--target", triples["win32-x64"], "-p", "media-codec-ffmpeg", "--features", "native,media-codec/bundled-jpeg"], environment=environment)
     shutil.copy2(cache / "windows-target/x86_64-pc-windows-msvc/release/lightos-codec-ffmpeg.exe", directory / "lightos-codec-ffmpeg.exe")
     copy_libraries("win32-x64", dependency, directory)
+    run([sys.executable, str(repo / "scripts/build-viewer-input.py"), "--target", "win32-x64", "--output", str(directory / "lightos-input-capture.exe")], environment=environment)
     notices("win32-x64", dependency, directory)
     record("win32-x64")
 
@@ -114,7 +119,7 @@ def build_macos():
         run(ssh + ["mkdir -p " + shlex.quote(remote)])
         source_archive = cache / "source.tar.gz"
         with tarfile.open(source_archive, "w:gz") as archive:
-            for name in ["Cargo.toml", "Cargo.lock", "src", "crates", "web/dist", "scripts/build-macos-runtimes.py", "scripts/runtime_codec.py", "scripts/build-macos-codec.py", "scripts/ffmpeg-videotoolbox-low-delay.patch", "config/codec-dependencies.json"]:
+            for name in ["Cargo.toml", "Cargo.lock", "src", "crates", "native", "web/dist", "scripts/build-viewer-input.py", "scripts/build-macos-runtimes.py", "scripts/runtime_codec.py", "scripts/build-macos-codec.py", "scripts/ffmpeg-videotoolbox-low-delay.patch", "config/codec-dependencies.json"]:
                 archive.add(repo / name, arcname=name, filter=lambda item: None if "target" in Path(item.name).parts else item)
         run(["scp", *ssh_options, "-P", port, str(source_archive), host + ":" + remote + "/source.tar.gz"])
         body = "set -eu; cd " + shlex.quote(remote) + "; tar -xzf source.tar.gz; python3 scripts/build-macos-runtimes.py --source . --output artifacts --version " + shlex.quote(version) + " --identity " + shlex.quote(identity)

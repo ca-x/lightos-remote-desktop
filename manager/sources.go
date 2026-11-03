@@ -87,9 +87,7 @@ func (s desktopSource) targets(ctx context.Context, headers http.Header) ([]desk
 		if item.Enabled != nil && !*item.Enabled {
 			continue
 		}
-		if item.Status != "" && item.Status != "running" && item.Status != "online" {
-			continue
-		}
+		online := item.Status == "" || item.Status == "running" || item.Status == "online"
 		entry := item.URL
 		if entry == "" {
 			entry = item.DesktopURL
@@ -110,7 +108,11 @@ func (s desktopSource) targets(ctx context.Context, headers http.Header) ([]desk
 		if platform == "" {
 			platform = item.Distro
 		}
-		targets = append(targets, desktopTarget{ID: hex.EncodeToString(sum[:16]), Name: item.Name, Platform: platform, URL: resolved.String(), Online: true, Enabled: true, Ready: true, Status: "running"})
+		status := "running"
+		if !online {
+			status = "offline"
+		}
+		targets = append(targets, desktopTarget{ID: hex.EncodeToString(sum[:16]), Name: item.Name, Platform: platform, URL: resolved.String(), Online: online, Enabled: true, Ready: online, Status: status})
 	}
 	return targets, nil
 }

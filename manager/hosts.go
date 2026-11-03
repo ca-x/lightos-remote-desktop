@@ -72,20 +72,10 @@ func (h *hostRegistry) list(owner, currentDevice string) []desktopTarget {
 		if record.source != nil {
 			continue
 		}
-		if !record.until.After(time.Now()) && record.registration.ControlService == "" {
-			delete(h.hosts, id)
-			continue
-		}
 		if record.owner != owner {
 			continue
 		}
-		if !record.until.After(time.Now()) {
-			continue
-		}
 		r := record.registration
-		if currentDevice != "" && r.DeviceID == currentDevice {
-			continue
-		}
 		online := record.until.After(time.Now())
 		permissions, _ := r.Agent["permissions"].(map[string]any)
 		state, _ := r.Agent["status"].(string)
@@ -93,7 +83,8 @@ func (h *hostRegistry) list(owner, currentDevice string) []desktopTarget {
 			state = "offline"
 		}
 		target := desktopTarget{agent: r.Agent, Kind: "device", ID: id, Name: r.Name, Platform: r.Platform, URL: "/desktop/" + id + "/", RequiresConsent: r.Desktop.RequiresConsent,
-			Managed: r.ControlService != "", Online: online, Enabled: r.Desktop.Enabled, Ready: online && r.Desktop.Ready, Status: state, Permissions: permissions}
+			CurrentDevice: currentDevice != "" && r.DeviceID == currentDevice,
+			Managed:       r.ControlService != "", Online: online, Enabled: r.Desktop.Enabled, Ready: online && r.Desktop.Ready, Status: state, Permissions: permissions}
 		if stamp := previewStamp(id); stamp != "" {
 			target.Preview = "/api/previews/" + id + "?v=" + stamp
 		}
@@ -143,7 +134,13 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 		h.mu.Lock()
 		// Late cleanup from a previous runtime must not withdraw its replacement.
 		if current, ok := h.hosts[id]; ok && (registration.DesktopService == "" || current.registration.DesktopService == registration.DesktopService) {
-			delete(h.hosts, id)
+			current.until = time.Time{}
+			current.registration.Desktop.Ready = false
+			current.registration.Desktop.Password = ""
+			current.registration.DesktopService = ""
+			current.registration.Secret = ""
+			h.hosts[id] = current
+			h.persist()
 		}
 		h.mu.Unlock()
 		w.WriteHeader(204)
@@ -228,7 +225,12 @@ func (h *hostRegistry) proxy(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, 403, "desktop_unavailable")
 		return
 	}
-	if deviceID := currentDeviceID(r); deviceID != "" && deviceID == record.registration.DeviceID {
+	viewerInput := path == "viewer-input"
+	if viewerInput && (currentDeviceID(r) == "" || currentDeviceID(r) != record.registration.DeviceID) {
+		writeFailure(w, http.StatusForbidden, "viewer_identity_required")
+		return
+	}
+	if deviceID := currentDeviceID(r); !viewerInput && deviceID != "" && deviceID == record.registration.DeviceID {
 		http.Error(w, "请从另一台设备连接此远程桌面。 / Connect to this desktop from another device.", http.StatusForbidden)
 		return
 	}
@@ -294,6 +296,10 @@ func (h *hostRegistry) proxy(w http.ResponseWriter, r *http.Request) {
 				req.Header.Set("lzc_dapi_auth_token", token.Token)
 			}
 			req.SetBasicAuth("lightos", host.Desktop.Password)
+			req.Header.Del("X-LightOS-Viewer-Input")
+			if viewerInput {
+				req.Header.Set("X-LightOS-Viewer-Input", "1")
+			}
 		}, Transport: transport, FlushInterval: -1,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, _ error) {
 			http.Error(w, "Remote desktop is unavailable", http.StatusBadGateway)

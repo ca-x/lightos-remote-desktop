@@ -29,6 +29,8 @@ for target, triple in [("darwin-arm64", "aarch64-apple-darwin"), ("darwin-x64", 
     binary = contents / "MacOS/lightos-remoted"
     binary.parent.mkdir(parents=True)
     shutil.copy2(target_directory / triple / "release/lightos-remoted", binary)
+    subprocess.run(["python3", str(args.source / "scripts/build-viewer-input.py"), "--target", target, "--output", str(binary.with_name("lightos-input-capture")), "--identity", args.identity], cwd=args.source, env=environment, check=True)
+    shutil.move(str(binary.with_name("NOTICE.input.txt")), str(directory / "NOTICE.input.txt"))
     binary.chmod(0o755)
     (contents / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "org.lightos.remote-desktop", "CFBundleName": "Lazycat Remote", "CFBundleDisplayName": "懒猫远程", "CFBundleExecutable": "lightos-remoted", "CFBundlePackageType": "APPL", "CFBundleShortVersionString": args.version, "CFBundleVersion": args.version, "LSMinimumSystemVersion": "13.0", "LSUIElement": True, "NSHighResolutionCapable": True}))
     subprocess.run(["python3", str(args.source / "scripts/build-macos-codec.py"), "--source", str(args.source), "--output", str(directory), "--target", triple, "--identity", args.identity], cwd=args.source, env=environment, check=True)

@@ -29,6 +29,7 @@ type desktopTarget struct {
 	agent              map[string]any
 
 	Kind            string         `json:"kind"`
+	CurrentDevice   bool           `json:"current_device,omitempty"`
 	ID              string         `json:"id"`
 	Name            string         `json:"name"`
 	Platform        string         `json:"platform,omitempty"`

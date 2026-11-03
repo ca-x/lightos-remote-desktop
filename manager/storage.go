@@ -20,6 +20,7 @@ type savedHost struct {
 	Name     string         `json:"name"`
 	Platform string         `json:"platform"`
 	DeviceID string         `json:"device_id,omitempty"`
+	Managed  *bool          `json:"managed,omitempty"`
 	Agent    map[string]any `json:"agent"`
 }
 
@@ -38,6 +39,9 @@ func (h *hostRegistry) restore() {
 		}
 		// Offline placeholders contain no route, device token or runtime password.
 		registration := hostRegistration{Name: host.Name, Platform: host.Platform, DeviceID: host.DeviceID, ControlService: "offline", Agent: host.Agent}
+		if host.Managed != nil && !*host.Managed {
+			registration.ControlService = ""
+		}
 		h.hosts[host.ID] = hostRecord{owner: host.Owner, registration: registration}
 	}
 }
@@ -47,10 +51,11 @@ func (h *hostRegistry) persist() {
 	hosts := make([]savedHost, 0, len(h.hosts))
 	for id, record := range h.hosts {
 		r := record.registration
-		if r.ControlService == "" {
+		if record.source != nil {
 			continue
 		}
-		hosts = append(hosts, savedHost{ID: id, Owner: record.owner, Name: r.Name, Platform: r.Platform, DeviceID: r.DeviceID, Agent: r.Agent})
+		managed := r.ControlService != ""
+		hosts = append(hosts, savedHost{ID: id, Owner: record.owner, Name: r.Name, Platform: r.Platform, DeviceID: r.DeviceID, Managed: &managed, Agent: r.Agent})
 	}
 	// Stable ordering also avoids needless disk writes on heartbeats.
 	sortSavedHosts(hosts)
