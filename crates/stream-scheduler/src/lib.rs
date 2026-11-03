@@ -55,6 +55,7 @@ pub struct FrameScheduler {
     sequenced: bool,
     pending: VecDeque<(u64, Instant)>,
     window: usize,
+    negotiated_window: Option<usize>,
     frame_interval: Duration,
     dimensions: Option<(u32, u32)>,
     ack_samples: LatencySamples,
@@ -72,6 +73,7 @@ impl Default for FrameScheduler {
             sequenced: false,
             pending: VecDeque::new(),
             window: 1,
+            negotiated_window: None,
             frame_interval: Duration::from_secs_f64(1.0 / 30.0),
             dimensions: None,
             ack_samples: LatencySamples::default(),
@@ -100,6 +102,11 @@ impl FrameScheduler {
     }
     pub fn enabled(&self) -> bool {
         self.enabled
+    }
+    /// Only clients that can retain this many predictive frames opt in. Legacy
+    /// clients continue to use the original one-to-three-frame contract.
+    pub fn negotiate_window(&mut self, limit: Option<usize>) {
+        self.negotiated_window = limit.filter(|_| self.sequenced).map(|n| n.clamp(1, 12));
     }
     pub fn sequenced(&self) -> bool {
         self.sequenced
@@ -208,14 +215,29 @@ impl FrameScheduler {
                 self.qos.observe(self.pending[index].1, now);
             }
             self.pending.drain(..=index);
-            self.window = match (self.sequenced, self.strategy) {
-                (false, _) | (_, SchedulingStrategy::LowLatency) => 1,
-                (true, SchedulingStrategy::Smooth) => 3,
-                (true, SchedulingStrategy::Auto | SchedulingStrategy::QualityFirst) => elapsed
+            self.window = if let Some(limit) = self.negotiated_window.filter(|_| self.sequenced) {
+                // Size flight credit from the uncongested feedback delay, never
+                // from a growing queue. Pacing remains authoritative; this is a
+                // bound on network flight, not a queue of raw frames to encode.
+                let interval = Duration::from_secs_f64(1.0 / f64::from(self.target().fps));
+                let flight = self
+                    .qos
+                    .baseline_delay()
+                    .unwrap_or(elapsed)
                     .as_nanos()
-                    .div_ceil(self.frame_interval.as_nanos())
-                    .clamp(1, 3)
-                    as usize,
+                    .div_ceil(interval.as_nanos()) as usize;
+                let reserve = usize::from(self.strategy != SchedulingStrategy::LowLatency);
+                (flight + reserve).clamp(1, limit)
+            } else {
+                match (self.sequenced, self.strategy) {
+                    (false, _) | (_, SchedulingStrategy::LowLatency) => 1,
+                    (true, SchedulingStrategy::Smooth) => 3,
+                    (true, SchedulingStrategy::Auto | SchedulingStrategy::QualityFirst) => elapsed
+                        .as_nanos()
+                        .div_ceil(self.frame_interval.as_nanos())
+                        .clamp(1, 3)
+                        as usize,
+                }
             };
         }
     }

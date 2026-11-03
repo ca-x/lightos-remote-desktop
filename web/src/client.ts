@@ -5,6 +5,7 @@ import { createLightBookInput, supportsLightBook } from "./lightbook-input";
 import { createPictureZoom } from "./picture-zoom";
 import { encoderBackendKey, encoderBackends, readPreference, savePreference, videoCodecKey, videoCodecs, streamStrategyKey, streamStrategies } from "./preferences";
 import { supportedVideoConfig } from "./video-codec";
+import { createDesktopDecoder, type DesktopDecoder } from "./video-decoder";
 import type { ClientOptions, DesktopChoice, DesktopOutput, Elements, SessionView, ToolbarEdge } from "./types";
 import { createMobileControls, mobileResolution } from "./mobile";
 import { createCursorLayer } from "./cursor";
@@ -60,7 +61,7 @@ export function createClient(options: ClientOptions = {}) {
   const cancelTimer = (timer: Timer | null) => { if (timer !== null) clearTimeout(timer); };
   const canvas = element("desktop");
   const preview = createSessionPreview(canvas);
-  const drawing = canvas.getContext("2d", { alpha: false });
+  const drawing = canvas.getContext("2d", { alpha: false, desynchronized: true });
   const viewport = element("viewport");
   const textBox = element("text");
   const controls = ["apply-size", "send-text", "clipboard-get", "clipboard-set", "paste-local", "keyboard-capture", "send-shortcut", "switch-input-method"] as const;
@@ -139,7 +140,8 @@ export function createClient(options: ClientOptions = {}) {
   let desktopFullscreen = false;
   let fullscreenFallback = false;
   let pictureRotated = false;
-  let videoDecoder: VideoDecoder | null = null;
+  let videoDecoder: DesktopDecoder | null = null;
+  let videoWindow = 3;
   let videoToken = 0;
   let configuringVideo = false;
   const pendingVideo: { data: ArrayBuffer; id: number | null }[] = [];
@@ -548,8 +550,10 @@ export function createClient(options: ClientOptions = {}) {
     if (lastRequestedSize === `${sourceWidth}x${sourceHeight}`) lastRequestedSize = null;
     if (canvas.width !== width) canvas.width = width;
     if (canvas.height !== height) canvas.height = height;
-    canvas.style.setProperty("--desktop-aspect", String(sourceWidth / sourceHeight));
-    updateCanvasDensity();
+    if (changed) {
+      canvas.style.setProperty("--desktop-aspect", String(sourceWidth / sourceHeight));
+      updateCanvasDensity();
+    }
     if (sourceChanged) pictureZoom.reset();
     else if (changed) pictureZoom.layout();
     if (changed) publishSessionView();
@@ -957,6 +961,7 @@ export function createClient(options: ClientOptions = {}) {
       }
       frameAcknowledgements = value.frame_ack === true;
       sequencedFrames = value.frame_ids === true;
+      videoWindow = sequencedFrames && Number.isInteger(value.video_flow_window) ? Math.max(3, Math.min(12, value.video_flow_window)) : 3;
       losslessAvailable = value.lossless_updates === true && frameAcknowledgements && sequencedFrames;
       serverVideoCodecs = Array.isArray(value.video_codecs) ? value.video_codecs.filter((codec: unknown) => typeof codec === "string") : [];
       backendSelection = value.backend_selection === true;
@@ -976,8 +981,10 @@ export function createClient(options: ClientOptions = {}) {
       if (!audioAvailable) stopAudio(false);
       setText("state", "Connected");
       message(audioAvailable ? `Desktop ready. Audio is ${audioEnabled ? "on" : "off until enabled"}.` : "Desktop ready. Server audio is unavailable.");
-      requestPreferredVideo(true);
+      // Negotiate bounds before starting H.264: a Retina source can exceed the
+      // encoder's native dimensions even when the visible stream fits easily.
       configureVideoScale();
+      requestPreferredVideo(true);
       if (losslessAvailable) send({ type: "lossless_updates", enabled: true });
       if (sequencedFrames && frameAcknowledgements && typeof value.cursor_session === "string" && /^[0-9a-f]{32}$/.test(value.cursor_session)) {
         cursorSession = value.cursor_session;
@@ -1128,7 +1135,7 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   function configureStreamStrategy() {
-    if (ready && frameAcknowledgements) send({ type: "video_flow", enabled: true, sequenced: sequencedFrames, strategy: strategyPreference });
+    if (ready && frameAcknowledgements) send({ type: "video_flow", enabled: true, sequenced: sequencedFrames, strategy: strategyPreference, max_in_flight: videoWindow });
   }
 
   function configureVideoScale() {
@@ -1249,7 +1256,7 @@ export function createClient(options: ClientOptions = {}) {
       const config = await supportedVideoConfig(window.VideoDecoder, value.codec, value.width, value.height, !!activeBackend && softwareDecodingBackends.has(activeBackend));
       if (token !== videoToken || session !== generation || !ready || desktopPaused || destroyed) return;
       if (!config) { fallbackVideo(`Unsupported H264 profile ${value.codec} at ${value.width}×${value.height}`); return; }
-      videoDecoder = new window.VideoDecoder({
+      const decoder = await createDesktopDecoder(config, {
         output(frame) {
           try {
             if (token !== videoToken || session !== generation || !ready || desktopPaused || destroyed) return;
@@ -1271,7 +1278,8 @@ export function createClient(options: ClientOptions = {}) {
         },
         error(error) { if (token === videoToken && session === generation && ready) fallbackVideo(error.message); },
       });
-      videoDecoder.configure(config);
+      if (token !== videoToken || session !== generation || !ready || desktopPaused || destroyed) { decoder.close(); return; }
+      videoDecoder = decoder;
       cancelTimer(videoTimer);
       videoTimer = null;
       videoDecoder.addEventListener("dequeue", () => {
@@ -1298,9 +1306,9 @@ export function createClient(options: ClientOptions = {}) {
   function receiveVideo(data: ArrayBuffer, id: number | null) {
     if (waitingForBackend) return;
     if (data.byteLength <= 10) { fallbackVideo(); return; }
-    // The server's ACK window allows three frames. Queue all of them while
-    // configuring or draining the decoder; pressure is not a codec rejection.
-    if (pendingVideo.length >= 3) { requestVideo("h264"); return; }
+    // Retain every predictive frame in the negotiated window. Raw frames are
+    // dropped before encoding by the host; dropping a delta here breaks its chain.
+    if (pendingVideo.length >= videoWindow) { requestVideo("h264"); return; }
     pendingVideo.push({ data, id });
     drainVideo();
   }

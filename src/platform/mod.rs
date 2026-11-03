@@ -126,6 +126,12 @@ pub trait NativePlatform: PermissionProvider {
     /// False means locked or an inaccessible secure desktop. Errors end this host.
     fn session_active(&self) -> Result<bool>;
     fn displays(&self) -> Result<Vec<DisplayOutput>>;
+    fn refresh_display(&self, previous: &DisplayOutput) -> Result<DisplayOutput> {
+        self.displays()?
+            .into_iter()
+            .find(|o| o.name == previous.name)
+            .ok_or_else(|| anyhow::anyhow!("selected display disconnected"))
+    }
     fn capture(&self, output: &DisplayOutput, fps: u32) -> Result<Box<dyn NativeCapture>>;
     fn audio(&self) -> Arc<dyn AudioCaptureFactory>;
 }

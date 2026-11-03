@@ -83,6 +83,9 @@ impl AdaptiveRate {
     pub(crate) fn target(&self) -> RateTarget {
         self.target
     }
+    pub(crate) fn baseline_delay(&self) -> Option<Duration> {
+        self.baseline
+    }
     fn min_fps(&self) -> u32 {
         self.cap
             .min(if self.strategy == SchedulingStrategy::QualityFirst {

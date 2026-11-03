@@ -499,11 +499,7 @@ fn run_capture(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
-            let current = platform
-                .displays()?
-                .into_iter()
-                .find(|o| o.name == old.name)
-                .context("selected display disconnected")?;
+            let current = platform.refresh_display(&old)?;
             if current.width != old.width
                 || current.height != old.height
                 || current.x != old.x

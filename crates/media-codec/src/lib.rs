@@ -40,7 +40,7 @@ pub struct EncoderRate {
 }
 impl EncoderRate {
     pub fn validate(self) -> Result<()> {
-        anyhow::ensure!((1..=60).contains(&self.fps), "invalid native frame rate");
+        anyhow::ensure!((1..=120).contains(&self.fps), "invalid native frame rate");
         anyhow::ensure!(
             (1_000..=100_000_000).contains(&self.bitrate_bps),
             "invalid native bitrate"
@@ -50,6 +50,11 @@ impl EncoderRate {
 }
 pub fn default_bitrate(width: u32, height: u32) -> u32 {
     (u64::from(width) * u64::from(height) * 3).clamp(600_000, 18_000_000) as u32
+}
+
+/// Preserve the existing per-frame budget when enabling a high-refresh source.
+pub fn default_bitrate_for_fps(width: u32, height: u32, fps: u32) -> u32 {
+    (u64::from(default_bitrate(width, height)) * u64::from(fps.clamp(60, 120)) / 60) as u32
 }
 
 #[derive(Clone, Debug, Serialize)]

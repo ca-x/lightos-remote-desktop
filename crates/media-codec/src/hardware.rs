@@ -1,6 +1,6 @@
 use crate::{
     CodecCapability, EncodedFrame, EncoderBackend, EncoderRate, EncoderSettings, VideoCodec,
-    VideoEncoder, default_bitrate,
+    VideoEncoder, default_bitrate_for_fps,
     selection::valid_avc_codec,
     worker_protocol::{self as wire, Reply, RequestRef as Request},
 };
@@ -236,7 +236,7 @@ impl HardwareEncoders {
             settings,
             device,
             rate: EncoderRate {
-                bitrate_bps: default_bitrate(settings.width, settings.height),
+                bitrate_bps: default_bitrate_for_fps(settings.width, settings.height, settings.fps),
                 fps: settings.fps,
             },
             worker: None,

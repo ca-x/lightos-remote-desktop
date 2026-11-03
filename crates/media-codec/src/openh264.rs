@@ -1,4 +1,4 @@
-use crate::{EncoderRate, default_bitrate};
+use crate::{EncoderRate, default_bitrate_for_fps};
 use openh264_sys2::{
     ENCODER_OPTION_BITRATE, ENCODER_OPTION_FRAME_RATE, ENCODER_OPTION_MAX_BITRATE, SBitrateInfo,
     SPATIAL_LAYER_0, SPATIAL_LAYER_ALL,
@@ -55,7 +55,7 @@ impl H264Encoder {
             width.is_multiple_of(2) && height.is_multiple_of(2),
             "H.264 requires even dimensions; using JPEG"
         );
-        ensure!((1..=60).contains(&fps), "invalid encoder frame rate");
+        ensure!((1..=120).contains(&fps), "invalid encoder frame rate");
         let (requests, mut receiver) = mpsc::channel::<EncodeRequest>(1);
         std::thread::Builder::new()
             .name("h264-encoder".into())
@@ -71,7 +71,7 @@ impl H264Encoder {
                     }
                 };
                 let mut applied = EncoderRate {
-                    bitrate_bps: default_bitrate(width, height),
+                    bitrate_bps: default_bitrate_for_fps(width, height, fps),
                     fps,
                 };
                 let mut initialized = false;
@@ -131,7 +131,7 @@ impl H264Encoder {
             requests,
             usable: true,
             rate: EncoderRate {
-                bitrate_bps: default_bitrate(width, height),
+                bitrate_bps: default_bitrate_for_fps(width, height, fps),
                 fps,
             },
         })
@@ -186,7 +186,7 @@ impl H264Encoder {
 
 fn native_encoder(width: u32, height: u32, fps: u32) -> Result<Encoder> {
     native_encoder_with_rate(EncoderRate {
-        bitrate_bps: default_bitrate(width, height),
+        bitrate_bps: default_bitrate_for_fps(width, height, fps),
         fps,
     })
 }
@@ -418,7 +418,7 @@ mod tests {
             encoder
                 .set_rate(crate::EncoderRate {
                     bitrate_bps: 100_000,
-                    fps: 61
+                    fps: 121
                 })
                 .is_err()
         );

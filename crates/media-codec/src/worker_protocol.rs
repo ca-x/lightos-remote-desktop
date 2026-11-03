@@ -108,7 +108,7 @@ pub fn validate_settings(settings: EncoderSettings) -> Result<()> {
         (200..=2160).contains(&settings.height) && settings.height.is_multiple_of(2),
         "invalid hardware height"
     );
-    ensure!((1..=60).contains(&settings.fps), "invalid hardware FPS");
+    ensure!((1..=120).contains(&settings.fps), "invalid hardware FPS");
     Ok(())
 }
 pub fn validate_pixels(settings: EncoderSettings, pixels: &[u8]) -> Result<()> {

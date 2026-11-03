@@ -132,7 +132,7 @@ impl Backend {
         output: Option<String>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Self> {
-        ensure!((1..=60).contains(&fps), "invalid Portal capture FPS");
+        ensure!((1..=120).contains(&fps), "invalid Portal capture FPS");
         ensure!(
             target.wayland_socket.is_some(),
             "Portal requires a selected Wayland session"

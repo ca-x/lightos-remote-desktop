@@ -1,7 +1,8 @@
 use anyhow::{Context, Result, bail, ensure};
 use ffmpeg_next::{self as ffmpeg, Dictionary, Packet, codec, encoder, ffi, format::Pixel, frame};
 use media_codec::{
-    EncodedFrame, EncoderBackend, EncoderRate, EncoderSettings, default_bitrate, h264_packet_info,
+    EncodedFrame, EncoderBackend, EncoderRate, EncoderSettings, default_bitrate_for_fps,
+    h264_packet_info,
     worker_protocol::{EncoderDevice, validate_pixels, validate_settings},
 };
 use std::{
@@ -61,7 +62,7 @@ impl PixelConverter {
         }
         Ok(converter)
     }
-    #[cfg(not(all(target_os = "linux", feature = "fast-yuv")))]
+    #[cfg(not(any(target_os = "macos", all(target_os = "linux", feature = "fast-yuv"))))]
     fn convert(&mut self, source: &frame::Video, target: &mut frame::Video) -> Result<()> {
         unsafe {
             check(
@@ -124,19 +125,19 @@ impl Bitstream {
 }
 /// Reuse CPU storage while respecting references retained by FFmpeg/drivers.
 struct CpuFrames {
-    #[cfg(not(all(target_os = "linux", feature = "fast-yuv")))]
+    #[cfg(not(any(target_os = "macos", all(target_os = "linux", feature = "fast-yuv"))))]
     rgba: frame::Video,
     converted: frame::Video,
 }
 impl CpuFrames {
     fn new(width: u32, height: u32) -> Self {
         Self {
-            #[cfg(not(all(target_os = "linux", feature = "fast-yuv")))]
+            #[cfg(not(any(target_os = "macos", all(target_os = "linux", feature = "fast-yuv"))))]
             rgba: frame::Video::new(Pixel::RGBA, width, height),
             converted: frame::Video::new(Pixel::NV12, width, height),
         }
     }
-    #[cfg(not(all(target_os = "linux", feature = "fast-yuv")))]
+    #[cfg(not(any(target_os = "macos", all(target_os = "linux", feature = "fast-yuv"))))]
     fn convert(&mut self, pixels: &[u8], scaler: &mut PixelConverter) -> Result<()> {
         unsafe {
             check(
@@ -184,6 +185,44 @@ impl CpuFrames {
         }
         Ok(())
     }
+
+    #[cfg(target_os = "macos")]
+    fn convert(&mut self, pixels: &[u8], _scaler: &mut PixelConverter) -> Result<()> {
+        let width = self.converted.width() as usize;
+        let height = self.converted.height() as usize;
+        let y_stride = self.converted.stride(0);
+        let uv_stride = self.converted.stride(1);
+        unsafe {
+            check(
+                ffi::av_frame_make_writable(self.converted.as_mut_ptr()),
+                "make NV12 frame writable",
+            )?;
+            let status = lightos_rgba_to_nv12(
+                pixels.as_ptr(),
+                width,
+                height,
+                self.converted.data_mut(0).as_mut_ptr(),
+                y_stride,
+                self.converted.data_mut(1).as_mut_ptr(),
+                uv_stride,
+            );
+            ensure!(status == 0, "convert RGBA to NV12: vImage status {status}");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn lightos_rgba_to_nv12(
+        rgba: *const u8,
+        width: usize,
+        height: usize,
+        y: *mut u8,
+        y_stride: usize,
+        uv: *mut u8,
+        uv_stride: usize,
+    ) -> std::ffi::c_long;
 }
 
 #[cfg(all(target_os = "linux", feature = "fast-yuv"))]
@@ -309,6 +348,14 @@ impl NativeEncoder {
         // Keep VBV bounded; this is a real native bitrate, not just FPS pacing.
         unsafe {
             (*encoder.as_mut_ptr()).rc_buffer_size = rate.bitrate_bps as i32;
+            #[cfg(target_os = "macos")]
+            {
+                (*encoder.as_mut_ptr()).colorspace = ffi::AVColorSpace::AVCOL_SPC_BT709;
+                (*encoder.as_mut_ptr()).color_range = ffi::AVColorRange::AVCOL_RANGE_MPEG;
+                (*encoder.as_mut_ptr()).color_primaries = ffi::AVColorPrimaries::AVCOL_PRI_BT709;
+                (*encoder.as_mut_ptr()).color_trc =
+                    ffi::AVColorTransferCharacteristic::AVCOL_TRC_IEC61966_2_1;
+            }
             #[cfg(all(target_os = "linux", feature = "fast-yuv"))]
             {
                 // ABGRToNV12 uses the limited-range BT.601 matrix. Captured
@@ -618,7 +665,7 @@ pub fn probe(backend: EncoderBackend, device: Option<&EncoderDevice>) -> Result<
         quality: 75,
     };
     let rate = EncoderRate {
-        bitrate_bps: default_bitrate(settings.width, settings.height),
+        bitrate_bps: default_bitrate_for_fps(settings.width, settings.height, settings.fps),
         fps: 30,
     };
     verify(
@@ -999,11 +1046,11 @@ mod reuse_tests {
         let mut scaler = PixelConverter::new(640, 360).unwrap();
         let pixels = vec![80; 640 * 360 * 4];
         frames.convert(&pixels, &mut scaler).unwrap();
-        #[cfg(not(all(target_os = "linux", feature = "fast-yuv")))]
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", feature = "fast-yuv"))))]
         let rgba = frames.rgba.data(0).as_ptr();
         let output = frames.converted.data(0).as_ptr();
         frames.convert(&pixels, &mut scaler).unwrap();
-        #[cfg(not(all(target_os = "linux", feature = "fast-yuv")))]
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", feature = "fast-yuv"))))]
         assert_eq!(rgba, frames.rgba.data(0).as_ptr());
         assert_eq!(output, frames.converted.data(0).as_ptr());
         let retained = frames.converted.clone();

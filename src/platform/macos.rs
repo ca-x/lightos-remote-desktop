@@ -131,6 +131,22 @@ impl NativePlatform for MacosPlatform {
         content.displays().iter().map(display_output).collect()
     }
 
+    fn refresh_display(&self, previous: &DisplayOutput) -> Result<DisplayOutput> {
+        // Re-enumerating SCShareableContent synchronously can block capture on
+        // WindowServer. Geometry/mode changes need only the selected CG display.
+        let id = previous
+            .name
+            .strip_prefix("display-")
+            .context("invalid macOS display identifier")?
+            .parse::<u32>()?;
+        ensure!(
+            unsafe { CGDisplayIsActive(id) } != 0,
+            "selected display disconnected"
+        );
+        let bounds = unsafe { CGDisplayBounds(id) };
+        display_geometry(id, bounds)
+    }
+
     fn capture(&self, output: &DisplayOutput, fps: u32) -> Result<Box<dyn NativeCapture>> {
         ensure!((1..=120).contains(&fps), "capture FPS must be 1..=120");
         let session = GuiSession::current()?;
@@ -207,11 +223,14 @@ impl NativePlatform for MacosPlatform {
 }
 
 fn display_output(display: &SCDisplay) -> Result<DisplayOutput> {
-    let frame = display.frame();
+    display_geometry(display.display_id(), display.frame())
+}
+
+fn display_geometry(id: u32, frame: CGRect) -> Result<DisplayOutput> {
     // ScreenCaptureKit's display dimensions follow the mode's logical size.
     // Configure capture in backing pixels so Retina content is not first
     // downsampled to 1x and then enlarged by the viewing browser.
-    let mode = unsafe { CGDisplayCopyDisplayMode(display.display_id()) };
+    let mode = unsafe { CGDisplayCopyDisplayMode(id) };
     ensure!(!mode.is_null(), "query macOS display backing scale");
     let (logical_width, logical_height, pixel_width, pixel_height) = unsafe {
         let dimensions = (
@@ -233,8 +252,8 @@ fn display_output(display: &SCDisplay) -> Result<DisplayOutput> {
         (1.0..=4.0).contains(&backing_x) && (backing_x - backing_y).abs() < 0.05,
         "invalid macOS backing scale"
     );
-    let width = (f64::from(display.width()) * backing_x).round() as u32;
-    let height = (f64::from(display.height()) * backing_y).round() as u32;
+    let width = (frame.size.width * backing_x).round() as u32;
+    let height = (frame.size.height * backing_y).round() as u32;
     ensure!(
         width > 0 && height > 0 && frame.size.width > 0.0 && frame.size.height > 0.0,
         "invalid macOS display dimensions"
@@ -257,8 +276,8 @@ fn display_output(display: &SCDisplay) -> Result<DisplayOutput> {
         "invalid macOS display origin"
     );
     Ok(DisplayOutput {
-        name: format!("display-{}", display.display_id()),
-        description: format!("macOS display {}", display.display_id()),
+        name: format!("display-{id}"),
+        description: format!("macOS display {id}"),
         width,
         height,
         x: frame.origin.x.round() as i32,
@@ -887,6 +906,8 @@ fn dictionary_bool(dictionary: *const c_void, key: &str) -> Option<bool> {
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
+    fn CGDisplayBounds(display: u32) -> CGRect;
+    fn CGDisplayIsActive(display: u32) -> u32;
     fn CGDisplayCopyDisplayMode(display: u32) -> *const c_void;
     fn CGDisplayModeGetWidth(mode: *const c_void) -> usize;
     fn CGDisplayModeGetHeight(mode: *const c_void) -> usize;

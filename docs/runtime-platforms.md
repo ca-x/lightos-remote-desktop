@@ -136,14 +136,20 @@ probe requirements and device-validation limits.
 Its native rate controller may skip a raw input before generating an access unit.
 The capture frame retains its lazy shared JPEG cache. `web/src/video-codec.ts`
 probes browser WebCodecs decoding support; decoder cancellation/generation and
-rendering remain in the client. An encoder being compiled does not prove it
+rendering remain in the client. H.264 decoding runs in a dedicated worker when
+worker WebCodecs is available; transferable VideoFrames are presented on the
+main canvas. Unsupported worker configurations retain the main-thread decoder.
+This is not an OffscreenCanvas presentation pipeline. An encoder being compiled does not prove it
 works, and server support alone does not prove browser decoding support.
 
 `stream-scheduler` owns per-connection render ACK accounting, credit windows and
 an independent adaptive rate policy. It has no socket/compositor/codec dependency.
-The existing Auto window remains1–3 frames; Low latency holds one, Smooth permits
-three, and Quality first uses the Auto window. All begin at one credit and reset
-on codec/dimension changes. Legacy clients stay at one in flight and fixed rates.
+Clients can negotiate a bounded window of up to 12 frames. Its size follows the
+uncongested render-feedback delay and paced frame rate, rather than increasing
+with a congested queue. Low latency uses no spare credit; the other policies
+reserve one frame. All begin at one credit and reset on codec/dimension changes.
+Clients without this capability retain the previous Auto/Quality first 1–3,
+Low latency 1 and Smooth 3 windows; unsequenced clients retain one credit.
 
 For sequenced clients the new QoS controller learns an ACK-delay floor, confirms
 excess delay using spaced fresh samples, cuts encoder budget before ordinary FPS
@@ -172,3 +178,25 @@ RustDesk was read for responsibility boundaries (display service/platform,
 encoder factory/runtime probing and VideoQoS). No AGPL source was copied.
 Existing Rust libraries supply protocol, codec and browser bindings; project
 code contains session policy and adapters rather than new protocol encodings.
+
+## Performance iteration 0.1.37
+
+The capture and encoder configuration validators accept 1–120 FPS; the default
+is 120. Higher frame rates also raise the bitrate budget proportionally, keeping
+the existing per-frame budget. This is a ceiling, not a measured frame rate.
+A 120 FPS experiment must also use a changing source and a capable display and
+decoder. No fixed frame-rate guarantee is made.
+
+macOS checks an existing display through CoreGraphics geometry/mode APIs, avoiding
+a synchronous ScreenCaptureKit content enumeration in every periodic capture
+check. The codec worker converts shared RGBA directly to NV12 using Accelerate
+vImage, with explicit limited-range BT.709 metadata. This still uses CPU memory;
+GPU-native capture-to-encode and a datagram transport remain future work.
+The OpenH264 compatibility backend uses its upstream maximum 60 FPS codec
+clock; this does not cap hardware encoders or the configured capture rate.
+Clients send their encoding bounds before requesting H.264, so an oversized
+Retina source does not incorrectly exclude hardware before scaling is negotiated.
+
+Video diagnostics additionally report capture age at encode start and elapsed time
+from capture to completed encode. These host-clock durations are not network RTT
+or input-to-photon latency. Existing privacy-epoch and input-release checks remain.

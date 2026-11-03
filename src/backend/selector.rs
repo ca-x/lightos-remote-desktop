@@ -118,7 +118,7 @@ pub fn start_selected(
     output: Option<String>,
     cancelled: Arc<AtomicBool>,
 ) -> Result<Arc<dyn DesktopBackend>> {
-    ensure!((1..=60).contains(&fps), "FPS must be between 1 and 60");
+    ensure!((1..=120).contains(&fps), "FPS must be between 1 and 120");
     ensure!(
         (1..=100).contains(&quality),
         "JPEG quality must be between 1 and 100"

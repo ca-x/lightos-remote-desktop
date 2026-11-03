@@ -935,7 +935,7 @@ impl Backend {
         executable: &Path,
         capture: bool,
     ) -> Result<Self> {
-        ensure!((1..=60).contains(&fps), "FPS must be between 1 and 60");
+        ensure!((1..=120).contains(&fps), "FPS must be between 1 and 120");
         ensure!(
             (1..=100).contains(&quality),
             "JPEG quality must be between 1 and 100"

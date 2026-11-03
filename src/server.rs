@@ -340,6 +340,17 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/ws", get(upgrade))
         .route(
+            "/video-worker.js",
+            get(|headers: HeaderMap| async move {
+                asset(
+                    &headers,
+                    include_str!("../web/dist/video-worker.js"),
+                    include_bytes!("../web/dist/video-worker.js.gz"),
+                    "text/javascript; charset=utf-8",
+                )
+            }),
+        )
+        .route(
             "/audio-worker.js",
             get(|headers: HeaderMap| async move {
                 asset(
@@ -865,7 +876,7 @@ async fn connection(
     .await
     .ok()?;
     let ready = Message::Text(
-        json!({"type":"ready","key_chords":true,"text_clipboard":true,"clipboard_text_input":state.backend.clipboard_text_input(),"image_clipboard":state.backend.supports_image_clipboard(),"clipboard_sync":state.backend.supports_clipboard_sync(),"clipboard_session":Some(cursor_scope.token()),"backend_selection":true,"video_request_ids":true,"video_scaling":true,"control_release":true,"resize_scale":display_capabilities.resize_scale,"resize_scales":if display_capabilities.resize_scale { DisplayMode::SUPPORTED_SCALES.as_slice() } else { &[] },"cursor_session":if state.backend.kind() == BackendKind::Wayland || state.backend.cursor_frames().is_some() { Some(cursor_scope.token()) } else { None },"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":if state.backend.cursor_embedded() { "embedded" } else { "default" },"audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktop_backend":state.backend.kind(),"desktops":desktop_options,"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
+        json!({"type":"ready","key_chords":true,"text_clipboard":true,"clipboard_text_input":state.backend.clipboard_text_input(),"image_clipboard":state.backend.supports_image_clipboard(),"clipboard_sync":state.backend.supports_clipboard_sync(),"clipboard_session":Some(cursor_scope.token()),"backend_selection":true,"video_request_ids":true,"video_scaling":true,"control_release":true,"resize_scale":display_capabilities.resize_scale,"resize_scales":if display_capabilities.resize_scale { DisplayMode::SUPPORTED_SCALES.as_slice() } else { &[] },"cursor_session":if state.backend.kind() == BackendKind::Wayland || state.backend.cursor_frames().is_some() { Some(cursor_scope.token()) } else { None },"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":if state.backend.cursor_embedded() { "embedded" } else { "default" },"audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"video_flow_window":12,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktop_backend":state.backend.kind(),"desktops":desktop_options,"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
 
             .to_string()
             .into(),
@@ -908,6 +919,8 @@ async fn connection(
     let mut frame_id = 0_u64;
     let mut first_video_sent = false;
     let mut encode_samples = LatencySamples::default();
+    let mut capture_age_samples = LatencySamples::default();
+    let mut capture_encode_samples = LatencySamples::default();
     let mut send_samples = LatencySamples::default();
     let transmit = async {
         let mut capture_paused = false;
@@ -992,6 +1005,8 @@ async fn connection(
                     pacing_tx.send_modify(|flow| flow.begin_frame((width, height)));
                     let target = pacing.borrow().target();
                     let encode_started = Instant::now();
+                    let captured_at = frame.captured_at;
+                    capture_age_samples.record(encode_started.saturating_duration_since(captured_at));
                     pacing_tx.send_modify(|flow| flow.frame_started(encode_started));
                     let scaled_pixels = if (width, height) != source_size {
                         let mut worker = scaler.take().unwrap_or_else(RgbaScaler::default);
@@ -1010,15 +1025,23 @@ async fn connection(
                     } else { scaler = None; None };
                     let mut packet = None;
                     if h264 {
+                        // OpenH264 clamps its codec clock to 60 internally. Keep
+                        // that compatibility backend's rate readback valid;
+                        // hardware encoders retain the configured 120 FPS clock.
+                        let encoder_fps = if selected_backend == Some(EncoderBackend::OpenH264) {
+                            state.config.fps.min(60)
+                        } else {
+                            state.config.fps
+                        };
                         let result = async {
                             if encoder.as_ref().is_none_or(|encoder| encoder.dimensions() != (width, height)) {
-                                let settings = EncoderSettings {width,height,fps:state.config.fps,quality:state.config.quality};
+                                let settings = EncoderSettings {width,height,fps:encoder_fps,quality:state.config.quality};
                                 let backend = selected_backend.ok_or_else(|| anyhow::anyhow!("no validated H264 backend"))?;
                                 encoder = Some(if backend.is_hardware() { hardware.create(backend, settings)? } else { SoftwareEncoders.create(VideoCodec::H264, settings)? });
                                 codec = None;
                             }
                             let encoder = encoder.as_mut().ok_or_else(|| anyhow::anyhow!("encoder missing"))?;
-                            let rate = encoder_rate(width, height, state.config.fps, target);
+                            let rate = encoder_rate(width, height, encoder_fps, target);
                             if h264_dynamic_rate { encoder.set_rate(rate)?; }
                             let encoded = encoder.encode(scaled_pixels.as_ref().unwrap_or(&frame.pixels).clone()).await?;
                             applied_rate = h264_dynamic_rate.then_some(rate);
@@ -1114,6 +1137,7 @@ async fn connection(
                         discard_stale_frame!(frame_epoch);
                     }
                     encode_samples.record(encode_started.elapsed());
+                    capture_encode_samples.record(captured_at.elapsed());
                     outgoing_epoch = Some(frame_epoch);
                     Some(Message::Binary(packet.into()))
                 }
@@ -1170,6 +1194,7 @@ async fn connection(
                                 let flow = pacing.borrow();
                                 let message = Message::Text(json!({"type":"pong","id":id,"video_metrics":{
                                     "ack":flow.ack_summary(),"encode":encode_samples.summary(),"send":send_samples.summary(),
+                                    "capture_age":capture_age_samples.summary(),"capture_encode":capture_encode_samples.summary(),
                                     "in_flight":flow.in_flight(),"window":flow.window(),"strategy":flow.strategy(),
                                     "qos":flow.qos_summary(),"encoder_backend":selected_backend.map(EncoderBackend::id).unwrap_or("turbojpeg"),"fallback_reason":fallback_reason,"encoder_rate":applied_rate,"jpeg_quality":applied_jpeg_quality
                                 }}).to_string().into());
@@ -1300,7 +1325,7 @@ fn encoder_rate(width: u32, height: u32, cap: u32, target: RateTarget) -> Encode
     // Pacing already limits the number of frames sent. Keep the codec clock
     // stable so FPS adaptation does not recreate a hardware session/IDR.
     // The per-frame budget stays base * quality / cap in both cases.
-    let bitrate = u64::from(media_codec::default_bitrate(width, height))
+    let bitrate = u64::from(media_codec::default_bitrate_for_fps(width, height, cap))
         * u64::from(target.quality_percent)
         / 100;
     EncoderRate {
@@ -1587,7 +1612,13 @@ async fn receive_commands(
                                     value.get("enabled").and_then(|v| v.as_bool()) == Some(true),
                                     value.get("sequenced").and_then(|v| v.as_bool()) == Some(true),
                                     strategy,
-                                )
+                                );
+                                flow.negotiate_window(
+                                    value
+                                        .get("max_in_flight")
+                                        .and_then(|n| n.as_u64())
+                                        .map(|n| n.min(12) as usize),
+                                );
                             });
                             continue;
                         }

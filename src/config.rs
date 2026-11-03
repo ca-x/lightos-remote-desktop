@@ -395,7 +395,7 @@ pub struct Config {
     pub width: u32,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_HEIGHT", default_value_t = 720)]
     pub height: u32,
-    #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_FPS", default_value_t = 60)]
+    #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_FPS", default_value_t = 120)]
     pub fps: u32,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_QUALITY", default_value_t = 75)]
     pub quality: u8,
@@ -604,7 +604,7 @@ impl Config {
             (200..=2160).contains(&self.height),
             "height must be 200..2160"
         );
-        ensure!((1..=60).contains(&self.fps), "fps must be 1..60");
+        ensure!((1..=120).contains(&self.fps), "fps must be 1..120");
         ensure!((20..=95).contains(&self.quality), "quality must be 20..95");
         ensure!(self.port != 0, "port must not be zero");
         ensure!(

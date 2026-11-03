@@ -23,6 +23,9 @@ media-codec = { path = "../media-codec" }
 tokio = { version = "1", features = ["rt", "macros", "io-std", "io-util"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 
+[build-dependencies]
+cc = "1"
+
 [[test]]
 name = "worker"
 path = "tests/worker.rs"
