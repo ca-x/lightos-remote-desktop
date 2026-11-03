@@ -13,9 +13,16 @@ pub enum EncoderBackend {
     Amf,
     #[serde(rename = "videotoolbox")]
     VideoToolbox,
+    Qsv,
 }
 impl EncoderBackend {
-    pub const HARDWARE: [Self; 4] = [Self::Nvenc, Self::Vaapi, Self::Amf, Self::VideoToolbox];
+    pub const HARDWARE: [Self; 5] = [
+        Self::Nvenc,
+        Self::Vaapi,
+        Self::Qsv,
+        Self::Amf,
+        Self::VideoToolbox,
+    ];
     pub fn id(self) -> &'static str {
         match self {
             Self::OpenH264 => "openh264",
@@ -24,6 +31,7 @@ impl EncoderBackend {
             Self::Nvenc => "nvenc",
             Self::Amf => "amf",
             Self::VideoToolbox => "videotoolbox",
+            Self::Qsv => "qsv",
         }
     }
     pub fn is_hardware(self) -> bool {
@@ -34,6 +42,7 @@ impl EncoderBackend {
             Self::Vaapi => cfg!(target_os = "linux"),
             Self::Nvenc | Self::Amf => cfg!(any(target_os = "linux", target_os = "windows")),
             Self::VideoToolbox => cfg!(target_os = "macos"),
+            Self::Qsv => cfg!(target_os = "windows"),
             _ => true,
         }
     }
@@ -50,6 +59,7 @@ pub enum BackendPreference {
     Amf,
     #[serde(rename = "videotoolbox")]
     VideoToolbox,
+    Qsv,
 }
 impl BackendPreference {
     pub fn requested_backend(self) -> Option<EncoderBackend> {
@@ -60,6 +70,7 @@ impl BackendPreference {
             Self::Nvenc => Some(EncoderBackend::Nvenc),
             Self::Amf => Some(EncoderBackend::Amf),
             Self::VideoToolbox => Some(EncoderBackend::VideoToolbox),
+            Self::Qsv => Some(EncoderBackend::Qsv),
         }
     }
 }

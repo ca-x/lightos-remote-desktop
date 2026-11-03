@@ -6,7 +6,7 @@
 
 PC 客户端主进程内的控制模块常驻运行，不依赖远程桌面二进制是否安装。模块负责登记设备、报告状态、安装更新以及启停，图形管理入口都在 LPK 页面。首次使用不安装、不启动采集；卡片显示“未安装”和“安装远程桌面”。
 
-LPK 内含四个平台的原生程序：macOS Apple Silicon、macOS Intel、Windows x64、Linux x64。每张物理机卡片显示已安装版本；与 LPK 中版本或程序摘要不一致时提供“更新远程桌面”。安装和更新都由用户点击，显示下载字节、百分比、关闭服务、校验、安装、清理及失败原因。
+LPK 内含四个平台的原生程序、同版本硬件编码辅助程序和必要的 FFmpeg 动态库：macOS Apple Silicon、macOS Intel、Windows x64、Linux x64。每张物理机卡片显示已安装版本；与 LPK 中版本或程序摘要不一致时提供“更新远程桌面”。安装和更新都由用户点击，显示下载字节、百分比、关闭服务、校验、安装、清理及失败原因。
 
 客户端通过当前登录微服的应用域名（如 `https://remote-desktop.boxname.heiyu.space`）取得清单，只下载匹配自身系统和架构的包。下载经过原有微服认证及 HTTPS 校验，不跳转到第三方下载站。安装前校验压缩包和程序 SHA-256、实际程序版本；macOS 还验证应用签名及后续更新的签名团队。已开启时先提示更新会中断连接；取消保持现状，确认后自动停止服务再下载安装，并在成功后恢复开启状态。已关闭时直接更新且保持关闭。新版本检查通过后提交当前版本并删除旧程序，立即隐藏进度；失败保留原版本、恢复原有可用状态并提供重试入口。程序、安装状态及启停意图存于客户端用户数据目录的 `remote-desktop/managed`，运行时配置存于版本目录之外。
 
@@ -40,7 +40,7 @@ macOS 必须在已登录 GUI 会话中运行控制程序，使用稳定应用包
 
 构建入口为 `scripts/build-runtime-artifacts.py`，本机配置写入忽略的 `.local/runtime-build.json`，格式见 `config/runtime-build.example.json`。默认 Linux 构建宿主为 x86_64 Linux，需要 Python 3.11+、Rust、Node、Go、bubblewrap、bsdtar、cargo-xwin 和 LLVM 工具链。Linux 在校验过摘要的 Ubuntu 22.04 根文件系统中编译，以保持支持的 glibc 基线；可通过 `linux.command` 指定返回实际程序路径 JSON 的构建命令。Windows 使用静态 CRT 交叉编译。macOS 需要可通过 SSH 连接的原生 Mac 构建节点、Xcode 命令行工具、Rust 两个 Apple 架构目标、CMake 和 NASM；SSH 凭据由本机 SSH 配置管理，不写入仓库。
 
-macOS 正式发布应配置稳定的签名身份，始终保持应用标识和签名团队，避免升级后重新申请系统权限；未配置时使用临时签名，仅适合开发。构建产物和本机签名身份保存在忽略目录，不提交二进制或设备登录凭据。
+macOS 正式发布应配置稳定的签名身份，始终保持应用标识和签名团队，避免升级后重新申请系统权限；未配置时使用临时签名，仅适合开发。硬件编码依赖由 `config/codec-dependencies.json` 固定下载地址和摘要；Windows/Linux 使用 LGPL 共享库，macOS 从固定源码构建 VideoToolbox 所需的最小共享库并随应用签名。客户端无需自行安装 FFmpeg。构建产物和本机签名身份保存在忽略目录，不提交二进制或设备登录凭据。
 
 原生主机构建用 `cargo build --release --locked --features bundled-jpeg --bin lightos-remoted`，前端先执行 `npm run build`。Windows 使用静态 CRT，保证没有安装 VC++ 运行库的机器也能直接运行。使用 `RUSTFLAGS` 覆盖 Cargo 配置时，需同时保留 `.cargo/config.toml` 中的静态运行库选项。macOS 27 配合旧 Rust 编译器时，本机快速构建可设置 `CARGO_PROFILE_RELEASE_STRIP=none CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_DEBUG=2`，避免工具链裁剪编译期宏库导致的 LINKEDIT 错误。
 

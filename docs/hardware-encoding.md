@@ -1,7 +1,7 @@
 # Optional native H.264 encoding
 
 The portable service keeps its built-in OpenH264 and TurboJPEG encoders. The
-optional sibling executable `lightos-codec-ffmpeg` supplies VA-API, NVENC, AMF and
+optional sibling executable `lightos-codec-ffmpeg` supplies VA-API, NVENC, Intel QSV, AMF and
 VideoToolbox through native `ffmpeg-next` bindings. No FFmpeg command-line codec
 pipeline is launched. Browser hardware decoding is independent of server encoding.
 
@@ -66,9 +66,9 @@ drivers are bundled in either archive.
 
 ## Selection and failure behavior
 
-Format (Auto/H.264/JPEG), H.264 backend (Auto/Software/VA-API/NVENC/AMF/VideoToolbox)
+Format (Auto/H.264/JPEG), H.264 backend (Auto/Software/VA-API/NVENC/QSV/AMF/VideoToolbox)
 and streaming policy are separate saved settings. Auto tries successfully probed
-hardware in NVENC, VA-API, AMF, VideoToolbox order, then OpenH264. Each backend
+hardware in NVENC, VA-API, QSV, AMF, VideoToolbox order, then OpenH264. Each backend
 probe initializes a real encoder, encodes eight changing frames across two rate
 configurations, normalizes Annex B with FFmpeg and decodes all frames. Presence
 of an encoder name, program, device or library is insufficient. VideoToolbox
@@ -172,3 +172,13 @@ writable; retained driver references cause copy-on-write before the next update.
 These changes still use CPU conversion and pipe IPC. They do not introduce GPU
 handle transfer or change browser video bytes. Reproducible measurements and
 capture optimizations are documented in [capture/encode performance](capture-encode-performance.md).
+
+## LPK-managed desktop runtimes
+
+LPK builds include the worker beside the desktop executable, together with pinned LGPL FFmpeg shared libraries. Users do not need to install FFmpeg separately. Windows and Linux dependency URLs and SHA-256 values are locked in `config/codec-dependencies.json`. macOS builds a minimal FFmpeg from the pinned source for both architectures, embeds it in the application bundle, rewrites library paths and signs each executable/library with the application's signing identity. Cache validation covers every payload file; worker executable permissions are preserved in the archive.
+
+Windows Intel graphics use `h264_qsv` with an explicit hardware QSV device and D3D11, a single asynchronous frame, no lookahead and no B-frames. The existing encode/decode probe must pass before QSV is advertised or selected. macOS uses VideoToolbox with software fallback disabled. Installed GPU drivers remain the responsibility of the OS; unavailable hardware is reported honestly and the existing software fallback remains usable.
+
+The macOS FFmpeg build applies `scripts/ffmpeg-videotoolbox-low-delay.patch`: for sessions explicitly configured without B-frames it completes the submitted frame through `VTCompressionSessionCompleteFrames` before returning a packet, without ending the compression session. This preserves one-frame input/output semantics instead of rejecting a working encoder because its callback has not run yet. The worker process remains bounded by the core's existing timeout. The source patch is distributed with the runtime as `FFMPEG-CHANGES.patch`.
+
+VideoToolbox uses its native average bitrate target without Apple's frame-dropping low-latency rate-control mode or a hard one-second DataRateLimits cap. Zero B-frames and completion of each submitted frame provide bounded synchronous output even after a low-bitrate restart; bitrate changes still reopen and revalidate the hardware encoder.

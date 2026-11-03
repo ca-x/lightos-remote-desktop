@@ -1,0 +1,14 @@
+{
+  "win32-x64": {
+    "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-02-12-51/ffmpeg-n8.1.3-32-g760d10603e-win64-lgpl-shared-8.1.zip",
+    "sha256": "424ee1ebefd41bda90247db6a08d510d11e14a20ca19ecc168a50d4e63eb7fee"
+  },
+  "linux-x64": {
+    "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-02-12-51/ffmpeg-n8.1.3-32-g760d10603e-linux64-lgpl-shared-8.1.tar.xz",
+    "sha256": "fdffe052d9125c401e284b538c525b9bc5a53c38ef35d424bb0c29f75726ce02"
+  },
+  "macos-source": {
+    "url": "https://ffmpeg.org/releases/ffmpeg-8.1.3.tar.xz",
+    "sha256": "7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3"
+  }
+}

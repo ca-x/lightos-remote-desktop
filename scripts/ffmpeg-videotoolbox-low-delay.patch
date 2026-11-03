@@ -1,0 +1,21 @@
+--- a/libavcodec/videotoolboxenc.c
++++ b/libavcodec/videotoolboxenc.c
+@@ -2557,6 +2557,18 @@
+         }
+ 
+         vtctx->frame_ct_in++;
++        /* A synchronous low-delay caller needs this frame's output before
++         * sending another frame. EncodeFrame may retain it asynchronously.
++         * Complete only submitted frames, without ending the VT session. */
++        if (avctx->max_b_frames == 0) {
++            status = VTCompressionSessionCompleteFrames(vtctx->session,
++                CMTimeMake(frame->pts * avctx->time_base.num, avctx->time_base.den));
++            if (status) {
++                av_log(avctx, AV_LOG_ERROR, "Error completing low-delay frame: %d\n", status);
++                status = AVERROR_EXTERNAL;
++                goto end_nopkt;
++            }
++        }
+     } else if(!vtctx->flushing) {
+         vtctx->flushing = true;
+ 

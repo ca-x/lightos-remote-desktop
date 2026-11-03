@@ -8,3 +8,4 @@
 /dist/
 *.lpk
 /manager/manager
+__pycache__/

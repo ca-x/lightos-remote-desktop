@@ -8,11 +8,13 @@ import shutil
 import subprocess
 import sys
 import urllib.request
+from runtime_codec import sdk
 
 repo = Path(__file__).resolve().parent.parent
 subprocess.run(["cargo", "fetch", "--locked", "--target", "x86_64-unknown-linux-gnu"], cwd=repo, check=True, stdout=sys.stderr)
 cache = Path(os.environ.get("REMOTE_DESKTOP_LINUX_BUILD_CACHE", Path.home() / ".cache/lazycat-remote-linux-ubuntu2204"))
 cache.mkdir(parents=True, exist_ok=True)
+ffmpeg = sdk("linux-x64")
 archive = cache / "ubuntu-base-22.04.5-base-amd64.tar.gz"
 checksum = "242cd8898b33ea806ef5f13b1076ed7c76f9f989d18384452f7166692438ff1a"
 if not shutil.which("bwrap"):
@@ -34,14 +36,14 @@ logs.mkdir(exist_ok=True)
 toolchain = subprocess.check_output(["rustc", "--print", "sysroot"], text=True).strip()
 command = ["bwrap", "--unshare-user", "--uid", "0", "--gid", "0", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--die-with-parent", "--bind", str(root), "/",
     "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf", "--ro-bind", str(repo), "/source",
-    "--ro-bind", toolchain, "/toolchain", "--bind", str(Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo"))), "/cargo",
+    "--ro-bind", toolchain, "/toolchain", "--ro-bind", str(ffmpeg), "/codec-sdk", "--bind", str(Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo"))), "/cargo",
     "--bind", str(target), "/build-target", "--bind", str(logs), "/build-logs", "--chdir", "/source", "--clearenv"]
 for key, value in {"PATH": "/toolchain/bin:/usr/bin:/bin", "DEBIAN_FRONTEND": "noninteractive", "CARGO_HOME": "/cargo", "RUSTC": "/toolchain/bin/rustc",
-    "CARGO_TARGET_DIR": "/build-target", "CARGO_NET_OFFLINE": "true", "TURBOJPEG_SOURCE": "vendor", "TURBOJPEG_STATIC": "1"}.items():
+    "CARGO_TARGET_DIR": "/build-target", "CARGO_NET_OFFLINE": "true", "FFMPEG_DIR": "/codec-sdk", "LD_LIBRARY_PATH": "/codec-sdk/lib", "TURBOJPEG_SOURCE": "vendor", "TURBOJPEG_STATIC": "1"}.items():
     command += ["--setenv", key, value]
 setup = ""
 if not (root / "usr/bin/gcc").exists() or not (root / "usr/include/pipewire-0.3/pipewire/pipewire.h").exists():
     setup = "apt-get -o APT::Sandbox::User=root update > /build-logs/setup.log 2>&1 && apt-get -o APT::Sandbox::User=root install -y --no-install-recommends build-essential libwayland-dev libxkbcommon-dev libpulse-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev cmake nasm pkg-config ca-certificates curl >> /build-logs/setup.log 2>&1 && "
-command += ["/bin/sh", "-c", setup + "GITHUB_ENV=/build-logs/spa.env bash .github/scripts/prepare-spa-build-sdk.sh /build-target/spa-sdk > /build-logs/spa.log 2>&1 && set -a && . /build-logs/spa.env && set +a && /toolchain/bin/cargo build --release --locked --features bundled-jpeg,rdp,portal --bin lightos-remoted > /build-logs/build.log 2>&1"]
+command += ["/bin/sh", "-c", setup + "GITHUB_ENV=/build-logs/spa.env bash .github/scripts/prepare-spa-build-sdk.sh /build-target/spa-sdk > /build-logs/spa.log 2>&1 && set -a && . /build-logs/spa.env && set +a && /toolchain/bin/cargo build --release --locked --features bundled-jpeg,rdp,portal --bin lightos-remoted > /build-logs/build.log 2>&1 && RUSTFLAGS='-C link-arg=-Wl,--disable-new-dtags,-rpath,$ORIGIN/lib' /toolchain/bin/cargo build --release --locked -p media-codec-ffmpeg --features native,media-codec/bundled-jpeg > /build-logs/codec.log 2>&1"]
 subprocess.run(command, check=True)
-print(json.dumps({"binary": str(target / "release/lightos-remoted")}))
+print(json.dumps({"binary": str(target / "release/lightos-remoted"), "worker": str(target / "release/lightos-codec-ffmpeg"), "ffmpeg": str(ffmpeg)}))

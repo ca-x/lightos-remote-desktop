@@ -33,3 +33,12 @@ Given 远端 JPEG 画面包含单像素宽的相邻彩色细节
 When 画面在客户端解码
 Then 相邻细节的颜色保持可区分且没有因色度抽样合并
 And H.264 与用户选择的传输策略保持原有行为
+
+# 场景 5：通过 LPK 更新后使用可用的物理机硬件编码
+ID: SC-USES-BUNDLED-PHYSICAL-HARDWARE-ENCODERS
+Profile: draft
+Gate: required
+Given Windows 的 Intel QSV 或 macOS 的 VideoToolbox 可用，用户通过懒猫远程安装当前运行时
+When 用户连接桌面并使用自动编码
+Then 系统完成硬件能力探测后使用对应硬件编码，页面报告实际后端且能持续显示有效画面
+And 用户无需另外安装 FFmpeg，硬件不可用时保留软件回退且不把软件编码标为硬件

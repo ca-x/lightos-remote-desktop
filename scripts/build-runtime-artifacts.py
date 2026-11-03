@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import tarfile
 import tomllib
+from runtime_codec import sdk, copy_libraries, notices
 
 repo = Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser(description=__doc__)
@@ -28,8 +29,8 @@ native.mkdir(exist_ok=True)
 version = tomllib.loads((repo / "Cargo.toml").read_text())["package"]["version"]
 triples = {"linux-x64": "x86_64-unknown-linux-gnu", "win32-x64": "x86_64-pc-windows-msvc", "darwin-arm64": "aarch64-apple-darwin", "darwin-x64": "x86_64-apple-darwin"}
 sources = [repo / "Cargo.toml", repo / "Cargo.lock"]
-sources += [repo / "scripts" / name for name in ["build-runtime-artifacts.py", "build-linux-runtime.py", "build-macos-runtimes.py"]]
-sources += [repo / ".github/scripts/prepare-spa-build-sdk.sh"]
+sources += [repo / "scripts" / name for name in ["build-runtime-artifacts.py", "build-linux-runtime.py", "build-macos-runtimes.py", "build-macos-codec.py", "runtime_codec.py", "ffmpeg-videotoolbox-low-delay.patch"]]
+sources += [repo / ".github/scripts/prepare-spa-build-sdk.sh", repo / "config/codec-dependencies.json"]
 for name in ["src", "crates", "web/dist", ".cargo"]:
     sources += [p for p in (repo / name).rglob("*") if p.is_file() and "target" not in p.relative_to(repo / name).parts]
 digest = hashlib.sha256()
@@ -44,14 +45,17 @@ def cached(target):
     try:
         record = json.loads((native / target / ".build.json").read_text())
         binary = native / target / record["binary"]
-        return record["fingerprint"] == fingerprint and record.get("identity", "-") == configuration.get("macos", {}).get("identity", "-") and hashlib.sha256(binary.read_bytes()).hexdigest() == record["sha256"]
+        return record["fingerprint"] == fingerprint and record.get("identity", "-") == configuration.get("macos", {}).get("identity", "-") and bool(record.get("files")) and all(hashlib.sha256((native / target / name).read_bytes()).hexdigest() == sha for name, sha in record["files"].items())
     except (OSError, KeyError, ValueError): return False
 
 def record(target):
     directory = native / target
     entry = "Lazycat Remote.app/Contents/MacOS/lightos-remoted" if target.startswith("darwin") else "lightos-remoted" + (".exe" if target.startswith("win32") else "")
-    sha = hashlib.sha256((directory / entry).read_bytes()).hexdigest()
-    (directory / ".build.json").write_text(json.dumps({"fingerprint": fingerprint, "binary": entry, "sha256": sha, "identity": configuration.get("macos", {}).get("identity", "-")}))
+    worker = Path(entry).with_name("lightos-codec-ffmpeg" + (".exe" if target.startswith("win32") else ""))
+    if not (directory / worker).is_file(): raise RuntimeError("The hardware codec worker must be bundled: " + target)
+    files = {str(p.relative_to(directory)): hashlib.sha256(p.read_bytes()).hexdigest() for p in directory.rglob("*") if p.is_file() and not p.name.startswith(".")}
+    sha = files[entry]
+    (directory / ".build.json").write_text(json.dumps({"fingerprint": fingerprint, "binary": entry, "sha256": sha, "files": files, "identity": configuration.get("macos", {}).get("identity", "-")}))
 
 def build_linux():
     if cached("linux-x64"): return
@@ -59,9 +63,16 @@ def build_linux():
     command = options.get("command", ["python3", str(repo / "scripts/build-linux-runtime.py")])
     # A build command must return its actual output path; never consume PC repository binaries.
     result = run(command, capture=True)
-    binary = Path(json.loads(result.stdout.strip().splitlines()[-1])["binary"])
-    directory = native / "linux-x64"; directory.mkdir(exist_ok=True)
+    result = json.loads(result.stdout.strip().splitlines()[-1])
+    binary = Path(result["binary"])
+    directory = native / "linux-x64"
+    if directory.exists(): shutil.rmtree(directory)
+    directory.mkdir()
     shutil.copy2(binary, directory / "lightos-remoted")
+    shutil.copy2(result["worker"], directory / "lightos-codec-ffmpeg")
+    dependency = Path(result["ffmpeg"])
+    copy_libraries("linux-x64", dependency, directory / "lib")
+    notices("linux-x64", dependency, directory)
     record("linux-x64")
 
 def build_windows():
@@ -75,8 +86,16 @@ def build_windows():
     environment["CARGO_TARGET_DIR"] = str(cache / "windows-target")
     command = ["cargo", "build"] if platform.system() == "Windows" else ["cargo", "xwin", "build"]
     run(command + ["--release", "--locked", "--target", triples["win32-x64"], "--features", "bundled-jpeg", "--bin", "lightos-remoted"], environment=environment)
-    directory = native / "win32-x64"; directory.mkdir(exist_ok=True)
+    directory = native / "win32-x64"
+    if directory.exists(): shutil.rmtree(directory)
+    directory.mkdir()
     shutil.copy2(cache / "windows-target/x86_64-pc-windows-msvc/release/lightos-remoted.exe", directory / "lightos-remoted.exe")
+    dependency = sdk("win32-x64")
+    environment["FFMPEG_DIR"] = str(dependency)
+    run(command + ["--release", "--locked", "--target", triples["win32-x64"], "-p", "media-codec-ffmpeg", "--features", "native,media-codec/bundled-jpeg"], environment=environment)
+    shutil.copy2(cache / "windows-target/x86_64-pc-windows-msvc/release/lightos-codec-ffmpeg.exe", directory / "lightos-codec-ffmpeg.exe")
+    copy_libraries("win32-x64", dependency, directory)
+    notices("win32-x64", dependency, directory)
     record("win32-x64")
 
 def build_macos():
@@ -95,7 +114,7 @@ def build_macos():
         run(ssh + ["mkdir -p " + shlex.quote(remote)])
         source_archive = cache / "source.tar.gz"
         with tarfile.open(source_archive, "w:gz") as archive:
-            for name in ["Cargo.toml", "Cargo.lock", "src", "crates", "web/dist", "scripts/build-macos-runtimes.py"]:
+            for name in ["Cargo.toml", "Cargo.lock", "src", "crates", "web/dist", "scripts/build-macos-runtimes.py", "scripts/runtime_codec.py", "scripts/build-macos-codec.py", "scripts/ffmpeg-videotoolbox-low-delay.patch", "config/codec-dependencies.json"]:
                 archive.add(repo / name, arcname=name, filter=lambda item: None if "target" in Path(item.name).parts else item)
         run(["scp", *ssh_options, "-P", port, str(source_archive), host + ":" + remote + "/source.tar.gz"])
         body = "set -eu; cd " + shlex.quote(remote) + "; tar -xzf source.tar.gz; python3 scripts/build-macos-runtimes.py --source . --output artifacts --version " + shlex.quote(version) + " --identity " + shlex.quote(identity)
@@ -117,17 +136,19 @@ for target, triple in triples.items():
     artifact = {"target": target, "version": version, "binary": build["binary"], "sha256": build["sha256"], "runtime_protocol": 2, "source_fingerprint": fingerprint}
     team = directory / ".signing-team"
     if team.exists(): artifact["signing_team"] = team.read_text().strip()
-    notices = cache / (target + "-NOTICE.txt")
-    run(["python3", str(repo / "scripts/mcp-notices.py"), str(notices), "--target", triple, "--features", "bundled-jpeg,rdp,portal" if target.startswith("linux") else "bundled-jpeg"])
+    runtime_notices = cache / (target + "-NOTICE.txt")
+    run(["python3", str(repo / "scripts/mcp-notices.py"), str(runtime_notices), "--target", triple, "--features", "bundled-jpeg,rdp,portal" if target.startswith("linux") else "bundled-jpeg"])
+    codec_notices = cache / (target + "-codec-NOTICE.txt")
+    run(["python3", str(repo / "scripts/codec-worker-notices.py"), str(repo), str(codec_notices)])
     files = {str(p.relative_to(directory)): p for p in directory.rglob("*") if p.is_file() and not p.name.startswith(".")}
-    files.update({"LICENSE": repo / "LICENSE", "NOTICE.frontend.txt": repo / "web/dist/NOTICE.frontend.txt", "NOTICE.runtime.txt": notices})
+    files.update({"LICENSE": repo / "LICENSE", "NOTICE.frontend.txt": repo / "web/dist/NOTICE.frontend.txt", "NOTICE.runtime.txt": runtime_notices, "NOTICE.codec.txt": codec_notices})
     archive_path = args.output / (target + ".tar.gz")
     with archive_path.open("wb") as raw, gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0, compresslevel=6) as compressed, tarfile.open(fileobj=compressed, mode="w|", format=tarfile.USTAR_FORMAT) as archive:
         manifest = json.dumps(artifact, sort_keys=True).encode()
         info = tarfile.TarInfo("manifest.json"); info.size = len(manifest); info.mode = 0o644
         archive.addfile(info, io.BytesIO(manifest))
         for name, path in sorted(files.items()):
-            info = tarfile.TarInfo(name); info.size = path.stat().st_size; info.mode = 0o755 if name == artifact["binary"] else 0o644
+            info = tarfile.TarInfo(name); info.size = path.stat().st_size; info.mode = 0o755 if path.stat().st_mode & 0o111 else 0o644
             with path.open("rb") as content: archive.addfile(info, content)
     artifact.update(archive_sha256=hashlib.sha256(archive_path.read_bytes()).hexdigest(), archive_size=archive_path.stat().st_size,
         download_path=f"/api/runtimes/{target}/{archive_path.stat().st_size}-{artifact['sha256'][:12]}.tar.gz")

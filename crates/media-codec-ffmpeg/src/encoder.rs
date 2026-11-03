@@ -235,6 +235,7 @@ impl NativeEncoder {
             EncoderBackend::Nvenc => "h264_nvenc",
             EncoderBackend::Amf => "h264_amf",
             EncoderBackend::VideoToolbox => "h264_videotoolbox",
+            EncoderBackend::Qsv => "h264_qsv",
             _ => bail!("software encoding is handled by the core"),
         };
         if backend == EncoderBackend::Vaapi {
@@ -287,10 +288,24 @@ impl NativeEncoder {
         encoder.set_time_base((1, rate.fps as i32));
         encoder.set_frame_rate(Some((rate.fps as i32, 1)));
         encoder.set_bit_rate(rate.bitrate_bps as usize);
-        encoder.set_max_bit_rate(rate.bitrate_bps as usize);
+        // VideoToolbox's hard one-second DataRateLimits can discard complete
+        // frames during bursts. Keep its native average bitrate target; the
+        // synchronous transport requires an output for each submitted frame.
+        encoder.set_max_bit_rate(if backend == EncoderBackend::VideoToolbox {
+            0
+        } else {
+            rate.bitrate_bps as usize
+        });
         encoder.set_gop(rate.fps * 2);
         encoder.set_max_b_frames(0);
-        encoder.set_flags(codec::Flags::LOW_DELAY);
+        // Apple's low-latency rate controller intentionally drops frames at
+        // low bitrates. Use average-rate control with zero B-frames and our
+        // synchronous VT completion path instead of that frame-dropping mode.
+        encoder.set_flags(if backend == EncoderBackend::VideoToolbox {
+            codec::Flags::empty()
+        } else {
+            codec::Flags::LOW_DELAY
+        });
         // Keep VBV bounded; this is a real native bitrate, not just FPS pacing.
         unsafe {
             (*encoder.as_mut_ptr()).rc_buffer_size = rate.bitrate_bps as i32;
@@ -316,6 +331,9 @@ impl NativeEncoder {
         };
         if let Some(EncoderDevice::Nvenc(index)) = device {
             select_nvenc_gpu(&mut encoder, *index)?;
+        }
+        if backend == EncoderBackend::Qsv {
+            qsv_device(&mut encoder)?;
         }
         let mut opts = Dictionary::new();
         match backend {
@@ -348,6 +366,12 @@ impl NativeEncoder {
             EncoderBackend::VideoToolbox => {
                 opts.set("realtime", "1");
                 opts.set("allow_sw", "0");
+            }
+            EncoderBackend::Qsv => {
+                opts.set("preset", "veryfast");
+                opts.set("async_depth", "1");
+                opts.set("look_ahead", "0");
+                opts.set("forced_idr", "1");
             }
             _ => {
                 opts.set("preset", "ultrafast");
@@ -432,17 +456,26 @@ impl NativeEncoder {
         self.pts += 1;
         self.encoder.send_frame(frame)?;
         let mut data = Vec::new();
+        let mut packets = 0;
         loop {
             let mut packet = Packet::empty();
             match self.encoder.receive_packet(&mut packet) {
-                Ok(()) => data.extend_from_slice(&self.filter.convert(&mut packet)?),
+                Ok(()) => {
+                    packets += 1;
+                    data.extend_from_slice(&self.filter.convert(&mut packet)?);
+                }
                 Err(ffmpeg::Error::Other { errno }) if errno == ffmpeg::error::EAGAIN => break,
                 Err(error) => return Err(error.into()),
             }
         }
         ensure!(
             !data.is_empty(),
-            "hardware encoder buffers frames; low-latency output unavailable"
+            "{} produced no output for frame {} ({} packets, {} bps, {} fps); low-latency output unavailable",
+            self.name,
+            self.pts,
+            packets,
+            rate.bitrate_bps,
+            rate.fps
         );
         let (key, codec) = h264_packet_info(&data);
         if self.pts == 1 {
@@ -460,6 +493,32 @@ fn check(status: i32, action: &str) -> Result<()> {
     }
     Ok(())
 }
+fn qsv_device(encoder: &mut encoder::video::Video) -> Result<()> {
+    // Explicitly request a hardware session. The default QSV "auto" device can
+    // otherwise choose a software implementation. D3D11 works with oneVPL and
+    // the current Intel Windows drivers; NV12 frames are uploaded by FFmpeg.
+    let mut options = Dictionary::new();
+    options.set("child_device_type", "d3d11va");
+    let mut raw = ptr::null_mut();
+    unsafe {
+        check(
+            ffi::av_hwdevice_ctx_create(
+                &mut raw,
+                ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_QSV,
+                c"hw".as_ptr(),
+                options.as_mut_ptr(),
+                0,
+            ),
+            "initialize Intel QSV hardware device",
+        )?;
+        let device = Buffer(raw);
+        let owned = ffi::av_buffer_ref(device.0);
+        ensure!(!owned.is_null(), "reference Intel QSV device failed");
+        (*encoder.as_mut_ptr()).hw_device_ctx = owned;
+    }
+    Ok(())
+}
+
 fn select_nvenc_gpu(encoder: &mut encoder::video::Video, index: u32) -> Result<()> {
     ensure!(index <= i32::MAX as u32, "invalid NVENC GPU index");
     unsafe {

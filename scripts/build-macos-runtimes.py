@@ -31,6 +31,7 @@ for target, triple in [("darwin-arm64", "aarch64-apple-darwin"), ("darwin-x64", 
     shutil.copy2(target_directory / triple / "release/lightos-remoted", binary)
     binary.chmod(0o755)
     (contents / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "org.lightos.remote-desktop", "CFBundleName": "Lazycat Remote", "CFBundleDisplayName": "懒猫远程", "CFBundleExecutable": "lightos-remoted", "CFBundlePackageType": "APPL", "CFBundleShortVersionString": args.version, "CFBundleVersion": args.version, "LSMinimumSystemVersion": "13.0", "LSUIElement": True, "NSHighResolutionCapable": True}))
+    subprocess.run(["python3", str(args.source / "scripts/build-macos-codec.py"), "--source", str(args.source), "--output", str(directory), "--target", triple, "--identity", args.identity], cwd=args.source, env=environment, check=True)
     subprocess.run(["codesign", "--force", "--sign", args.identity, "--options", "runtime", "--timestamp=none", str(app)], check=True)
     subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
     details = subprocess.run(["codesign", "-dv", "--verbose=4", str(app)], capture_output=True, text=True, check=True).stderr
