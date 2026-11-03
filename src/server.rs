@@ -895,6 +895,7 @@ async fn connection(
     let hardware = HardwareEncoders::discover();
     let mut backend_preference = BackendPreference::Auto;
     let mut excluded_backends = Vec::new();
+    let mut backend_failures: Vec<(EncoderBackend, String)> = Vec::new();
     let mut selected_backend: Option<EncoderBackend> = None;
     let mut fallback_reason: Option<String> = None;
     let mut h264 = false;
@@ -1051,7 +1052,10 @@ async fn connection(
                             }
                             Err(error) => {
                                 tracing::warn!(%error, ?selected_backend, "H264 backend failed; selecting fallback");
-                                if let Some(backend) = selected_backend.take() { excluded_backends.push(backend); }
+                                if let Some(backend) = selected_backend.take() {
+                                    excluded_backends.push(backend);
+                                    backend_failures.push((backend, format!("{error:#}")));
+                                }
                                 fallback_reason = Some(format!("{error:#}"));
                                 selected_backend = choose_h264_backend(backend_preference, &codec_capabilities, &excluded_backends);
                                 h264 = selected_backend.is_some();
@@ -1199,12 +1203,15 @@ async fn connection(
                                     && let Some(active) = selected_backend
                                     && active.id() == rejected {
                                         if !excluded_backends.contains(&active) { excluded_backends.push(active); }
-                                        fallback_reason = Some(format!("Browser rejected {rejected} H264 profile"));
+                                        let detail = value.get("decoder_failure").and_then(|v| v.as_str()).map(|s| s.chars().take(240).collect::<String>());
+                                        let reason = detail.map(|s| format!("Browser decoder: {s}")).unwrap_or_else(|| format!("Browser rejected {rejected} H264 profile"));
+                                        backend_failures.push((active, reason.clone()));
+                                        fallback_reason = Some(reason);
                                 }
                                 selected_backend = choose_h264_backend(backend_preference, &codec_capabilities, &excluded_backends);
                                 if let Some(requested) = backend_preference.requested_backend()
                                     && selected_backend != Some(requested) {
-                                        fallback_reason = Some(codec_capabilities.iter().find(|cap| cap.backend == requested.id()).and_then(|cap| cap.reason.clone()).unwrap_or_else(|| format!("{} unavailable for this connection", requested.id())));
+                                        fallback_reason = Some(backend_failures.iter().rev().find(|(backend, _)| *backend == requested).map(|(_, reason)| reason.clone()).or_else(|| codec_capabilities.iter().find(|cap| cap.backend == requested.id()).and_then(|cap| cap.reason.clone())).unwrap_or_else(|| format!("{} unavailable for this connection", requested.id())));
                                 }
                                 h264 = value.get("codec").and_then(|codec| codec.as_str()) == Some("h264") && pacing.borrow().sequenced() && selected_backend.is_some();
                                 if !h264 { selected_backend = None; }
@@ -1290,13 +1297,15 @@ fn frame_privacy_current(backend: &dyn DesktopBackend, epoch: u64) -> bool {
 }
 
 fn encoder_rate(width: u32, height: u32, cap: u32, target: RateTarget) -> EncoderRate {
+    // Pacing already limits the number of frames sent. Keep the codec clock
+    // stable so FPS adaptation does not recreate a hardware session/IDR.
+    // The per-frame budget stays base * quality / cap in both cases.
     let bitrate = u64::from(media_codec::default_bitrate(width, height))
         * u64::from(target.quality_percent)
-        * u64::from(target.fps)
-        / (100 * u64::from(cap));
+        / 100;
     EncoderRate {
         bitrate_bps: bitrate.max(1_000) as u32,
-        fps: target.fps,
+        fps: cap,
     }
 }
 /// null explicitly restores native encoding. Missing/malformed bounds must not
@@ -2561,7 +2570,8 @@ mod tests {
                 quality_percent: 50,
             },
         );
-        assert_eq!(full.bitrate_bps / 30, slow.bitrate_bps / 10);
+        assert_eq!(full, slow);
+        assert_eq!(full.bitrate_bps / full.fps, slow.bitrate_bps / slow.fps);
         assert_eq!(full.bitrate_bps / 2, reduced.bitrate_bps);
         assert_eq!(jpeg_quality(75, 100), 75);
         assert_eq!(jpeg_quality(75, 20), 35);

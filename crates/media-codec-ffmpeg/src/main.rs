@@ -16,11 +16,11 @@ fn main() -> Result<()> {
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
     let mut buffer = Vec::new();
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let shared = wire::shared_frame::inherited()?;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let shared_pixels = shared.as_deref();
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let shared_pixels = None;
     let mut encoder: Option<NativeEncoder> = None;
     loop {
@@ -93,7 +93,7 @@ fn handle(
                 rate,
                 device.as_ref(),
             )?);
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             if shared.is_some()
                 && std::env::var_os(wire::shared_frame::NEGOTIATE_ENV).as_deref()
                     == Some(std::ffi::OsStr::new("1"))

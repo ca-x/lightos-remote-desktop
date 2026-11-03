@@ -29,7 +29,7 @@
   document.querySelectorAll("[data-text]").forEach(node => { node.textContent = copy[node.dataset.text]; });
   const grid = document.getElementById("desktops"), status = document.getElementById("status"), warning = document.getElementById("warning"), empty = document.getElementById("empty");
   const cards = new Map(), pendingActions = new Map();
-  let busy = false, pending;
+  let busy = false, pending, reloadRequested = false, refreshedAt = 0, controlRevision = 0;
   const platforms = { darwin: "macOS", macos: "macOS", win32: "Windows", windows: "Windows", linux: "Linux" };
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -116,7 +116,7 @@
     p.request.textContent = permissions.requesting ? copy.requesting : copy.permissions;
     p.request.disabled = !item.online || processing || switching || permissions.requesting === true;
     p.connect.hidden = item.kind === "device" && !item.installed;
-    const ready = item.online !== false && item.ready !== false && !switching;
+    const ready = item.online !== false && item.ready !== false && !switching && pending?.action !== "stop";
     p.connect.setAttribute("aria-disabled", String(!ready)); p.connect.tabIndex = ready ? 0 : -1;
     if (ready) p.connect.href = item.url; else p.connect.removeAttribute("href");
     p.connect.ariaLabel = `${copy.connect}: ${item.name}`;
@@ -145,7 +145,15 @@
         throw Error(failure.error === "update_confirmation_required" ? failure.error : "failed");
       }
       warning.hidden = true;
-      await load();
+      const reply = await response.json();
+      const state = reply?.state;
+      controlRevision += 1;
+      if (card && state && typeof state.ready === "boolean" && typeof state.enabled === "boolean") {
+        updateCard(card, { ...card.target, enabled: state.enabled, ready: state.ready,
+          status: state.status, permissions: state.permissions || card.target.permissions,
+          deployment: state.deployment || card.target.deployment, runtime_error: state.error });
+      }
+      await load(true);
     } catch (error) {
       pendingActions.delete(id);
       if (error.message === "update_confirmation_required") {
@@ -157,9 +165,12 @@
       if (card) updateCard(card, card.target);
     }
   }
-  async function load() {
-    if (busy || document.hidden) return;
+  async function load(force = false) {
+    if (document.hidden) return;
+    if (busy) { reloadRequested ||= force; return; }
     busy = true;
+    refreshedAt = Date.now();
+    const revision = controlRevision;
     if (!cards.size) status.textContent = copy.loading;
     const controller = new AbortController(); pending = controller;
     const timeout = setTimeout(() => controller.abort(), 20000);
@@ -169,6 +180,7 @@
       if (!response.ok) throw Error("failed");
       const data = await response.json();
       if (!Array.isArray(data.targets)) throw Error("failed");
+      if (revision !== controlRevision) { reloadRequested = true; return; }
       const targets = data.targets.filter(item => {
         if (!item || typeof item.id !== "string" || typeof item.url !== "string" || typeof item.name !== "string") return false;
         try { const url = new URL(item.url, location.href); return url.protocol === "https:" && !url.username && !url.password || url.origin === location.origin && url.pathname.startsWith("/desktop/"); } catch { return false; }
@@ -178,16 +190,19 @@
       if (document.hidden && controller.signal.aborted) return;
       status.textContent = ""; warning.textContent = copy[error.message] || copy.failed; warning.hidden = false;
       if (error.message === "login_required") render([]);
-    } finally { clearTimeout(timeout); busy = false; pending = undefined; }
+    } finally {
+      clearTimeout(timeout); busy = false; pending = undefined;
+      if (reloadRequested) { reloadRequested = false; void load(); }
+    }
   }
   document.addEventListener("visibilitychange", () => { if (document.hidden) pending?.abort(); else void load(); });
-  let refreshTick = 0;
   function refresh() {
+    const transitioning = [...pendingActions.values()].some(p => p.action === "start" || p.action === "stop") || [...cards.values()].some(card => card.target.status === "starting");
     const active = [...cards.values()].some(card => !["idle", "completed", "failed"].includes(card.target.deployment?.stage || "idle"));
-    if (active || ++refreshTick >= 4) { refreshTick = 0; void load(); }
+    if (Date.now() - refreshedAt >= (transitioning ? 250 : active ? 1000 : 4000)) void load();
   }
-  let timer = setInterval(refresh, 1000);
+  let timer = setInterval(refresh, 250);
   window.addEventListener("pagehide", () => { pending?.abort(); clearInterval(timer); timer = undefined; });
-  window.addEventListener("pageshow", event => { if (event.persisted) { timer ??= setInterval(refresh, 1000); void load(); } });
+  window.addEventListener("pageshow", event => { if (event.persisted) { timer ??= setInterval(refresh, 250); void load(); } });
   void load();
 })();

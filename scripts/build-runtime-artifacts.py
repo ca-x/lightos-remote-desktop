@@ -119,9 +119,20 @@ def build_macos():
         run(["scp", *ssh_options, "-P", port, str(source_archive), host + ":" + remote + "/source.tar.gz"])
         body = "set -eu; cd " + shlex.quote(remote) + "; tar -xzf source.tar.gz; python3 scripts/build-macos-runtimes.py --source . --output artifacts --version " + shlex.quote(version) + " --identity " + shlex.quote(identity)
         run(ssh + [body])
+        # Transfer one archive over the command channel. Some device SSH
+        # gateways close recursive SFTP sessions while copying app bundles.
+        downloaded = cache / "macos-artifacts.tar.gz"
+        with downloaded.open("wb") as output:
+            subprocess.run(ssh + ["COPYFILE_DISABLE=1 tar -czf - -C " + shlex.quote(remote + "/artifacts") + " darwin-arm64 darwin-x64"], stdout=output, check=True)
+        staged = cache / "macos-extracted"
+        if staged.exists(): shutil.rmtree(staged)
+        staged.mkdir()
+        with tarfile.open(downloaded) as archive:
+            archive.extractall(staged, filter="data")
         for target in ["darwin-arm64", "darwin-x64"]:
             if (native / target).exists(): shutil.rmtree(native / target)
-            run(["scp", *ssh_options, "-r", "-P", port, host + ":" + remote + "/artifacts/" + target, str(native)])
+            shutil.move(str(staged / target), str(native / target))
+        staged.rmdir()
     record("darwin-arm64"); record("darwin-x64")
 
 with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:

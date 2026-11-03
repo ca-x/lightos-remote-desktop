@@ -124,6 +124,7 @@ export function createClient(options: ClientOptions = {}) {
   let activeBackend: string | null = null;
   let waitingForBackend = false;
   const rejectedBackends = new Set<string>();
+  const softwareDecodingBackends = new Set<string>();
   element("encoder-backend").value = backendPreference;
   let videoPreference = readPreference(videoCodecKey, videoCodecs, "auto");
   let strategyPreference = readPreference(streamStrategyKey, streamStrategies, "auto");
@@ -141,7 +142,7 @@ export function createClient(options: ClientOptions = {}) {
   let videoDecoder: VideoDecoder | null = null;
   let videoToken = 0;
   let configuringVideo = false;
-  let pendingVideo: { data: ArrayBuffer; id: number | null } | null = null;
+  const pendingVideo: { data: ArrayBuffer; id: number | null }[] = [];
   let videoTimer: Timer | null = null;
   let sequencedFrames = false;
   let pendingFrameId: number | null = null;
@@ -964,7 +965,7 @@ export function createClient(options: ClientOptions = {}) {
       videoScaling = value.video_scaling === true && frameAcknowledgements && sequencedFrames && !losslessAvailable;
       lastVideoBounds = null;
       videoRequestId = 0;
-      activeBackend = null; waitingForBackend = false; rejectedBackends.clear();
+      activeBackend = null; waitingForBackend = false; rejectedBackends.clear(); softwareDecodingBackends.clear();
       configureStreamStrategy();
       cancelTimer(connectionTimer);
       connectionTimer = null;
@@ -1112,7 +1113,7 @@ export function createClient(options: ClientOptions = {}) {
     videoTimer = null;
     videoToken += 1;
     configuringVideo = false;
-    pendingVideo = null;
+    pendingVideo.length = 0;
     videoFrameIds.clear();
     videoDecodeStarted.clear();
     const previous = videoDecoder;
@@ -1168,14 +1169,14 @@ export function createClient(options: ClientOptions = {}) {
     return false;
   }
 
-  function requestVideo(codec: string, rejected?: string) {
+  function requestVideo(codec: string, rejected?: string, failure?: string) {
     closeVideo();
     activeBackend = null;
     waitingForBackend = true;
     videoRequestId += 1;
     send({ type: "video", codec,
       ...(backendSelection && codec === "h264" ? { backend: backendPreference } : {}),
-      ...(rejected ? { rejected_backend: rejected } : {}),
+      ...(rejected ? { rejected_backend: rejected, decoder_failure: failure } : {}),
       ...(videoRequestIds ? { request_id: videoRequestId } : {}),
     });
   }
@@ -1199,6 +1200,7 @@ export function createClient(options: ClientOptions = {}) {
     backendPreference = encoderBackends.includes(element("encoder-backend").value as typeof backendPreference) ? element("encoder-backend").value as typeof backendPreference : "auto";
     savePreference(encoderBackendKey, backendPreference);
     rejectedBackends.clear();
+    softwareDecodingBackends.clear();
     if (ready) { closeVideo(); requestPreferredVideo(); }
   });
   listen(element("stream-strategy"), "change", () => {
@@ -1209,11 +1211,19 @@ export function createClient(options: ClientOptions = {}) {
     publishSessionView();
   });
 
-  function fallbackVideo() {
+  function fallbackVideo(reason = "H264 decoding failed") {
     closeVideo();
+    if (document.hidden) { waitingForBackend = true; return; }
+    if (backendSelection && activeBackend && !softwareDecodingBackends.has(activeBackend)) {
+      // A browser GPU decoder failure does not make the server encoder invalid.
+      // Retry its fresh IDR with the browser's software decoder first.
+      softwareDecodingBackends.add(activeBackend);
+      requestVideo("h264");
+      return;
+    }
     if (backendSelection && activeBackend && !rejectedBackends.has(activeBackend)) {
       rejectedBackends.add(activeBackend);
-      requestVideo("h264", activeBackend);
+      requestVideo("h264", activeBackend, reason);
       return;
     }
     requestVideo("jpeg");
@@ -1232,10 +1242,13 @@ export function createClient(options: ClientOptions = {}) {
     const token = videoToken;
     const session = generation;
     configuringVideo = true;
+    videoTimer = setTimeout(() => {
+      if (token === videoToken && session === generation && configuringVideo && ready) fallbackVideo("Decoder configuration timed out");
+    }, 2000);
     try {
-      const config = await supportedVideoConfig(window.VideoDecoder, value.codec, value.width, value.height);
+      const config = await supportedVideoConfig(window.VideoDecoder, value.codec, value.width, value.height, !!activeBackend && softwareDecodingBackends.has(activeBackend));
       if (token !== videoToken || session !== generation || !ready || desktopPaused || destroyed) return;
-      if (!config) { fallbackVideo(); return; }
+      if (!config) { fallbackVideo(`Unsupported H264 profile ${value.codec} at ${value.width}×${value.height}`); return; }
       videoDecoder = new window.VideoDecoder({
         output(frame) {
           try {
@@ -1256,15 +1269,18 @@ export function createClient(options: ClientOptions = {}) {
             if (frameAcknowledgements) acknowledgeFrame(id);
           } finally { frame.close(); }
         },
-        error() { if (token === videoToken && session === generation && ready) fallbackVideo(); },
+        error(error) { if (token === videoToken && session === generation && ready) fallbackVideo(error.message); },
       });
       videoDecoder.configure(config);
+      cancelTimer(videoTimer);
+      videoTimer = null;
+      videoDecoder.addEventListener("dequeue", () => {
+        if (token === videoToken && session === generation && ready) drainVideo();
+      });
       configuringVideo = false;
-      const packet = pendingVideo;
-      pendingVideo = null;
-      if (packet) receiveVideo(packet.data, packet.id);
+      drainVideo();
       message("Video: low-latency H.264.");
-    } catch { if (token === videoToken && session === generation && ready) fallbackVideo(); }
+    } catch (error) { if (token === videoToken && session === generation && ready) fallbackVideo(error instanceof Error ? error.message : "Decoder configuration failed"); }
   }
 
   function updateVideoWatchdog() {
@@ -1275,27 +1291,36 @@ export function createClient(options: ClientOptions = {}) {
     const session = generation;
     videoTimer = setTimeout(() => {
       videoTimer = null;
-      if (token === videoToken && session === generation && ready && !destroyed) fallbackVideo();
+      if (token === videoToken && session === generation && ready && !destroyed) fallbackVideo("No decoded frame within two seconds");
     }, 2000);
   }
 
   function receiveVideo(data: ArrayBuffer, id: number | null) {
     if (waitingForBackend) return;
     if (data.byteLength <= 10) { fallbackVideo(); return; }
-    if (configuringVideo) {
-      if (pendingVideo) { fallbackVideo(); return; }
-      pendingVideo = { data, id };
-      return;
+    // The server's ACK window allows three frames. Queue all of them while
+    // configuring or draining the decoder; pressure is not a codec rejection.
+    if (pendingVideo.length >= 3) { requestVideo("h264"); return; }
+    pendingVideo.push({ data, id });
+    drainVideo();
+  }
+
+  function drainVideo() {
+    if (configuringVideo || !videoDecoder || videoDecoder.state !== "configured") return;
+    while (pendingVideo.length && videoDecoder.decodeQueueSize < 3) {
+      const { data, id } = pendingVideo.shift()!;
+      const view = new DataView(data);
+      const timestamp = view.getUint32(2, true) + view.getUint32(6, true) * 4294967296;
+      try {
+        videoFrameIds.set(timestamp, id);
+        videoDecodeStarted.set(timestamp, performance.now());
+        updateVideoWatchdog();
+        videoDecoder.decode(new window.EncodedVideoChunk({ type: view.getUint8(1) === 1 ? "key" : "delta", timestamp, data: new Uint8Array(data, 10) }));
+      } catch (error) {
+        fallbackVideo(error instanceof Error ? error.message : "Decoder rejected frame");
+        return;
+      }
     }
-    if (!videoDecoder || videoDecoder.state !== "configured" || videoDecoder.decodeQueueSize > 2) { fallbackVideo(); return; }
-    const view = new DataView(data);
-    const timestamp = view.getUint32(2, true) + view.getUint32(6, true) * 4294967296;
-    try {
-      videoFrameIds.set(timestamp, id);
-      videoDecodeStarted.set(timestamp, performance.now());
-      updateVideoWatchdog();
-      videoDecoder.decode(new window.EncodedVideoChunk({ type: view.getUint8(1) === 1 ? "key" : "delta", timestamp, data: new Uint8Array(data, 10) }));
-    } catch { fallbackVideo(); }
   }
 
   function receiveAudio(data: ArrayBuffer) {
@@ -1779,8 +1804,13 @@ export function createClient(options: ClientOptions = {}) {
   listen(canvas, "blur", (event) => { if (event.relatedTarget !== keyboardInput) { release(); unlockKeyboard(); } });
   listen(window, "blur", () => { composing = false; clipboard.localFocusLeft(); release(); unlockKeyboard(); });
   listen(document, "visibilitychange", () => {
-    if (document.hidden) { composing = false; clipboard.localFocusLeft(); release(); stopAudio(); unlockKeyboard(); }
-    else { clipboard.localFocusEntered(); scheduleAutoResize(); scheduleVideoScale(); }
+    if (document.hidden) {
+      composing = false; clipboard.localFocusLeft(); release(); stopAudio(); unlockKeyboard();
+      closeVideo(); waitingForBackend = true;
+    } else {
+      clipboard.localFocusEntered(); scheduleAutoResize(); scheduleVideoScale();
+      if (ready && !desktopPaused) requestPreferredVideo();
+    }
   });
   listen(element("connection"), "click", () => {
     if (wanted) disconnect();

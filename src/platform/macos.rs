@@ -208,7 +208,33 @@ impl NativePlatform for MacosPlatform {
 
 fn display_output(display: &SCDisplay) -> Result<DisplayOutput> {
     let frame = display.frame();
-    let (width, height) = (display.width(), display.height());
+    // ScreenCaptureKit's display dimensions follow the mode's logical size.
+    // Configure capture in backing pixels so Retina content is not first
+    // downsampled to 1x and then enlarged by the viewing browser.
+    let mode = unsafe { CGDisplayCopyDisplayMode(display.display_id()) };
+    ensure!(!mode.is_null(), "query macOS display backing scale");
+    let (logical_width, logical_height, pixel_width, pixel_height) = unsafe {
+        let dimensions = (
+            CGDisplayModeGetWidth(mode),
+            CGDisplayModeGetHeight(mode),
+            CGDisplayModeGetPixelWidth(mode),
+            CGDisplayModeGetPixelHeight(mode),
+        );
+        CGDisplayModeRelease(mode);
+        dimensions
+    };
+    ensure!(
+        logical_width > 0 && logical_height > 0,
+        "invalid macOS display mode"
+    );
+    let backing_x = pixel_width as f64 / logical_width as f64;
+    let backing_y = pixel_height as f64 / logical_height as f64;
+    ensure!(
+        (1.0..=4.0).contains(&backing_x) && (backing_x - backing_y).abs() < 0.05,
+        "invalid macOS backing scale"
+    );
+    let width = (f64::from(display.width()) * backing_x).round() as u32;
+    let height = (f64::from(display.height()) * backing_y).round() as u32;
     ensure!(
         width > 0 && height > 0 && frame.size.width > 0.0 && frame.size.height > 0.0,
         "invalid macOS display dimensions"
@@ -861,6 +887,12 @@ fn dictionary_bool(dictionary: *const c_void, key: &str) -> Option<bool> {
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
+    fn CGDisplayCopyDisplayMode(display: u32) -> *const c_void;
+    fn CGDisplayModeGetWidth(mode: *const c_void) -> usize;
+    fn CGDisplayModeGetHeight(mode: *const c_void) -> usize;
+    fn CGDisplayModeGetPixelWidth(mode: *const c_void) -> usize;
+    fn CGDisplayModeGetPixelHeight(mode: *const c_void) -> usize;
+    fn CGDisplayModeRelease(mode: *const c_void);
     fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
     fn CGSessionCopyCurrentDictionary() -> *const c_void;

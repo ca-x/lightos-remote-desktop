@@ -266,15 +266,29 @@ async fn managed_parent_closed() {
         std::future::pending::<()>().await;
         return;
     }
-    use tokio::io::AsyncReadExt;
-    let mut input = tokio::io::stdin();
-    let mut buffer = [0u8; 64];
-    loop {
-        match input.read(&mut buffer).await {
-            Ok(0) | Err(_) => return,
-            Ok(_) => {}
-        }
+    // Tokio stdin uses a non-cancellable blocking-pool read. If startup or
+    // capture fails first, runtime shutdown would wait forever for that read
+    // while the supervisor still keeps the pipe open. A detached OS thread
+    // monitors the parent without preventing this process from exiting.
+    let (closed, receiver) = tokio::sync::oneshot::channel();
+    if std::thread::Builder::new()
+        .name("managed-parent".into())
+        .spawn(move || {
+            let mut input = std::io::stdin().lock();
+            let mut buffer = [0u8; 64];
+            loop {
+                match input.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+            let _ = closed.send(());
+        })
+        .is_err()
+    {
+        return;
     }
+    let _ = receiver.await;
 }
 
 async fn serve(config: Config, stop_event: Option<String>) -> Result<()> {

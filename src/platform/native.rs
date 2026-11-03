@@ -737,10 +737,10 @@ impl Held {
                 let scale = output.scale;
                 #[cfg(target_os = "windows")]
                 let scale = 1.0;
-                let x =
-                    output.x + (x * output.width.saturating_sub(1) as f64 / scale).round() as i32;
-                let y =
-                    output.y + (y * output.height.saturating_sub(1) as f64 / scale).round() as i32;
+                let x = output.x
+                    + (x * (f64::from(output.width) / scale - 1.0).max(0.0)).round() as i32;
+                let y = output.y
+                    + (y * (f64::from(output.height) / scale - 1.0).max(0.0)).round() as i32;
                 platform.move_pointer(enigo, x, y)?;
             }
             InputCommand::Key { code, pressed } => {

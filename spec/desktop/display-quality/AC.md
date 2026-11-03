@@ -42,3 +42,12 @@ Given Windows 的 Intel QSV 或 macOS 的 VideoToolbox 可用，用户通过懒�
 When 用户连接桌面并使用自动编码
 Then 系统完成硬件能力探测后使用对应硬件编码，页面报告实际后端且能持续显示有效画面
 And 用户无需另外安装 FFmpeg，硬件不可用时保留软件回退且不把软件编码标为硬件
+
+# 场景 6：Mac Retina 采集保留实际像素
+ID: SC-CAPTURES-MAC-RETINA-BACKING-PIXELS
+Profile: draft
+Gate: required
+Given Mac 当前显示模式的逻辑尺寸与实际渲染像素尺寸不同，物理桌面已解锁并授权
+When 用户通过另一台设备连接该 Mac 并调整观看窗口
+Then 采集保留当前模式的实际像素，传输按观看端视口和像素倍率动态适配
+And 文字不因源画面先降为逻辑尺寸而丢失细节，点击位置仍与画面一致，Mac 的显示器设置不变

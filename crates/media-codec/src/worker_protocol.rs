@@ -7,7 +7,7 @@ use std::path::PathBuf;
 pub const VERSION: u16 = 1;
 pub const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod shared_frame;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

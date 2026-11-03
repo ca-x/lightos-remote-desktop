@@ -10,6 +10,7 @@ use std::{
 pub const ENV: &str = "LIGHTOS_CODEC_FRAME_FD";
 pub const NEGOTIATE_ENV: &str = "LIGHTOS_CODEC_NEGOTIATE_SHARED_FRAME";
 pub const CHILD_FD: RawFd = 3;
+#[cfg(target_os = "linux")]
 const SIZE_SEALS: i32 = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;
 const MAX_PIXELS: usize = 3840 * 2160 * 4;
 
@@ -23,23 +24,37 @@ impl SharedFrame {
             (1..=MAX_PIXELS).contains(&length),
             "invalid shared frame size"
         );
-        // SAFETY: fixed name and flags, ownership transferred exactly once.
-        let fd = unsafe {
-            libc::memfd_create(
-                c"lightos-codec-frame".as_ptr(),
-                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-            )
+        #[cfg(target_os = "linux")]
+        let file = {
+            // SAFETY: fixed name and flags, ownership transferred exactly once.
+            let fd = unsafe {
+                libc::memfd_create(
+                    c"lightos-codec-frame".as_ptr(),
+                    libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+                )
+            };
+            ensure!(
+                fd >= 0,
+                "create codec frame: {}",
+                std::io::Error::last_os_error()
+            );
+            unsafe { File::from_raw_fd(fd) }
         };
-        ensure!(
-            fd >= 0,
-            "create codec frame: {}",
-            std::io::Error::last_os_error()
-        );
-        let file = unsafe { File::from_raw_fd(fd) };
+        // tempfile() unlinks the private 0600 file before returning on macOS.
+        // The parent never resizes it once mapped; the worker only maps it read-only.
+        #[cfg(target_os = "macos")]
+        let file = tempfile::tempfile().context("create private codec frame")?;
         file.set_len(length as u64)?;
         // Seals prevent either peer from truncating a live mapping.
+        #[cfg(target_os = "linux")]
         ensure!(
-            unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, SIZE_SEALS | libc::F_SEAL_SEAL) } >= 0,
+            unsafe {
+                libc::fcntl(
+                    file.as_raw_fd(),
+                    libc::F_ADD_SEALS,
+                    SIZE_SEALS | libc::F_SEAL_SEAL,
+                )
+            } >= 0,
             "seal codec frame: {}",
             std::io::Error::last_os_error()
         );
@@ -67,14 +82,26 @@ pub fn inherited() -> Result<Option<Mmap>> {
         value == CHILD_FD.to_string().as_str(),
         "invalid inherited codec descriptor"
     );
-    let seals = unsafe { libc::fcntl(CHILD_FD, libc::F_GET_SEALS) };
-    ensure!(
-        seals >= 0 && seals & SIZE_SEALS == SIZE_SEALS,
-        "unsealed inherited codec frame"
-    );
+    #[cfg(target_os = "linux")]
+    {
+        let seals = unsafe { libc::fcntl(CHILD_FD, libc::F_GET_SEALS) };
+        ensure!(
+            seals >= 0 && seals & SIZE_SEALS == SIZE_SEALS,
+            "unsealed inherited codec frame"
+        );
+    }
     // The launcher transfers this descriptor only to the codec worker. No
     // other code takes ownership of it, and the mapping keeps its own reference.
     let file = unsafe { File::from_raw_fd(CHILD_FD) };
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = file.metadata()?;
+        ensure!(
+            metadata.is_file() && metadata.permissions().mode() & 0o077 == 0,
+            "codec frame must be private"
+        );
+    }
     let length = file.metadata()?.len();
     ensure!(
         (1..=MAX_PIXELS as u64).contains(&length),

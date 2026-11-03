@@ -4,8 +4,10 @@ export async function supportedVideoConfig(
   codec: string,
   width: number,
   height: number,
+  preferSoftware = false,
 ): Promise<VideoDecoderConfig | null> {
-  for (const hardwareAcceleration of ["prefer-hardware", "no-preference"] as const) {
+  const choices: HardwareAcceleration[] = preferSoftware ? ["prefer-software", "no-preference"] : ["prefer-hardware", "no-preference"];
+  for (const hardwareAcceleration of choices) {
     const config: VideoDecoderConfig = {
       codec,
       codedWidth: width,

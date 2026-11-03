@@ -285,7 +285,7 @@ fn file_signature(path: &Path, read_contents: bool) -> Option<String> {
 }
 
 struct Worker {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     shared: Option<wire::shared_frame::SharedFrame>,
     child: Child,
     input: FramedWrite<ChildStdin, LengthDelimitedCodec>,
@@ -295,7 +295,7 @@ struct Worker {
 impl Worker {
     fn spawn(path: &PathBuf, frame_size: Option<usize>) -> Result<Self> {
         let mut command = Command::new(path);
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let shared = {
             use wire::shared_frame::{CHILD_FD, ENV, NEGOTIATE_ENV, SharedFrame};
             let shared = frame_size.and_then(|length| SharedFrame::new(length).ok());
@@ -320,7 +320,7 @@ impl Worker {
             }
             shared
         };
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let _ = frame_size;
         let mut child = command
             .stdin(Stdio::piped())
@@ -342,7 +342,7 @@ impl Worker {
                 .new_codec(),
         );
         Ok(Self {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             shared,
             child,
             input,
@@ -361,7 +361,7 @@ impl Worker {
         }
         self.poisoned = true;
         let result = timeout(deadline, async {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             let request = match request {
                 Request::Frame { pixels, rate } if self.shared.is_some() => {
                     self.shared.as_mut().unwrap().write(pixels)?;
@@ -435,7 +435,7 @@ impl VideoEncoder for HardwareEncoder {
                     matches!(reply, Reply::Ready | Reply::ReadySharedFrame),
                     "invalid codec initialization response"
                 );
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 if matches!(reply, Reply::ReadySharedFrame) {
                     ensure!(
                         worker.shared.is_some(),
@@ -446,7 +446,7 @@ impl VideoEncoder for HardwareEncoder {
                     // sending complete pixels over the compatible v1 protocol.
                     worker.shared = None;
                 }
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 ensure!(
                     matches!(reply, Reply::Ready),
                     "unexpected shared-frame acknowledgement"
@@ -486,7 +486,7 @@ mod tests {
     use wire::EncoderDevice;
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn gpu_overrides_are_explicit_and_backend_specific() {
         let overrides = DeviceOverrides {
             vaapi: Some("/dev/dri/by-path/pci-0000:03:00.0-render".into()),
