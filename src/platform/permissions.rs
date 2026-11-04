@@ -13,6 +13,8 @@ pub struct PermissionReport {
     pub request_mode: &'static str,
     pub reason_code: &'static str,
     pub settings: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<crate::backend::BackendKind>,
 }
 impl PermissionReport {
     fn new(
@@ -29,6 +31,7 @@ impl PermissionReport {
             request_mode: mode,
             reason_code: code,
             settings,
+            backend: None,
         }
     }
     pub(super) fn unavailable(reason: String, code: &'static str) -> Self {
@@ -99,10 +102,13 @@ pub fn report(config: &Config, request: bool) -> Result<PermissionReport> {
             }
         };
         if let Err(error) = selection.require_available() {
-            return Ok(PermissionReport::unavailable(
-                error.to_string(),
-                "capture_unavailable",
-            ));
+            let code = selection
+                .candidates
+                .iter()
+                .rev()
+                .find_map(|candidate| candidate.reason_code)
+                .unwrap_or("capture_unavailable");
+            return Ok(PermissionReport::unavailable(error.to_string(), code));
         }
         if selection.requires_consent() {
             let mut report=PermissionReport::new(Permissions {
@@ -110,9 +116,10 @@ pub fn report(config: &Config, request: bool) -> Result<PermissionReport> {
                 reason:Some("The system requests screen and input approval when a remote connection starts".into()),
             },"on_connection","connection_consent",vec![]);
             report.can_start = true;
+            report.backend = selection.selected;
             return Ok(report);
         }
-        Ok(PermissionReport::new(
+        let mut report = PermissionReport::new(
             Permissions {
                 screen: PermissionState::Granted,
                 input: PermissionState::Granted,
@@ -121,6 +128,8 @@ pub fn report(config: &Config, request: bool) -> Result<PermissionReport> {
             "none",
             "ready",
             vec![],
-        ))
+        );
+        report.backend = selection.selected;
+        Ok(report)
     }
 }

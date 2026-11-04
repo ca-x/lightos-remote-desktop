@@ -37,5 +37,12 @@
       <div class="dialog-actions"><button value="cancel" data-text="cancel" autofocus>取消</button><button value="confirm" class="confirm-update" data-text="confirm">确认</button></div>
     </form>
   </dialog>
+  <dialog id="permission-dialog" aria-labelledby="permission-title" aria-describedby="permission-summary">
+    <h2 id="permission-title" data-text="permissionTitle">桌面访问检查</h2>
+    <p id="permission-summary"></p>
+    <details id="permission-details"><summary data-text="diagnosticDetails">诊断详情</summary><pre id="permission-diagnostic"></pre></details>
+    <p id="permission-feedback" role="status" aria-live="polite"></p>
+    <form method="dialog" class="dialog-actions"><button type="button" id="permission-recheck" data-text="recheck">重新检查</button><button value="close" data-text="close">关闭</button></form>
+  </dialog>
 </body>
 </html>

@@ -1,9 +1,9 @@
 //! Portal capture, input and clipboard tied to one explicitly selected user session.
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     os::fd::OwnedFd,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
         mpsc as sync_mpsc,
     },
@@ -13,7 +13,7 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use ashpd::desktop::{
-    Session,
+    PersistMode, Session,
     clipboard::{Clipboard, RequestClipboardOptions, SetSelectionOptions},
     remote_desktop::{
         DeviceType, KeyState, NotifyKeyboardKeycodeOptions, NotifyKeyboardKeysymOptions,
@@ -42,7 +42,8 @@ use tokio::{
 };
 
 use super::super::{
-    BackendKind, CursorFrame, DesktopBackend, Frame, InputCommand, InputGuard, MAX_CLIPBOARD_BYTES,
+    BackendKind, CapabilityError, CursorFrame, DesktopBackend, Frame, InputCommand, InputGuard,
+    MAX_CLIPBOARD_BYTES,
 };
 
 #[path = "buffer.rs"]
@@ -56,6 +57,14 @@ const START_TOTAL_TIMEOUT: Duration = Duration::from_secs(40);
 const CALL_TIMEOUT: Duration = Duration::from_secs(3);
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(9);
 const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
+
+// Restore tokens are single-use and never exposed to the browser, diagnostics or
+// disk. A verified bus/compositor scope separates desktops and runtime restarts
+// discard the cache. The portal remains authoritative about consent/revocation.
+fn restore_tokens() -> &'static Mutex<BTreeMap<String, String>> {
+    static TOKENS: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+    TOKENS.get_or_init(Mutex::default)
+}
 
 async fn connection(target: &SessionTarget) -> Result<zbus::Connection> {
     let address = target
@@ -79,33 +88,55 @@ pub fn probe(target: &SessionTarget) -> Result<()> {
         .build()?;
     runtime.block_on(async {
         timeout(PROBE_TIMEOUT, async {
-            let bus = connection(target).await?;
-            let desktop = RemoteDesktop::with_connection(bus.clone()).await?;
-            let cast = Screencast::with_connection(bus.clone()).await?;
-            super::identity::validate_target_identity(&bus, target).await?;
+            let bus = connection(target).await.map_err(|error| {
+                CapabilityError::new("session_unavailable", format!("{error:#}"))
+            })?;
+            let desktop = RemoteDesktop::with_connection(bus.clone())
+                .await
+                .map_err(|error| CapabilityError::new("portal_unavailable", error))?;
+            let cast = Screencast::with_connection(bus.clone())
+                .await
+                .map_err(|error| CapabilityError::new("portal_unavailable", error))?;
+            super::identity::validate_target_identity(&bus, target)
+                .await
+                .map_err(|error| {
+                    CapabilityError::new("portal_session_mismatch", format!("{error:#}"))
+                })?;
             ensure!(
                 desktop.version() >= 1 && cast.version() >= 1,
-                "Portal RemoteDesktop and ScreenCast are required"
+                CapabilityError::new(
+                    "portal_unavailable",
+                    "Portal RemoteDesktop and ScreenCast are required"
+                )
             );
             let devices = desktop.available_device_types().await?;
             ensure!(
                 devices.contains(DeviceType::Keyboard | DeviceType::Pointer),
-                "Portal does not advertise keyboard and pointer input"
+                CapabilityError::new(
+                    "portal_input_unavailable",
+                    "Portal does not advertise keyboard and pointer input"
+                )
             );
             let sources = cast.available_source_types().await?;
             ensure!(
                 sources.contains(SourceType::Monitor),
-                "Portal does not advertise monitor capture"
+                CapabilityError::new(
+                    "portal_capture_unavailable",
+                    "Portal does not advertise monitor capture"
+                )
             );
             let cursors = cast.available_cursor_modes().await?;
             ensure!(
                 cursors.contains(CursorMode::Metadata),
-                "Portal cannot provide independent cursor metadata"
+                CapabilityError::new(
+                    "portal_cursor_unavailable",
+                    "Portal cannot provide independent cursor metadata"
+                )
             );
             Ok::<(), anyhow::Error>(())
         })
         .await
-        .context("Portal capability probe timed out")?
+        .map_err(|error| CapabilityError::new("portal_timeout", error))?
     })
 }
 
@@ -372,14 +403,21 @@ async fn open_and_serve(
     let mut transfer = None;
     let mut owner = None;
     let access = timeout(START_TIMEOUT, async {
-        desktop
-            .select_devices(
-                session,
-                SelectDevicesOptions::default()
-                    .set_devices(DeviceType::Keyboard | DeviceType::Pointer),
-            )
-            .await?
-            .response()?;
+        let mut options =
+            SelectDevicesOptions::default().set_devices(DeviceType::Keyboard | DeviceType::Pointer);
+        if desktop.version() >= 2 {
+            let token = restore_tokens()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&identity.restore_key);
+            // Persistence belongs to RemoteDesktop, never ScreenCast, for a
+            // combined capture/input session. Unsupported/denied persistence
+            // simply yields no token; the next connection requests consent.
+            options = options
+                .set_persist_mode(PersistMode::ExplicitlyRevoked)
+                .set_restore_token(token.as_deref());
+        }
+        desktop.select_devices(session, options).await?.response()?;
         cast.select_sources(
             session,
             SelectSourcesOptions::default()
@@ -493,11 +531,15 @@ async fn open_and_serve(
             clipboard_requested && grant.is_clipboard_enabled(),
             node,
             logical_size,
+            grant
+                .restore_token()
+                .filter(|token| !token.is_empty() && token.len() <= 4096)
+                .map(str::to_owned),
         ))
     })
     .await
     .context("Portal permission/start timed out")??;
-    let (failure, clipboard_enabled, node, logical_size) = access;
+    let (failure, clipboard_enabled, node, logical_size, restore_token) = access;
     if !clipboard_enabled {
         transfer = None;
         owner = None;
@@ -505,6 +547,13 @@ async fn open_and_serve(
     timeout(PROBE_TIMEOUT, identity.verify_unchanged(&bus))
         .await
         .context("Portal scope changed during authorization")??;
+    if let Some(token) = restore_token {
+        let mut tokens = restore_tokens().lock().unwrap_or_else(|e| e.into_inner());
+        if tokens.len() >= 8 {
+            tokens.pop_first();
+        }
+        tokens.insert(identity.restore_key.clone(), token);
+    }
     if let Some(sender) = ready.take() {
         let _ = sender.send(Ok(()));
     }

@@ -22,3 +22,5 @@ main{padding-top:0}header{position:sticky;top:0;z-index:10;background:var(--page
 @media(max-width:600px){header{padding-top:calc(18px + var(--lzc-safe-area-inset-top));margin-bottom:16px}}
 
 .offline-heading{margin-top:34px}#offline-status,#offline-empty{font-size:12px;color:var(--muted)}
+.permission-help{font-size:11px;line-height:1.7;color:var(--secondary);margin:-8px 0 16px;overflow-wrap:anywhere}
+#permission-dialog{width:440px;max-width:calc(100% - 36px);max-height:calc(100dvh - 48px);padding:26px;border:1px solid var(--border);border-radius:16px;background:var(--surface);color:var(--ink);box-shadow:0 16px 60px #0003}#permission-dialog::backdrop{background:#0006}#permission-dialog h2{margin:0 0 14px;font-size:18px;font-weight:600}#permission-dialog p,#permission-dialog details{font-size:13px;line-height:1.8;color:var(--secondary)}#permission-diagnostic{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px}#permission-feedback:empty{display:none}

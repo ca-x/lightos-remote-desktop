@@ -77,8 +77,11 @@ consent. Portal shares RemoteDesktop, ScreenCast and clipboard under one
 authorization session; its local chooser selects a monitor. A directly attached
 Portal service waits for this explicit browser connection before requesting
 consent. Provider restarts terminate the authorization session. Denied/cancelled authorization
-ends that attempt. Closing the Portal ends the grant and a reconnect may require
-new consent. The server announces pending Portal initialization so the browser
+ends that attempt. Closing the Portal ends the active session. When RemoteDesktop
+v2 supplies a restore token, the runtime can reuse approved access within the
+same verified desktop scope; tokens are single-use and kept only in memory.
+Providers without persistence, revoked grants and changed desktop identities
+require fresh consent. The server announces pending Portal initialization so the browser
 allows its bounded authorization wait. Denial, an initialization error or an
 interrupted pending authorization requires explicit reconnect; network recovery
 after a ready session retains the normal reconnect policy. Portal does not use

@@ -104,6 +104,7 @@ async fn peer(bus: &DBusProxy<'_>, name: &str, expected_uid: u32) -> Result<Peer
 #[derive(Debug)]
 pub(super) struct ScopeProof {
     owners: Vec<(&'static str, OwnedUniqueName)>,
+    pub(super) restore_key: String,
 }
 impl ScopeProof {
     /// Cheap read-only lifecycle check: no descriptor/proc scan or new consent.
@@ -219,7 +220,18 @@ pub(super) async fn validate_target_identity(
         owners.push((service, compositor.owner));
     }
     snapshot.verify()?;
-    let proof = ScopeProof { owners };
+    let socket_identity = fs::metadata(socket)?;
+    let restore_key = format!(
+        "{}:{}:{}:{}:{owners:?}",
+        connection.server_guid(),
+        uid,
+        socket_identity.dev(),
+        socket_identity.ino()
+    );
+    let proof = ScopeProof {
+        owners,
+        restore_key,
+    };
     proof.verify_unchanged(connection).await?;
     // Keep the selected compositor connection alive through all identity checks.
     drop(wayland);

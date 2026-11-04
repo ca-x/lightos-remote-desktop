@@ -116,3 +116,23 @@ Given 当前账号登记了在线和离线设备
 When 用户打开管理页或设备在线状态变化
 Then 在线设备位于“在线设备”组，离线设备保留在下方“离线设备”组，分组数量与卡片一致
 And 离线设备不能连接或执行远程操作，上线后自动恢复到在线组，保留原有预览
+
+# 场景 12：Linux 物理机按实际授权方式提供操作
+ID: SC-LINUX-PHYSICAL-PERMISSION-GUIDANCE
+Profile: draft
+Gate: required
+Given 用户通过 PC 客户端接入 Linux 物理机
+When 用户查看权限状态并开启、连接远程桌面
+Then 已可用的设备直接连接当前真实桌面，连接时确认的设备明确提示在被控机批准屏幕与输入访问
+And 系统不支持直接申请时没有无效的申请按钮，会话或组件不可用时可查看原因及处理建议并重新检查
+And 拒绝或取消授权后不自动重试、不切换到虚拟桌面，用户可主动重连
+And 系统提供可恢复授权时可在运行时存续期间复用，系统撤销或图形会话变化后重新确认
+
+# 场景 13：物理机授权调整不改变容器实例连接
+ID: SC-CONTAINER-DESKTOP-INDEPENDENT-OF-PHYSICAL-PERMISSIONS
+Profile: draft
+Gate: required
+Given 当前账号有可连接的 LightOS 容器实例，其桌面来源保持原版本
+When 用户更新远程桌面管理应用并打开该实例
+Then 卡片沿用来源提供的权限与连接地址，实例画面和输入继续可用
+And 不出现物理机授权诊断或系统权限申请，不改变实例的桌面会话

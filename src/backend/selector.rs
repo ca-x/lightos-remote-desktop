@@ -20,6 +20,11 @@ fn candidate(
         backend,
         requires_consent,
         available: result.is_ok(),
+        reason_code: result
+            .as_ref()
+            .err()
+            .and_then(|error| error.downcast_ref::<super::CapabilityError>())
+            .map(|error| error.code),
         reason: result.err().map(|error| format!("{error:#}")),
     }
 }

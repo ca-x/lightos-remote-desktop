@@ -167,7 +167,34 @@ pub struct BackendAvailability {
     pub available: bool,
     pub requires_consent: bool,
     pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<&'static str>,
 }
+
+/// A stable diagnostic code alongside the complete underlying failure.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub(crate) struct CapabilityError {
+    pub code: &'static str,
+    detail: String,
+}
+#[cfg(target_os = "linux")]
+impl CapabilityError {
+    pub fn new(code: &'static str, detail: impl std::fmt::Display) -> Self {
+        Self {
+            code,
+            detail: detail.to_string(),
+        }
+    }
+}
+#[cfg(target_os = "linux")]
+impl std::fmt::Display for CapabilityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+#[cfg(target_os = "linux")]
+impl std::error::Error for CapabilityError {}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct BackendReport {
