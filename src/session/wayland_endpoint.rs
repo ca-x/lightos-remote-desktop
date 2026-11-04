@@ -55,6 +55,62 @@ pub(crate) fn verify_listener(socket: &Path, pid: u32, uid: u32) -> Result<()> {
     Ok(())
 }
 
+/// Public activation proof for a child whose descriptor table is protected.
+/// The caller authenticates the launcher and its explicit inherited-FD options.
+pub(crate) fn verify_inherited_listener(
+    socket: &Path,
+    parent_pid: u32,
+    child_pid: u32,
+    uid: u32,
+    fd: u32,
+) -> Result<()> {
+    ensure!(
+        parent_pid > 1 && child_pid > 1 && parent_pid != child_pid && fd < 16384,
+        "invalid Wayland activation identity"
+    );
+    let parent = PathBuf::from(format!("/proc/{parent_pid}"));
+    let child = PathBuf::from(format!("/proc/{child_pid}"));
+    let started = process_start(&child)?;
+    let status = read_bounded(&child.join("status"), 64 * 1024)?;
+    let status = std::str::from_utf8(&status)?;
+    let ppid: u32 = status
+        .lines()
+        .find_map(|line| line.strip_prefix("PPid:"))
+        .context("missing Wayland child parent")?
+        .trim()
+        .parse()?;
+    let uids = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))
+        .context("missing Wayland child owner")?
+        .split_whitespace()
+        .map(str::parse::<u32>)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    ensure!(
+        ppid == parent_pid && uids.len() == 4 && uids.iter().all(|owner| *owner == uid),
+        "Wayland activation child belongs to a different launcher or user"
+    );
+    verify_listener(socket, parent_pid, uid)?;
+    let expected = listener_inode(&parent, socket)?;
+    let descriptor = fs::metadata(parent.join("fd").join(fd.to_string()))?;
+    ensure!(
+        descriptor.file_type().is_socket() && descriptor.ino() == expected,
+        "inherited Wayland descriptor does not identify the selected listener"
+    );
+    let status = read_bounded(&child.join("status"), 64 * 1024)?;
+    let current_parent = std::str::from_utf8(&status)?
+        .lines()
+        .find_map(|line| line.strip_prefix("PPid:"))
+        .context("missing Wayland child parent")?
+        .trim()
+        .parse::<u32>()?;
+    ensure!(
+        process_start(&child)? == started && current_parent == parent_pid,
+        "Wayland activation child changed during verification"
+    );
+    Ok(())
+}
+
 fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     File::open(path)?

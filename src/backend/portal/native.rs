@@ -69,7 +69,9 @@ async fn connection(target: &SessionTarget) -> Result<zbus::Connection> {
         .context("connect to selected desktop session bus")
 }
 
-/// Read-only session capability check. No CreateSession, input device or consent request.
+/// Read-only discovery may activate the installed Portal through D-Bus. Retry
+/// a startup/owner race once, within the original overall deadline; never retry
+/// a real consent request or fall back after the user has denied access.
 pub fn probe(target: &SessionTarget) -> Result<bool> {
     ensure!(
         target.wayland_socket.is_some(),
@@ -80,61 +82,75 @@ pub fn probe(target: &SessionTarget) -> Result<bool> {
         .build()?;
     runtime.block_on(async {
         timeout(PROBE_TIMEOUT, async {
-            let bus = connection(target).await.map_err(|error| {
-                CapabilityError::new("session_unavailable", format!("{error:#}"))
-            })?;
-            let desktop = RemoteDesktop::with_connection(bus.clone())
-                .await
-                .map_err(|error| CapabilityError::new("portal_unavailable", error))?;
-            let cast = Screencast::with_connection(bus.clone())
-                .await
-                .map_err(|error| CapabilityError::new("portal_unavailable", error))?;
-            let identity = super::identity::validate_target_identity(&bus, target)
-                .await
-                .map_err(|error| {
-                    CapabilityError::new("portal_session_mismatch", format!("{error:#}"))
-                })?;
-            ensure!(
-                desktop.version() >= 1 && cast.version() >= 1,
-                CapabilityError::new(
-                    "portal_unavailable",
-                    "Portal RemoteDesktop and ScreenCast are required"
-                )
-            );
-            let devices = desktop.available_device_types().await?;
-            ensure!(
-                devices.contains(DeviceType::Keyboard | DeviceType::Pointer),
-                CapabilityError::new(
-                    "portal_input_unavailable",
-                    "Portal does not advertise keyboard and pointer input"
-                )
-            );
-            let sources = cast.available_source_types().await?;
-            ensure!(
-                sources.contains(SourceType::Monitor),
-                CapabilityError::new(
-                    "portal_capture_unavailable",
-                    "Portal does not advertise monitor capture"
-                )
-            );
-            let cursors = cast.available_cursor_modes().await?;
-            ensure!(
-                cursors.contains(CursorMode::Metadata),
-                CapabilityError::new(
-                    "portal_cursor_unavailable",
-                    "Portal cannot provide independent cursor metadata"
-                )
-            );
-            Ok::<bool, anyhow::Error>(super::authorization::approved(&identity).unwrap_or_else(
-                |error| {
-                    tracing::warn!(%error, "Portal authorization state unavailable");
-                    false
-                },
-            ))
+            let result = probe_once(target).await;
+            let retry = result
+                .as_ref()
+                .err()
+                .and_then(|error| error.downcast_ref::<CapabilityError>())
+                .is_some_and(|error| {
+                    matches!(error.code, "portal_unavailable" | "portal_session_mismatch")
+                });
+            if !retry {
+                return result;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            probe_once(target).await
         })
         .await
         .map_err(|error| CapabilityError::new("portal_timeout", error))?
     })
+}
+
+async fn probe_once(target: &SessionTarget) -> Result<bool> {
+    let bus = connection(target)
+        .await
+        .map_err(|error| CapabilityError::new("session_unavailable", format!("{error:#}")))?;
+    let desktop = RemoteDesktop::with_connection(bus.clone())
+        .await
+        .map_err(|error| CapabilityError::new("portal_unavailable", error))?;
+    let cast = Screencast::with_connection(bus.clone())
+        .await
+        .map_err(|error| CapabilityError::new("portal_unavailable", error))?;
+    let identity = super::identity::validate_target_identity(&bus, target)
+        .await
+        .map_err(|error| CapabilityError::new("portal_session_mismatch", format!("{error:#}")))?;
+    ensure!(
+        desktop.version() >= 1 && cast.version() >= 1,
+        CapabilityError::new(
+            "portal_unavailable",
+            "Portal RemoteDesktop and ScreenCast are required"
+        )
+    );
+    let devices = desktop.available_device_types().await?;
+    ensure!(
+        devices.contains(DeviceType::Keyboard | DeviceType::Pointer),
+        CapabilityError::new(
+            "portal_input_unavailable",
+            "Portal does not advertise keyboard and pointer input"
+        )
+    );
+    let sources = cast.available_source_types().await?;
+    ensure!(
+        sources.contains(SourceType::Monitor),
+        CapabilityError::new(
+            "portal_capture_unavailable",
+            "Portal does not advertise monitor capture"
+        )
+    );
+    let cursors = cast.available_cursor_modes().await?;
+    ensure!(
+        cursors.contains(CursorMode::Metadata),
+        CapabilityError::new(
+            "portal_cursor_unavailable",
+            "Portal cannot provide independent cursor metadata"
+        )
+    );
+    Ok::<bool, anyhow::Error>(
+        super::authorization::approved(&identity).unwrap_or_else(|error| {
+            tracing::warn!(%error, "Portal authorization state unavailable");
+            false
+        }),
+    )
 }
 
 enum Control {

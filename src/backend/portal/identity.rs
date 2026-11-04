@@ -22,7 +22,11 @@ use std::{
     ffi::OsString,
     fs::{self, Metadata, OpenOptions},
     io::Read,
-    os::unix::{ffi::OsStringExt, fs::MetadataExt, fs::OpenOptionsExt},
+    os::unix::{
+        ffi::{OsStrExt, OsStringExt},
+        fs::MetadataExt,
+        fs::OpenOptionsExt,
+    },
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -36,6 +40,7 @@ use zbus::{Connection, fdo::DBusProxy, names::OwnedUniqueName};
 const DESKTOP_PORTAL: &str = "org.freedesktop.portal.Desktop";
 const REMOTE_DESKTOP: &str = "org.freedesktop.impl.portal.RemoteDesktop";
 const SCREEN_CAST: &str = "org.freedesktop.impl.portal.ScreenCast";
+const KWIN_WRAPPER: &str = "org.kde.KWinWrapper";
 const MAX_ENVIRONMENT_BYTES: usize = 128 * 1024;
 const MAX_DESCRIPTOR_BYTES: usize = 64 * 1024;
 const MAX_DIRECTORY_ENTRIES: usize = 256;
@@ -215,8 +220,26 @@ pub(super) async fn validate_target_identity(
             // which can hand it to another process. Prove that the D-Bus owner
             // holds this exact listener rather than guessing a wrapper name
             // or accepting another process on the same user bus.
-            crate::session::wayland_endpoint::verify_listener(socket, compositor.pid, uid)
-                .with_context(|| format!("Portal compositor service {service} does not own the selected Wayland endpoint"))?;
+            if let Err(error) =
+                crate::session::wayland_endpoint::verify_listener(socket, compositor.pid, uid)
+            {
+                let protected = error.chain().any(|cause| {
+                    cause
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied)
+                });
+                if provider == Provider::Kde && protected {
+                    let wrapper = peer(&bus, KWIN_WRAPPER, uid).await?;
+                    ensure!(
+                        wrapper.pid == compositor_pid,
+                        "KWin activation owner differs from the selected Wayland peer"
+                    );
+                    verify_kwin_activation(socket, wrapper.pid, compositor.pid, uid)?;
+                    owners.push((KWIN_WRAPPER, wrapper.owner));
+                } else {
+                    return Err(error).with_context(|| format!("Portal compositor service {service} does not own the selected Wayland endpoint"));
+                }
+            }
         }
         owners.push((service, compositor.owner));
     }
@@ -252,6 +275,68 @@ fn verify_compositor_peer(
     ensure!(
         pid == expected_pid && uid == expected_uid,
         "Portal compositor service {service} targets process {pid}, but the selected Wayland socket belongs to process {expected_pid}"
+    );
+    Ok(())
+}
+
+fn verify_kwin_activation(socket: &Path, wrapper: u32, compositor: u32, uid: u32) -> Result<()> {
+    // The upstream wrapper creates the listening socket and passes its FD to
+    // its direct child. CAP_SYS_NICE can protect /proc/<kwin>/{root,fd}.
+    // https://github.com/KDE/kwin/blob/master/src/helpers/wayland_wrapper/kwin_wrapper.cpp
+    let executable = fs::read_link(format!("/proc/{wrapper}/exe"))?;
+    ensure!(
+        executable
+            .file_name()
+            .is_some_and(|name| name == "kwin_wayland_wrapper"),
+        "unrecognized KWin activation executable"
+    );
+    let metadata = fs::metadata(&executable)?;
+    ensure!(
+        metadata.is_file() && metadata.uid() == 0 && metadata.mode() & 0o022 == 0,
+        "KWin activation executable is not system-owned"
+    );
+    let path = PathBuf::from(format!("/proc/{compositor}/cmdline"));
+    let bytes = read_bounded(&path, MAX_DESCRIPTOR_BYTES)?;
+    let args: Vec<_> = bytes
+        .split(|byte| *byte == 0)
+        .filter(|arg| !arg.is_empty())
+        .collect();
+    ensure!(
+        args.first()
+            .is_some_and(|arg| Path::new(std::ffi::OsStr::from_bytes(arg))
+                .file_name()
+                .is_some_and(|name| name == "kwin_wayland")),
+        "unrecognized KWin activation child"
+    );
+    let option = |name: &[u8]| -> Result<&[u8]> {
+        let matches: Vec<_> = args
+            .windows(2)
+            .filter(|pair| pair[0] == name)
+            .map(|pair| pair[1])
+            .collect();
+        ensure!(matches.len() == 1, "ambiguous KWin activation option");
+        Ok(matches[0])
+    };
+    let fd = std::str::from_utf8(option(b"--wayland-fd")?)?.parse::<u32>()?;
+    let display = PathBuf::from(OsString::from_vec(option(b"--socket")?.to_vec()));
+    let resolved = if display.is_absolute() {
+        display
+    } else {
+        socket
+            .parent()
+            .context("missing Wayland runtime")?
+            .join(display)
+    };
+    ensure!(
+        resolved == socket,
+        "KWin activation names a different Wayland display"
+    );
+    crate::session::wayland_endpoint::verify_inherited_listener(
+        socket, wrapper, compositor, uid, fd,
+    )?;
+    ensure!(
+        read_bounded(&path, MAX_DESCRIPTOR_BYTES)? == bytes,
+        "KWin activation arguments changed during verification"
     );
     Ok(())
 }
@@ -497,21 +582,72 @@ fn stamp(metadata: &Metadata) -> Stamp {
     )
 }
 #[derive(Debug, Default)]
-struct Snapshot(BTreeMap<PathBuf, Option<(Stamp, Stamp)>>);
+struct Snapshot {
+    entries: BTreeMap<PathBuf, Option<(Stamp, Stamp)>>,
+    // Ancestor contents are not the provider registry. Retain their identity
+    // and symlink routing, without treating unrelated data writes as changes.
+    ancestors: BTreeMap<PathBuf, AncestorStamp>,
+}
+type NodeIdentity = (u64, u64, u32, u32);
+type AncestorStamp = (Option<Stamp>, NodeIdentity);
+fn node_identity(metadata: &Metadata) -> NodeIdentity {
+    (
+        metadata.dev(),
+        metadata.ino(),
+        metadata.uid(),
+        metadata.mode(),
+    )
+}
 impl Snapshot {
+    fn observe_ancestors(&mut self, path: &Path, started: SystemTime) -> Result<()> {
+        for ancestor in path.ancestors().skip(1).take(64) {
+            if self.entries.contains_key(ancestor) || self.ancestors.contains_key(ancestor) {
+                continue;
+            }
+            let link = match fs::symlink_metadata(ancestor) {
+                Ok(link) => link,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    self.entries.insert(ancestor.to_owned(), None);
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let link_stamp = if link.file_type().is_symlink() {
+                let changed = UNIX_EPOCH
+                    .checked_add(Duration::new(
+                        u64::try_from(link.ctime())?,
+                        u32::try_from(link.ctime_nsec())?,
+                    ))
+                    .context("invalid Portal path change time")?;
+                ensure!(
+                    link.modified()? <= started && changed <= started,
+                    "Portal provider path {} was redirected after frontend startup",
+                    ancestor.display()
+                );
+                Some(stamp(&link))
+            } else {
+                None
+            };
+            let target = fs::metadata(ancestor)?;
+            ensure!(
+                target.is_dir(),
+                "Portal provider ancestor is not a directory"
+            );
+            self.ancestors
+                .insert(ancestor.to_owned(), (link_stamp, node_identity(&target)));
+        }
+        ensure!(
+            self.entries.len() + self.ancestors.len() <= 1024,
+            "Portal provider registry has too many paths"
+        );
+        Ok(())
+    }
     fn observe(&mut self, path: &Path, started: SystemTime) -> Result<Option<Metadata>> {
         let link = match fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                self.0.insert(path.to_owned(), None);
-                let mut ancestor = path.parent();
-                while let Some(parent) = ancestor {
-                    if parent.try_exists()? {
-                        self.observe(parent, started)?;
-                        break;
-                    }
-                    ancestor = parent.parent();
-                }
+                self.entries.insert(path.to_owned(), None);
+                self.observe_ancestors(path, started)?;
                 return Ok(None);
             }
             Err(error) => return Err(error.into()),
@@ -530,25 +666,17 @@ impl Snapshot {
                 path.display()
             );
         }
-        self.0
+        self.entries
             .insert(path.to_owned(), Some((stamp(&link), stamp(&metadata))));
         ensure!(
-            self.0.len() <= 1024,
+            self.entries.len() + self.ancestors.len() <= 1024,
             "Portal provider registry has too many paths"
         );
-        // Include ancestor symlinks so retargeting a user data directory is not
-        // mistaken for the registry the running frontend originally loaded.
-        for ancestor in path.ancestors().skip(1).take(64) {
-            if fs::symlink_metadata(ancestor)?.file_type().is_symlink()
-                && !self.0.contains_key(ancestor)
-            {
-                self.observe(ancestor, started)?;
-            }
-        }
+        self.observe_ancestors(path, started)?;
         Ok(Some(metadata))
     }
     fn verify(&self) -> Result<()> {
-        for (path, expected) in &self.0 {
+        for (path, expected) in &self.entries {
             let actual = match fs::symlink_metadata(path) {
                 Ok(link) => Some((stamp(&link), stamp(&fs::metadata(path)?))),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -557,6 +685,15 @@ impl Snapshot {
             ensure!(
                 &actual == expected,
                 "Portal provider registry changed during target validation"
+            );
+        }
+        for (path, expected) in &self.ancestors {
+            let link = fs::symlink_metadata(path)?;
+            let link_stamp = link.file_type().is_symlink().then(|| stamp(&link));
+            let actual = (link_stamp, node_identity(&fs::metadata(path)?));
+            ensure!(
+                &actual == expected,
+                "Portal provider path changed during target validation"
             );
         }
         Ok(())

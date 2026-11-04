@@ -552,7 +552,7 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
             StatusCode::SERVICE_UNAVAILABLE
         },
         axum::Json(
-            json!({"native":true,"ready":ready,"requires_consent":state.backend.is_deferred(),"desktop_backend":state.backend.kind(),"pid":std::process::id(),"transport":"websocket","video_codecs":state.codec_capabilities.snapshot().iter().filter(|c| c.available).map(|c| c.codec).collect::<Vec<_>>(),"codec_probe_complete":state.codec_capabilities.initialized()}),
+            json!({"native":true,"ready":ready,"controller_connected":state.controller.load(Ordering::Acquire),"input_release_failed":state.input_failed.load(Ordering::Acquire),"requires_consent":state.backend.is_deferred(),"desktop_backend":state.backend.kind(),"pid":std::process::id(),"transport":"websocket","video_codecs":state.codec_capabilities.snapshot().iter().filter(|c| c.available).map(|c| c.codec).collect::<Vec<_>>(),"codec_probe_complete":state.codec_capabilities.initialized()}),
         ),
     )
 }
