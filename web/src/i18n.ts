@@ -3,6 +3,8 @@ import { initReactI18next } from "react-i18next";
 import { languageKey, languages, readPreference, resolveLanguage } from "./preferences";
 
 const en = {
+  authorizationWaiting: "Waiting for permission on the controlled computer",
+  authorizationWaitingHint: "On that computer, allow screen and input access in the system dialog. The desktop will appear here after approval.",
   fullKeyboardMode: "Full keyboard mode",
   lightbookDescription: "Desktop above, a dark laptop keyboard and trackpad below. The globe button opens your system input method.",
   lightbookUnavailable: "Available on phones, tablets and foldable touch devices.",
@@ -52,6 +54,8 @@ const en = {
   touchHelp: "Tap to click, drag with one finger, hold to right-click, and scroll with two fingers. Use the leftmost keyboard button to show or hide the keyboard. Highlighted modifiers apply to the next key.",
 };
 const zh: Record<keyof typeof en, string> = {
+  authorizationWaiting: "等待被控电脑确认权限",
+  authorizationWaitingHint: "请在被控电脑的系统弹窗中允许屏幕与输入访问。确认后，这里会自动显示桌面画面。",
   fullKeyboardMode: "全键盘模式",
   lightbookDescription: "上半屏显示桌面，下半屏使用深色键盘和触控板；地球按钮可打开系统输入法。",
   lightbookUnavailable: "仅支持手机、平板和折叠屏触摸设备。",

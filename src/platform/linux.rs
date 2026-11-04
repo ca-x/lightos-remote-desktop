@@ -227,10 +227,11 @@ impl HostPlatform for LinuxHost {
         config: &Config,
         output: Option<String>,
         cancelled: Arc<AtomicBool>,
-        authorization: tokio::sync::oneshot::Sender<()>,
+        authorization: tokio::sync::oneshot::Sender<bool>,
     ) -> Result<HostSession> {
         let target = Session::physical_target(config)?;
-        let selected = backend::probe(&target, true, Some(&cancelled))?.require_available()?;
+        let selection = backend::probe(&target, true, Some(&cancelled))?;
+        let selected = selection.require_available()?;
         let displays =
             config
                 .display_backend
@@ -243,7 +244,10 @@ impl HostPlatform for LinuxHost {
         );
         let session = Session::attach_physical(target.clone(), config.audio, cancelled.clone());
         if selected == BackendKind::Portal {
-            let _ = authorization.send(());
+            let needs_confirmation = !selection.candidates.iter().any(|candidate| {
+                Some(candidate.backend) == selection.selected && candidate.authorized == Some(true)
+            });
+            let _ = authorization.send(needs_confirmation);
         }
         let active = backend::start_selected(
             selected,

@@ -200,6 +200,9 @@ function Workspace() {
     <div id="desktop-recovery" className="desktop-recovery" role="status" hidden={controls.ready || controls.wanted}>
       <strong>{t("desktopNotConnected")}</strong><p>{t("desktopRecoveryHint")}</p>
     </div>
+    <div id="desktop-authorization" className="desktop-recovery desktop-authorization" role="status" aria-live="polite" hidden={!controls.authorizationPending || controls.ready || !controls.wanted}>
+      <strong>{t("authorizationWaiting")}</strong><p>{t("authorizationWaitingHint")}</p>
+    </div>
     <textarea id="mobile-input" className="mobile-input" tabIndex={-1} aria-label={t("mobileInput")}
       autoCapitalize="off" autoCorrect="off" autoComplete="off" spellCheck={false} inputMode="text" enterKeyHint="enter" />
     <button id="mobile-fullscreen-exit" className="mobile-fullscreen-exit" type="button" hidden aria-label={t("exitFullscreen")} title={t("exitFullscreen")}><Shrink size={22} aria-hidden="true"/></button>

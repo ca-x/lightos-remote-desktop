@@ -95,7 +95,7 @@ impl HostPlatform for NativeHost {
         config: &Config,
         output: Option<String>,
         cancelled: Arc<AtomicBool>,
-        _: tokio::sync::oneshot::Sender<()>,
+        _: tokio::sync::oneshot::Sender<bool>,
     ) -> Result<HostSession> {
         ensure!(
             !cancelled.load(Ordering::Acquire),

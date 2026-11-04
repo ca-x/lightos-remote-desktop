@@ -17,6 +17,7 @@ export interface DesktopOutput {
 
 export interface ControlState {
   ready: boolean;
+  authorizationPending?: boolean;
   wanted: boolean;
   audioAvailable: boolean;
   audioEnabled: boolean;

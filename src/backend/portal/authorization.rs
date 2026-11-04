@@ -126,11 +126,30 @@ pub(super) struct Grant {
     id: String,
     token: Option<String>,
 }
+
+#[derive(Debug)]
+pub(super) struct AuthorizationBusy;
+impl std::fmt::Display for AuthorizationBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Authorization is already in progress on the controlled computer")
+    }
+}
+impl std::error::Error for AuthorizationBusy {}
+
 impl Grant {
     pub(super) fn begin(identity: &ScopeProof) -> Result<Self> {
         let path = path(identity)?;
         let _lock = lock(&path)?;
         let mut saved = read(&path)?;
+        ensure!(
+            !saved
+                .active
+                .as_ref()
+                .is_some_and(|active| active.scope == identity.active_key
+                    && !active.approved
+                    && active.alive()),
+            AuthorizationBusy
+        );
         let token = saved.token.take();
         let id = format!("{:032x}", rand::random::<u128>());
         let pid = std::process::id();

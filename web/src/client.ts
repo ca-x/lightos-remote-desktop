@@ -82,6 +82,7 @@ export function createClient(options: ClientOptions = {}) {
   let cursorSession: string | null = null;
   let cursorEmbedded = true;
   let desktopInitializing = false;
+  let authorizationPending = false;
   let destroyed = false;
   let generation = 0;
   let retryTimer: Timer | null = null;
@@ -613,7 +614,7 @@ export function createClient(options: ClientOptions = {}) {
     viewport.classList.toggle("physical-desktop", desktopMode === "physical");
     mobile?.update();
     pictureZoom.setCover(!!mobile?.isFullscreen() && desktopMode === "physical");
-    options.onControls?.({ ready: ready && !desktopPaused, wanted, audioAvailable, audioEnabled: audioEnabled && audioContext?.state === "running", resizeAvailable, desktopMode,
+    options.onControls?.({ ready: ready && !desktopPaused, authorizationPending, wanted, audioAvailable, audioEnabled: audioEnabled && audioContext?.state === "running", resizeAvailable, desktopMode,
       switchingDesktop, refreshingDesktops, choices: desktopChoices, outputs: desktopOutputs });
     for (const id of controls) element(id).disabled = !ready || desktopPaused;
     for (const id of ["width", "height", "apply-size", "auto-resolution"] as const) element(id).disabled = !ready || desktopPaused || !resizeAvailable;
@@ -707,6 +708,7 @@ export function createClient(options: ClientOptions = {}) {
 
   function resetSession() {
     desktopInitializing = false;
+    authorizationPending = false;
     pictureZoom.reset();
     cursorSession = null;
     cursor.reset(); frameCursorModes.clear(); frameSourceSizes.clear();
@@ -942,6 +944,8 @@ export function createClient(options: ClientOptions = {}) {
     if (clipboard.receive(value)) return;
     if (value.type === "desktop_initializing" && !ready && socket) {
       desktopInitializing = true;
+      authorizationPending = value.requires_consent === true;
+      updateControls();
       // Portal consent and first-frame capture have a bounded server deadline.
       // A broken initialization must not automatically reopen consent.
       armReadinessTimeout(socket, 60000);
@@ -961,6 +965,7 @@ export function createClient(options: ClientOptions = {}) {
       }
       ready = true;
       desktopInitializing = false;
+      authorizationPending = false;
       desktopPaused = false;
       keyChords = value.key_chords === true;
       imageClipboard = value.image_clipboard === true;

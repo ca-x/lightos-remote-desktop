@@ -1,5 +1,5 @@
-//! Permission diagnostics do not capture pixels or inject input. Linux Portal
-//! consent belongs to the real connection, not to a discarded startup probe.
+//! Automatic permission diagnostics are read-only. An explicit request can
+//! prepare and persist a physical Portal grant without opening a viewer page.
 use super::{PermissionState, Permissions};
 use crate::config::Config;
 use anyhow::Result;
@@ -82,7 +82,6 @@ pub fn report(config: &Config, request: bool) -> Result<PermissionReport> {
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = request;
         let target = match crate::session::Session::physical_target(config) {
             Ok(target) => target,
             Err(error) => {
@@ -114,6 +113,32 @@ pub fn report(config: &Config, request: bool) -> Result<PermissionReport> {
             let approved = selection.candidates.iter().any(|candidate| {
                 Some(candidate.backend) == selection.selected && candidate.authorized == Some(true)
             });
+            if request && !approved {
+                let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let (notice, _) = tokio::sync::oneshot::channel();
+                let outcome = super::current().open_physical(config, None, cancelled, notice);
+                let error = match outcome {
+                    Ok(host) => {
+                        // Consent is retained in private storage. No video or
+                        // input is sent to a remote viewer during preparation.
+                        host.backend.stop();
+                        drop(host);
+                        None
+                    }
+                    Err(error) => Some(format!("{error:#}")),
+                };
+                let mut result = report(config, false)?;
+                if let Some(error) = error {
+                    result.reason_code = "authorization_failed";
+                    result.permissions.reason = Some(error);
+                } else if !matches!(result.permissions.screen, PermissionState::Granted)
+                    || !matches!(result.permissions.input, PermissionState::Granted)
+                {
+                    result.reason_code = "authorization_not_saved";
+                    result.permissions.reason = Some("The system did not retain the approval; authorization is still required when connecting".into());
+                }
+                return Ok(result);
+            }
             let state = if approved {
                 PermissionState::Granted
             } else {
@@ -127,7 +152,7 @@ pub fn report(config: &Config, request: bool) -> Result<PermissionReport> {
                         "Approve screen and input access on the controlled computer".into()
                     }),
                 },
-                "on_connection",
+                "system",
                 if approved {
                     "ready"
                 } else {

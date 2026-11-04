@@ -415,11 +415,14 @@ async fn open_and_serve(
         .and_then(Result::ok);
     let mut transfer = None;
     let mut owner = None;
-    let grant_state = super::authorization::Grant::begin(identity)
-        .inspect_err(|error| {
+    let grant_state = match super::authorization::Grant::begin(identity) {
+        Ok(state) => Some(state),
+        Err(error) if error.is::<super::authorization::AuthorizationBusy>() => return Err(error),
+        Err(error) => {
             tracing::warn!(%error, "Portal authorization cannot be persisted");
-        })
-        .ok();
+            None
+        }
+    };
     let access = timeout(START_TIMEOUT, async {
         let mut options =
             SelectDevicesOptions::default().set_devices(DeviceType::Keyboard | DeviceType::Pointer);

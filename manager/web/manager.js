@@ -12,8 +12,9 @@
     stopped: "桌面进程已停止，可重新开启。", runtime: "远程桌面", not_installed: "未安装", installedUnknown: "已安装（版本未知）", latest: "最新", install: "安装远程桌面", update: "更新远程桌面", instanceManaged: "由 LightOS 管理",
     interruptNotice: "更新会中断当前远程桌面连接。确认后将自动关闭服务并更新，完成后恢复服务。", cancel: "取消", confirm: "确认", stopping: "正在关闭远程桌面",
     preparing: "正在准备", downloading: "正在下载", verifying: "正在校验", installing: "正在安装", checking: "正在检查新版本", cleaning: "正在清理旧版本", failedInstall: "安装 / 更新失败，可重试", retryOperation: "重试",
-    usable: "可用", desktopUnavailable: "桌面不可用", connectApprove: "连接并授权", details: "查看原因", permissionTitle: "桌面访问检查", diagnosticDetails: "诊断详情", recheck: "重新检查", rechecking: "正在检查…", checkRequested: "已请求重新检查，结果会自动更新。", close: "关闭",
-    connectionHelp: "请在被控电脑上允许屏幕与输入访问。", enableConnectionHelp: "开启后连接桌面，完成系统授权。", currentConnectionHelp: "请从另一台设备连接，在当前电脑上完成系统授权。",
+    usable: "可用", desktopUnavailable: "桌面不可用", details: "查看原因", permissionTitle: "桌面访问检查", diagnosticDetails: "诊断详情", recheck: "刷新状态", rechecking: "正在检查…", checkRequested: "设备状态会根据后台检查结果自动更新。", close: "关闭",
+    connectionHelp: "首次使用请先申请权限。", enableConnectionHelp: "可先申请权限，再开启远程桌面。", currentConnectionHelp: "可在此申请权限，授权后从另一台设备连接。",
+    authorizeAt: name => `请在「${name}」电脑的系统窗口中允许屏幕与输入访问。当前页面会显示申请结果。`, authorizationSuccess: "已授权。现在可以连接桌面。", authorizationPending: "正在等待被控电脑确认…", authorizationIncomplete: "授权尚未完成。请处理被控电脑上的系统提示，或重新申请。", authorizationNotSaved: "系统没有保存这次授权，连接桌面时仍需确认。", retryAuthorization: "重新申请", authorizationUpdate: "请先更新这台设备的远程桌面，再使用独立授权入口。", authorizationNotStarted: "申请尚未启动，请稍后重试。",
     permissionHelp: { session_unavailable: "无法定位当前登录的图形桌面。请在这台电脑登录桌面，并从该桌面启动客户端后重新检查。", portal_unavailable: "系统没有可用的桌面共享组件。请检查 xdg-desktop-portal 及与当前桌面匹配的后端是否已安装并可运行。", portal_session_mismatch: "暂时无法连接这台电脑的桌面，会自动重新检查。若持续失败，可点击“重新检查”或提供诊断详情。", portal_input_unavailable: "当前桌面共享组件不支持键盘与鼠标控制，需要支持远程控制的桌面后端。", portal_capture_unavailable: "当前桌面共享组件不支持显示器采集，请检查或更新对应的桌面后端。", portal_cursor_unavailable: "当前桌面共享组件缺少所需的光标支持，请检查或更新对应的桌面后端。", portal_timeout: "桌面共享服务没有及时响应。请重新检查，并确认当前图形会话的桌面共享服务正常运行。", capture_unavailable: "当前图形会话没有可用的屏幕与输入接口。请查看诊断详情，检查会话配置和桌面共享组件。" },
   } : {
     title: "Lazycat Remote", subtitle: "The Lazycat network protects your privacy and data security.", devices: "Online devices", empty: "No online devices", offlineDevices: "Offline devices", offlineEmpty: "No offline devices",
@@ -26,8 +27,9 @@
     stopped: "The desktop process stopped. Try enabling it again.", runtime: "Remote desktop", not_installed: "Not installed", installedUnknown: "Installed (version unknown)", latest: "Latest", install: "Install remote desktop", update: "Update remote desktop", instanceManaged: "Managed by LightOS",
     interruptNotice: "Updating will disconnect the current remote desktop session. Confirm to stop the service and update it. The service will resume when the update finishes.", cancel: "Cancel", confirm: "Confirm", stopping: "Stopping remote desktop",
     preparing: "Preparing", downloading: "Downloading", verifying: "Verifying", installing: "Installing", checking: "Checking the new version", cleaning: "Removing the old version", failedInstall: "Installation / update failed; retry is available", retryOperation: "Retry",
-    usable: "Available", desktopUnavailable: "Desktop unavailable", connectApprove: "Connect and authorize", details: "View details", permissionTitle: "Desktop access check", diagnosticDetails: "Diagnostic details", recheck: "Check again", rechecking: "Checking…", checkRequested: "A new check was requested. Results update automatically.", close: "Close",
-    connectionHelp: "Allow screen and input access on the controlled computer.", enableConnectionHelp: "Enable and connect to the desktop to approve access.", currentConnectionHelp: "Connect from another device and approve access on this computer.",
+    usable: "Available", desktopUnavailable: "Desktop unavailable", details: "View details", permissionTitle: "Desktop access check", diagnosticDetails: "Diagnostic details", recheck: "Refresh status", rechecking: "Checking…", checkRequested: "Device status updates automatically from background checks.", close: "Close",
+    connectionHelp: "Request permissions before first use.", enableConnectionHelp: "You can approve permissions before enabling the desktop.", currentConnectionHelp: "Approve permissions here, then connect from another device.",
+    authorizeAt: name => `Allow screen and input access in the system dialog on “${name}”. The result will appear here.`, authorizationSuccess: "Permissions approved. You can now connect to the desktop.", authorizationPending: "Waiting for approval on the controlled computer…", authorizationIncomplete: "Approval is not complete. Respond to the system dialog on the controlled computer or request again.", authorizationNotSaved: "The system did not retain this approval. Confirmation is still needed when connecting.", retryAuthorization: "Request again", authorizationUpdate: "Update this device's desktop runtime before requesting permissions here.", authorizationNotStarted: "The request has not started. Try again shortly.",
     permissionHelp: { session_unavailable: "The logged-in graphical desktop could not be located. Sign in to that desktop, launch the client there and check again.", portal_unavailable: "Desktop sharing services are unavailable. Check that xdg-desktop-portal and the backend for this desktop are installed and running.", portal_session_mismatch: "The system desktop service is temporarily unavailable. Checks retry automatically; you can also select Check again.", portal_input_unavailable: "The sharing service does not support keyboard and mouse control. A remote-control-capable desktop backend is required.", portal_capture_unavailable: "The sharing service does not support monitor capture. Check or update the desktop backend.", portal_cursor_unavailable: "The sharing service lacks the required cursor support. Check or update the desktop backend.", portal_timeout: "The sharing service did not respond in time. Check again and verify that the service is running in the selected graphical session.", capture_unavailable: "No usable screen and input interface was found. Review the diagnostic details and check the graphical session and desktop sharing services." },
   };
   document.documentElement.lang = zh ? "zh-CN" : "en";
@@ -38,8 +40,9 @@
   const cards = new Map(), pendingActions = new Map();
   const permissionDialog = document.getElementById("permission-dialog");
   let permissionDevice = null;
+  let permissionMode = "diagnostics", authorizationSubmission = null, authorizationNotice = "";
   const linuxDevice = item => item.kind === "device" && item.platform === "linux";
-  const connectionConsent = item => linuxDevice(item) && (item.permissions?.request_mode === "on_connection" || item.requires_consent === true) && ![item.permissions?.screen, item.permissions?.input].every(value => value === "granted");
+  const connectionConsent = item => linuxDevice(item) && (item.permissions?.backend === "portal" || item.permissions?.request_mode === "on_connection" || item.requires_consent === true) && ![item.permissions?.screen, item.permissions?.input].every(value => value === "granted");
   function permissionHelp(item) {
     if (!linuxDevice(item) || !item.installed) return "";
     if (connectionConsent(item)) return item.current_device ? copy.currentConnectionHelp : item.enabled ? copy.connectionHelp : copy.enableConnectionHelp;
@@ -48,25 +51,65 @@
   }
   function updatePermissionDialog(item) {
     if (!permissionDialog.open || item.id !== permissionDevice) return;
+    if (permissionMode === "authorization") {
+      const p = item.permissions || {}, granted = p.screen === "granted" && p.input === "granted";
+      document.getElementById("permission-title").textContent = copy.permissions;
+      document.getElementById("permission-summary").textContent = granted ? copy.authorizationSuccess : copy.authorizeAt(item.name);
+      document.getElementById("permission-feedback").textContent = granted ? "" : authorizationNotice || (p.requesting || authorizationSubmission?.id === item.id ? copy.authorizationPending : p.reason_code === "authorization_not_saved" ? copy.authorizationNotSaved : copy.authorizationIncomplete);
+      const failed = p.reason_code === "authorization_failed" || p.reason_code === "authorization_not_saved" || p.can_start === false;
+      document.getElementById("permission-diagnostic").textContent = failed ? p.reason || "" : "";
+      document.getElementById("permission-details").hidden = !failed || !p.reason;
+      const check = document.getElementById("permission-recheck");
+      check.hidden = granted;check.textContent = copy.retryAuthorization;
+      check.disabled = !item.online || p.requesting === true || authorizationSubmission?.id === item.id;
+      return;
+    }
+    document.getElementById("permission-title").textContent = copy.permissionTitle;
     document.getElementById("permission-summary").textContent = permissionHelp(item) || copy.usable;
     document.getElementById("permission-diagnostic").textContent = item.permissions?.reason || "";
     document.getElementById("permission-details").hidden = !item.permissions?.reason;
     const check = document.getElementById("permission-recheck");
+    check.hidden = false;
     check.disabled = !item.online || item.permissions?.requesting === true || pendingActions.has(item.id);
     check.textContent = item.permissions?.requesting ? copy.rechecking : copy.recheck;
   }
-  function showPermissionDetails(item) {
+  function showPermissionDetails(item, authorize = false) {
     if (permissionDialog.open) return;
     permissionDevice = item.id;
+    permissionMode = authorize ? "authorization" : "diagnostics";authorizationNotice = "";
     document.getElementById("permission-feedback").textContent = "";
     permissionDialog.showModal();
     updatePermissionDialog(item);
+    if (authorize) void requestPermissions(item.id);
+  }
+  async function requestPermissions(id) {
+    const item = cards.get(id)?.target;
+    if (!item || authorizationSubmission?.id === id) return;
+    if (item.permissions?.request_mode !== "system") { authorizationNotice = copy.authorizationUpdate;updatePermissionDialog(item);return; }
+    const submission = { id };authorizationSubmission = submission;authorizationNotice = "";updatePermissionDialog(item);
+    try {
+      // The existing controller may already be running a read-only probe.
+      // Retry only when its reply explicitly says a request has not started.
+      for (let attempt = 0; attempt < 10 && permissionDevice === id && authorizationSubmission === submission; attempt++) {
+        const reply = await act(id, "permissions");
+        if (permissionDevice !== id || authorizationSubmission !== submission) break;
+        if (!reply) { authorizationNotice = copy.failed;break; }
+        const p = reply.state?.permissions;
+        if (!p || p.requesting || p.screen === "granted" && p.input === "granted") break;
+        if (attempt === 9) authorizationNotice = copy.authorizationNotStarted;
+        else await new Promise(resolve => setTimeout(resolve, 400));
+      }
+    } finally {
+      if (authorizationSubmission === submission) authorizationSubmission = null;
+      const current = cards.get(id)?.target;if (current) updatePermissionDialog(current);
+    }
   }
   permissionDialog.addEventListener("close", () => { permissionDevice = null; });
   document.getElementById("permission-recheck").addEventListener("click", () => {
     if (!permissionDevice) return;
+    if (permissionMode === "authorization") { void requestPermissions(permissionDevice);return; }
     document.getElementById("permission-feedback").textContent = copy.checkRequested;
-    void act(permissionDevice, "permissions");
+    void load(true);
   });
   let busy = false, pending, reloadRequested = false, refreshedAt = 0, controlRevision = 0;
   const platforms = { darwin: "macOS", macos: "macOS", win32: "Windows", windows: "Windows", linux: "Linux" };
@@ -109,7 +152,7 @@
     heading.append(name, badge); actions.append(toggle, install, connect); body.append(heading, platform, version, permissions, guidance, operation, error, actions); card.append(cover, body);
     card.parts = { version, install, operation, operationLabel, operationValue, progress, image, placeholder, name, badge, platform, permissions, screen, input, connect, toggle, request, error, guidance };
     toggle.addEventListener("click", () => act(card.target.id, card.target.enabled ? "stop" : "start"));
-    request.addEventListener("click", () => linuxDevice(card.target) ? showPermissionDetails(card.target) : act(card.target.id, "permissions"));
+    request.addEventListener("click", () => linuxDevice(card.target) ? showPermissionDetails(card.target, connectionConsent(card.target)) : act(card.target.id, "permissions"));
     grid.append(card); return card;
   }
   function updateCard(card, item) {
@@ -159,13 +202,13 @@
     p.request.textContent = permissions.requesting ? copy.requesting : copy.permissions;
     p.request.disabled = !item.online || processing || switching || permissions.requesting === true;
     if (linux) {
-      p.request.hidden = !item.managed || !item.installed || !unavailable || deferred;
-      p.request.textContent = permissions.requesting ? copy.rechecking : copy.details;
+      p.request.hidden = !item.managed || !item.installed || !(unavailable || deferred);
+      p.request.textContent = permissions.requesting ? copy.requesting : deferred ? copy.permissions : copy.details;
     }
     p.guidance.textContent = permissionHelp(item);p.guidance.hidden = !p.guidance.textContent;
     p.connect.hidden = item.kind === "device" && !item.installed && !item.current_device;
-    p.connect.textContent = item.current_device ? copy.currentDevice : deferred ? copy.connectApprove : copy.connect;
-    const ready = !item.current_device && item.online !== false && item.ready !== false && !switching && pending?.action !== "stop";
+    p.connect.textContent = item.current_device ? copy.currentDevice : copy.connect;
+    const ready = !item.current_device && item.online !== false && item.ready !== false && !switching && pending?.action !== "stop" && !(deferred && permissions.requesting);
     p.connect.setAttribute("aria-disabled", String(!ready)); p.connect.tabIndex = ready ? 0 : -1;
     if (ready) p.connect.href = item.url; else p.connect.removeAttribute("href");
     p.connect.ariaLabel = item.current_device ? copy.currentDevice : `${copy.connect}: ${item.name}`;
@@ -210,6 +253,7 @@
           deployment: state.deployment || card.target.deployment, runtime_error: state.error });
       }
       await load(true);
+      return reply;
     } catch (error) {
       pendingActions.delete(id);
       if (error.message === "update_confirmation_required") {
@@ -256,7 +300,8 @@
   function refresh() {
     const transitioning = [...pendingActions.values()].some(p => p.action === "start" || p.action === "stop") || [...cards.values()].some(card => card.target.status === "starting");
     const active = [...cards.values()].some(card => !["idle", "completed", "failed"].includes(card.target.deployment?.stage || "idle"));
-    if (Date.now() - refreshedAt >= (transitioning ? 250 : active ? 1000 : 4000)) void load();
+    const requesting = [...cards.values()].some(card => card.target.permissions?.requesting);
+    if (Date.now() - refreshedAt >= (transitioning ? 250 : active || requesting ? 1000 : 4000)) void load();
   }
   let timer = setInterval(refresh, 250);
   window.addEventListener("pagehide", () => { pending?.abort(); clearInterval(timer); timer = undefined; });

@@ -255,7 +255,7 @@ impl AppState {
         request: DesktopRequest,
         cancelled: Arc<AtomicBool>,
         connection_id: u64,
-        authorization: tokio::sync::oneshot::Sender<()>,
+        authorization: tokio::sync::oneshot::Sender<bool>,
     ) -> anyhow::Result<Self> {
         use anyhow::{Context, ensure};
         let started = Instant::now();
@@ -681,8 +681,8 @@ async fn upgrade(
                     result = &mut initialize => break Some(result),
                     notice = &mut authorization_notice, if awaiting_authorization => {
                         awaiting_authorization = false;
-                        if notice.is_ok() {
-                            let message = Message::Text(json!({"type":"desktop_initializing", "requires_consent":true}).to_string().into());
+                        if let Ok(requires_consent) = notice {
+                            let message = Message::Text(json!({"type":"desktop_initializing", "requires_consent":requires_consent}).to_string().into());
                             if !matches!(timeout(Duration::from_secs(1), socket.send(message)).await, Ok(Ok(()))) {
                                 break None;
                             }

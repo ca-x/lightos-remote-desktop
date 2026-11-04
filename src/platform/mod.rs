@@ -51,7 +51,7 @@ pub trait HostPlatform: Send + Sync {
         config: &Config,
         output: Option<String>,
         cancelled: Arc<AtomicBool>,
-        authorization: tokio::sync::oneshot::Sender<()>,
+        authorization: tokio::sync::oneshot::Sender<bool>,
     ) -> Result<HostSession>;
 }
 
