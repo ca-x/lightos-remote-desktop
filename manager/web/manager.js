@@ -12,8 +12,8 @@
     stopped: "桌面进程已停止，可重新开启。", runtime: "远程桌面", not_installed: "未安装", installedUnknown: "已安装（版本未知）", latest: "最新", install: "安装远程桌面", update: "更新远程桌面", instanceManaged: "由 LightOS 管理",
     interruptNotice: "更新会中断当前远程桌面连接。确认后将自动关闭服务并更新，完成后恢复服务。", cancel: "取消", confirm: "确认", stopping: "正在关闭远程桌面",
     preparing: "正在准备", downloading: "正在下载", verifying: "正在校验", installing: "正在安装", checking: "正在检查新版本", cleaning: "正在清理旧版本", failedInstall: "安装 / 更新失败，可重试", retryOperation: "重试",
-    usable: "可用", desktopUnavailable: "桌面不可用", connectionApproval: "连接时确认", connectApprove: "连接并授权", details: "查看原因", permissionTitle: "桌面访问检查", diagnosticDetails: "诊断详情", recheck: "重新检查", rechecking: "正在检查…", checkRequested: "已请求重新检查，结果会自动更新。", close: "关闭",
-    connectionHelp: "连接时请在被控电脑上确认屏幕与键盘鼠标授权。系统允许时会复用已批准的授权；需要重新选择屏幕时，可关闭后重新开启远程桌面。", enableConnectionHelp: "先开启远程桌面，再点击“连接并授权”，在被控电脑上确认。", currentConnectionHelp: "开启后请从另一台设备连接，并在当前电脑上确认屏幕与输入授权。",
+    usable: "可用", desktopUnavailable: "桌面不可用", connectApprove: "连接并授权", details: "查看原因", permissionTitle: "桌面访问检查", diagnosticDetails: "诊断详情", recheck: "重新检查", rechecking: "正在检查…", checkRequested: "已请求重新检查，结果会自动更新。", close: "关闭",
+    connectionHelp: "请在被控电脑上允许屏幕与输入访问。", enableConnectionHelp: "开启后连接桌面，完成系统授权。", currentConnectionHelp: "请从另一台设备连接，在当前电脑上完成系统授权。",
     permissionHelp: { session_unavailable: "无法定位当前登录的图形桌面。请在这台电脑登录桌面，并从该桌面启动客户端后重新检查。", portal_unavailable: "系统没有可用的桌面共享组件。请检查 xdg-desktop-portal 及与当前桌面匹配的后端是否已安装并可运行。", portal_session_mismatch: "桌面共享组件与当前图形会话不匹配。请从目标桌面重新启动客户端；若仍失败，检查桌面共享组件的会话配置。", portal_input_unavailable: "当前桌面共享组件不支持键盘与鼠标控制，需要支持远程控制的桌面后端。", portal_capture_unavailable: "当前桌面共享组件不支持显示器采集，请检查或更新对应的桌面后端。", portal_cursor_unavailable: "当前桌面共享组件缺少所需的光标支持，请检查或更新对应的桌面后端。", portal_timeout: "桌面共享服务没有及时响应。请重新检查，并确认当前图形会话的桌面共享服务正常运行。", capture_unavailable: "当前图形会话没有可用的屏幕与输入接口。请查看诊断详情，检查会话配置和桌面共享组件。" },
   } : {
     title: "Lazycat Remote", subtitle: "The Lazycat network protects your privacy and data security.", devices: "Online devices", empty: "No online devices", offlineDevices: "Offline devices", offlineEmpty: "No offline devices",
@@ -26,8 +26,8 @@
     stopped: "The desktop process stopped. Try enabling it again.", runtime: "Remote desktop", not_installed: "Not installed", installedUnknown: "Installed (version unknown)", latest: "Latest", install: "Install remote desktop", update: "Update remote desktop", instanceManaged: "Managed by LightOS",
     interruptNotice: "Updating will disconnect the current remote desktop session. Confirm to stop the service and update it. The service will resume when the update finishes.", cancel: "Cancel", confirm: "Confirm", stopping: "Stopping remote desktop",
     preparing: "Preparing", downloading: "Downloading", verifying: "Verifying", installing: "Installing", checking: "Checking the new version", cleaning: "Removing the old version", failedInstall: "Installation / update failed; retry is available", retryOperation: "Retry",
-    usable: "Available", desktopUnavailable: "Desktop unavailable", connectionApproval: "Approve on connection", connectApprove: "Connect and authorize", details: "View details", permissionTitle: "Desktop access check", diagnosticDetails: "Diagnostic details", recheck: "Check again", rechecking: "Checking…", checkRequested: "A new check was requested. Results update automatically.", close: "Close",
-    connectionHelp: "Approve screen and keyboard/mouse access on the controlled computer when connecting. Approved access is reused when the system allows it. Disable and re-enable the desktop to select a different screen.", enableConnectionHelp: "Enable the desktop, then select Connect and authorize and approve access on the controlled computer.", currentConnectionHelp: "Enable this desktop and connect from another device. Approve screen and input access on this computer.",
+    usable: "Available", desktopUnavailable: "Desktop unavailable", connectApprove: "Connect and authorize", details: "View details", permissionTitle: "Desktop access check", diagnosticDetails: "Diagnostic details", recheck: "Check again", rechecking: "Checking…", checkRequested: "A new check was requested. Results update automatically.", close: "Close",
+    connectionHelp: "Allow screen and input access on the controlled computer.", enableConnectionHelp: "Enable and connect to the desktop to approve access.", currentConnectionHelp: "Connect from another device and approve access on this computer.",
     permissionHelp: { session_unavailable: "The logged-in graphical desktop could not be located. Sign in to that desktop, launch the client there and check again.", portal_unavailable: "Desktop sharing services are unavailable. Check that xdg-desktop-portal and the backend for this desktop are installed and running.", portal_session_mismatch: "The sharing service does not match the selected graphical session. Launch the client from the target desktop and check the sharing service's session configuration.", portal_input_unavailable: "The sharing service does not support keyboard and mouse control. A remote-control-capable desktop backend is required.", portal_capture_unavailable: "The sharing service does not support monitor capture. Check or update the desktop backend.", portal_cursor_unavailable: "The sharing service lacks the required cursor support. Check or update the desktop backend.", portal_timeout: "The sharing service did not respond in time. Check again and verify that the service is running in the selected graphical session.", capture_unavailable: "No usable screen and input interface was found. Review the diagnostic details and check the graphical session and desktop sharing services." },
   };
   document.documentElement.lang = zh ? "zh-CN" : "en";
@@ -39,7 +39,7 @@
   const permissionDialog = document.getElementById("permission-dialog");
   let permissionDevice = null;
   const linuxDevice = item => item.kind === "device" && item.platform === "linux";
-  const connectionConsent = item => linuxDevice(item) && (item.permissions?.request_mode === "on_connection" || item.requires_consent === true);
+  const connectionConsent = item => linuxDevice(item) && (item.permissions?.request_mode === "on_connection" || item.requires_consent === true) && ![item.permissions?.screen, item.permissions?.input].every(value => value === "granted");
   function permissionHelp(item) {
     if (!linuxDevice(item) || !item.installed) return "";
     if (connectionConsent(item)) return item.current_device ? copy.currentConnectionHelp : item.enabled ? copy.connectionHelp : copy.enableConnectionHelp;
@@ -135,7 +135,7 @@
     }
     for (const [kind, node] of [["screen", p.screen], ["input", p.input]]) {
       const value = ["granted", "denied", "needs_user_action"].includes(permissions[kind]) ? permissions[kind] : "unknown";
-      const label = linux && value === "granted" ? copy.usable : deferred && value === "needs_user_action" ? copy.connectionApproval : unavailable && value === "denied" ? copy.desktopUnavailable : copy[value];
+      const label = linux && value === "granted" && permissions.backend !== "portal" ? copy.usable : deferred && value === "needs_user_action" ? copy.needs_user_action : unavailable && value === "denied" ? copy.desktopUnavailable : copy[value];
       node.textContent = `${copy[kind]} · ${label}`; node.dataset.granted = String(value === "granted");
     }
     p.version.textContent = `${copy.runtime} · ${item.kind === "instance" ? item.runtime_version || copy.instanceManaged : item.installed ? item.runtime_version || copy.installedUnknown : copy.not_installed}`;

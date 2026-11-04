@@ -83,6 +83,7 @@ impl HostPlatform for NativeHost {
                 requires_consent: false,
                 reason: result.err().map(|e| format!("{e:#}")),
                 reason_code: None,
+                authorized: None,
             }],
         })
     }

@@ -111,10 +111,30 @@ pub fn report(config: &Config, request: bool) -> Result<PermissionReport> {
             return Ok(PermissionReport::unavailable(error.to_string(), code));
         }
         if selection.requires_consent() {
-            let mut report=PermissionReport::new(Permissions {
-                screen:PermissionState::NeedsUserAction,input:PermissionState::NeedsUserAction,
-                reason:Some("The system requests screen and input approval when a remote connection starts".into()),
-            },"on_connection","connection_consent",vec![]);
+            let approved = selection.candidates.iter().any(|candidate| {
+                Some(candidate.backend) == selection.selected && candidate.authorized == Some(true)
+            });
+            let state = if approved {
+                PermissionState::Granted
+            } else {
+                PermissionState::NeedsUserAction
+            };
+            let mut report = PermissionReport::new(
+                Permissions {
+                    screen: state.clone(),
+                    input: state,
+                    reason: (!approved).then(|| {
+                        "Approve screen and input access on the controlled computer".into()
+                    }),
+                },
+                "on_connection",
+                if approved {
+                    "ready"
+                } else {
+                    "connection_consent"
+                },
+                vec![],
+            );
             report.can_start = true;
             report.backend = selection.selected;
             return Ok(report);

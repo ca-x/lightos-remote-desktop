@@ -26,6 +26,7 @@ fn candidate(
             .and_then(|error| error.downcast_ref::<super::CapabilityError>())
             .map(|error| error.code),
         reason: result.err().map(|error| format!("{error:#}")),
+        authorized: None,
     }
 }
 fn report(candidates: Vec<BackendAvailability>) -> BackendReport {
@@ -75,11 +76,11 @@ pub fn probe(
         // A healthy native path is sufficient; discovery must not activate an
         // unrelated portal or pay for a second backend on every connection.
         if !candidates[0].available {
-            candidates.push(candidate(
-                BackendKind::Portal,
-                true,
-                super::portal::probe(target),
-            ));
+            let probe = super::portal::probe(target);
+            let authorized = probe.as_ref().ok().copied();
+            let mut portal = candidate(BackendKind::Portal, true, probe.map(|_| ()));
+            portal.authorized = authorized;
+            candidates.push(portal);
         }
         return Ok(report(candidates));
     }

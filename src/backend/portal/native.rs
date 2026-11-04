@@ -1,9 +1,9 @@
 //! Portal capture, input and clipboard tied to one explicitly selected user session.
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     os::fd::OwnedFd,
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc as sync_mpsc,
     },
@@ -58,14 +58,6 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(3);
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(9);
 const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
 
-// Restore tokens are single-use and never exposed to the browser, diagnostics or
-// disk. A verified bus/compositor scope separates desktops and runtime restarts
-// discard the cache. The portal remains authoritative about consent/revocation.
-fn restore_tokens() -> &'static Mutex<BTreeMap<String, String>> {
-    static TOKENS: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
-    TOKENS.get_or_init(Mutex::default)
-}
-
 async fn connection(target: &SessionTarget) -> Result<zbus::Connection> {
     let address = target
         .bus_address
@@ -78,7 +70,7 @@ async fn connection(target: &SessionTarget) -> Result<zbus::Connection> {
 }
 
 /// Read-only session capability check. No CreateSession, input device or consent request.
-pub fn probe(target: &SessionTarget) -> Result<()> {
+pub fn probe(target: &SessionTarget) -> Result<bool> {
     ensure!(
         target.wayland_socket.is_some(),
         "Portal requires an explicit Wayland session"
@@ -97,7 +89,7 @@ pub fn probe(target: &SessionTarget) -> Result<()> {
             let cast = Screencast::with_connection(bus.clone())
                 .await
                 .map_err(|error| CapabilityError::new("portal_unavailable", error))?;
-            super::identity::validate_target_identity(&bus, target)
+            let identity = super::identity::validate_target_identity(&bus, target)
                 .await
                 .map_err(|error| {
                     CapabilityError::new("portal_session_mismatch", format!("{error:#}"))
@@ -133,7 +125,12 @@ pub fn probe(target: &SessionTarget) -> Result<()> {
                     "Portal cannot provide independent cursor metadata"
                 )
             );
-            Ok::<(), anyhow::Error>(())
+            Ok::<bool, anyhow::Error>(super::authorization::approved(&identity).unwrap_or_else(
+                |error| {
+                    tracing::warn!(%error, "Portal authorization state unavailable");
+                    false
+                },
+            ))
         })
         .await
         .map_err(|error| CapabilityError::new("portal_timeout", error))?
@@ -402,20 +399,21 @@ async fn open_and_serve(
         .and_then(Result::ok);
     let mut transfer = None;
     let mut owner = None;
+    let grant_state = super::authorization::Grant::begin(identity)
+        .inspect_err(|error| {
+            tracing::warn!(%error, "Portal authorization cannot be persisted");
+        })
+        .ok();
     let access = timeout(START_TIMEOUT, async {
         let mut options =
             SelectDevicesOptions::default().set_devices(DeviceType::Keyboard | DeviceType::Pointer);
         if desktop.version() >= 2 {
-            let token = restore_tokens()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&identity.restore_key);
             // Persistence belongs to RemoteDesktop, never ScreenCast, for a
             // combined capture/input session. Unsupported/denied persistence
             // simply yields no token; the next connection requests consent.
             options = options
                 .set_persist_mode(PersistMode::ExplicitlyRevoked)
-                .set_restore_token(token.as_deref());
+                .set_restore_token(grant_state.as_ref().and_then(|state| state.token()));
         }
         desktop.select_devices(session, options).await?.response()?;
         cast.select_sources(
@@ -547,12 +545,10 @@ async fn open_and_serve(
     timeout(PROBE_TIMEOUT, identity.verify_unchanged(&bus))
         .await
         .context("Portal scope changed during authorization")??;
-    if let Some(token) = restore_token {
-        let mut tokens = restore_tokens().lock().unwrap_or_else(|e| e.into_inner());
-        if tokens.len() >= 8 {
-            tokens.pop_first();
-        }
-        tokens.insert(identity.restore_key.clone(), token);
+    if let Some(state) = &grant_state
+        && let Err(error) = state.confirmed(restore_token)
+    {
+        tracing::warn!(%error, "could not persist approved Portal authorization");
     }
     if let Some(sender) = ready.take() {
         let _ = sender.send(Ok(()));

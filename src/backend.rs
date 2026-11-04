@@ -169,6 +169,8 @@ pub struct BackendAvailability {
     pub reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason_code: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authorized: Option<bool>,
 }
 
 /// A stable diagnostic code alongside the complete underlying failure.

@@ -1,5 +1,7 @@
 //! Optional Portal backend. Builds without PipeWire report an explicit reason.
 #[cfg(feature = "portal")]
+mod authorization;
+#[cfg(feature = "portal")]
 mod identity;
 #[cfg(feature = "portal")]
 mod native;
@@ -16,7 +18,7 @@ mod unavailable {
         time::Duration,
     };
     use tokio::sync::{mpsc, watch};
-    pub fn probe(_target: &SessionTarget) -> Result<()> {
+    pub fn probe(_target: &SessionTarget) -> Result<bool> {
         bail!("Portal backend was not compiled; enable the portal feature")
     }
     pub struct Backend;

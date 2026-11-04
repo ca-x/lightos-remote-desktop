@@ -79,7 +79,7 @@ Portal service waits for this explicit browser connection before requesting
 consent. Provider restarts terminate the authorization session. Denied/cancelled authorization
 ends that attempt. Closing the Portal ends the active session. When RemoteDesktop
 v2 supplies a restore token, the runtime can reuse approved access within the
-same verified desktop scope; tokens are single-use and kept only in memory.
+same verified desktop scope; tokens are single-use and stored atomically in private local-user state across runtime upgrades and restarts.
 Providers without persistence, revoked grants and changed desktop identities
 require fresh consent. The server announces pending Portal initialization so the browser
 allows its bounded authorization wait. Denial, an initialization error or an
