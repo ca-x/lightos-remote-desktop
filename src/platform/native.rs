@@ -140,6 +140,7 @@ struct Shared {
     paused: AtomicBool,
     epoch: AtomicU64,
     frames: watch::Sender<Option<Arc<Frame>>>,
+    cursors: watch::Sender<Option<Arc<crate::backend::CursorFrame>>>,
     output: Mutex<DisplayOutput>,
     publish_gate: Mutex<()>,
 }
@@ -150,6 +151,7 @@ impl Shared {
             self.epoch.fetch_add(1, Ordering::AcqRel);
         }
         self.frames.send_replace(None);
+        self.cursors.send_replace(None);
     }
     fn stop(&self) {
         let _gate = self.publish_gate.lock().unwrap_or_else(|e| e.into_inner());
@@ -157,6 +159,7 @@ impl Shared {
         self.paused.store(true, Ordering::Release);
         self.epoch.fetch_add(1, Ordering::AcqRel);
         self.frames.send_replace(None);
+        self.cursors.send_replace(None);
     }
     fn publish(&self, mut frame: Frame, epoch: u64) -> bool {
         let _gate = self.publish_gate.lock().unwrap_or_else(|e| e.into_inner());
@@ -199,11 +202,13 @@ impl NativeBackend {
         cancelled: Arc<AtomicBool>,
     ) -> Result<Self> {
         let (frames, _) = watch::channel(None);
+        let (cursors, _) = watch::channel(None);
         let shared = Arc::new(Shared {
             stopped: AtomicBool::new(false),
             paused: AtomicBool::new(true),
             epoch: AtomicU64::new(0),
             frames,
+            cursors,
             output: Mutex::new(output),
             publish_gate: Mutex::new(()),
         });
@@ -216,6 +221,47 @@ impl NativeBackend {
             workers: Mutex::new(Vec::new()),
         };
         let capture_platform = platform.clone();
+        if platform.supports_cursor() {
+            let cursor_platform = platform.clone();
+            let cursor_state = shared.clone();
+            let cursor_cancelled = cancelled.clone();
+            let worker = std::thread::Builder::new()
+                .name("native-cursor".into())
+                .spawn(move || {
+                    while !cursor_state.stopped.load(Ordering::Acquire)
+                        && !cursor_cancelled.load(Ordering::Acquire)
+                    {
+                        let epoch = cursor_state.epoch.load(Ordering::Acquire);
+                        if !cursor_state.paused.load(Ordering::Acquire) {
+                            let output = cursor_state
+                                .output
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .clone();
+                            let frame = cursor_platform.cursor_frame(&output);
+                            let _gate = cursor_state
+                                .publish_gate
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            if !cursor_state.paused.load(Ordering::Acquire)
+                                && !cursor_state.stopped.load(Ordering::Acquire)
+                                && cursor_state.epoch.load(Ordering::Acquire) == epoch
+                            {
+                                cursor_state.cursors.send_if_modified(|latest| {
+                                    let next = frame.ok().flatten().map(Arc::new);
+                                    if *latest == next {
+                                        return false;
+                                    }
+                                    *latest = next;
+                                    true
+                                });
+                            }
+                        }
+                        std::thread::sleep(Duration::from_millis(16));
+                    }
+                })?;
+            backend.workers.lock().unwrap().push(worker);
+        }
         let capture_state = shared.clone();
         let capture_key = key.clone();
         let capture_cancelled = cancelled.clone();
@@ -286,6 +332,11 @@ impl DesktopBackend for NativeBackend {
     }
     fn cursor_embedded(&self) -> bool {
         false
+    }
+    fn cursor_frames(&self) -> Option<watch::Receiver<Option<Arc<crate::backend::CursorFrame>>>> {
+        self.platform
+            .supports_cursor()
+            .then(|| self.shared.cursors.subscribe())
     }
     fn frames(&self) -> watch::Receiver<Option<Arc<Frame>>> {
         self.shared.frames.subscribe()
@@ -967,6 +1018,7 @@ mod tests {
             paused: AtomicBool::new(false),
             epoch: AtomicU64::new(0),
             frames,
+            cursors: watch::channel(None).0,
             output: Mutex::new(output),
             publish_gate: Mutex::new(()),
         });

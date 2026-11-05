@@ -1,4 +1,6 @@
 //! Capture the logged-in, unlocked macOS console desktop.
+#[path = "macos_cursor.rs"]
+mod macos_cursor;
 #[path = "macos_service.rs"]
 mod macos_service;
 pub use macos_service::install_service;
@@ -108,6 +110,12 @@ impl PermissionProvider for MacosPlatform {
 }
 
 impl NativePlatform for MacosPlatform {
+    fn supports_cursor(&self) -> bool {
+        true
+    }
+    fn cursor_frame(&self, output: &DisplayOutput) -> Result<Option<crate::backend::CursorFrame>> {
+        macos_cursor::capture(output)
+    }
     fn kind(&self) -> BackendKind {
         BackendKind::Macos
     }

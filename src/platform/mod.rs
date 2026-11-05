@@ -113,6 +113,12 @@ pub trait NativeCapture: Send {
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 pub trait NativePlatform: PermissionProvider {
+    fn supports_cursor(&self) -> bool {
+        false
+    }
+    fn cursor_frame(&self, _: &DisplayOutput) -> Result<Option<crate::backend::CursorFrame>> {
+        Ok(None)
+    }
     fn probe_input(&self) -> Result<()> {
         native::probe_input()
     }

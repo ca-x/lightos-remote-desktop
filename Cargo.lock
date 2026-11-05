@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "lightos-remote-desktop"
-version = "0.1.43"
+version = "0.1.44"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2694,6 +2694,8 @@ dependencies = [
  "libwayshot",
  "media-codec",
  "memmap2",
+ "objc2",
+ "objc2-app-kit",
  "openh264",
  "opus",
  "pipewire",

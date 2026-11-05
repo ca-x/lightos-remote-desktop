@@ -5,7 +5,7 @@ resolver = "3"
 [package]
 name = "lightos-remote-desktop"
 license = "PolyForm-Noncommercial-1.0.0"
-version = "0.1.43"
+version = "0.1.44"
 edition = "2024"
 rust-version = "1.88"
 description = "A cross-platform Rust remote desktop host for browser clients"
@@ -87,6 +87,8 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", 
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation-sys = "0.8"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSCursor", "NSImage", "NSImageRep", "NSGraphicsContext", "objc2-core-graphics"] }
 screencapturekit = { version = "11.1.0", features = ["macos_13_0"] }
 
 [dev-dependencies]
