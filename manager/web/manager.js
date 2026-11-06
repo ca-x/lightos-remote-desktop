@@ -10,6 +10,7 @@
     updating: "正在更新", disabled: "已关闭", running: "运行中", starting: "启动中", permission_required: "待授权", error: "启动失败", offline: "离线",
     permissions: "申请系统权限", requesting: "请在设备上确认权限", container: "LightOS实例桌面", footnote: "桌面仅在开启后运行，系统权限由设备本机确认。",
     stopped: "桌面进程已停止，可重新开启。", runtime: "远程桌面", not_installed: "未安装", installedUnknown: "已安装（版本未知）", latest: "最新", install: "安装远程桌面", update: "更新远程桌面", instanceManaged: "由 LightOS 管理",
+    client_update_required: "请先更新并重启这台设备上的懒猫 PC 客户端，再安装或更新远程桌面。",
     interruptNotice: "更新会中断当前远程桌面连接。确认后将自动关闭服务并更新，完成后恢复服务。", cancel: "取消", confirm: "确认", stopping: "正在关闭远程桌面",
     preparing: "正在准备", downloading: "正在下载", verifying: "正在校验", installing: "正在安装", checking: "正在检查新版本", cleaning: "正在清理旧版本", failedInstall: "安装 / 更新失败，可重试", retryOperation: "重试",
     usable: "可用", desktopUnavailable: "桌面不可用", details: "查看原因", permissionTitle: "桌面访问检查", diagnosticDetails: "诊断详情", recheck: "刷新状态", rechecking: "正在检查…", checkRequested: "设备状态会根据后台检查结果自动更新。", close: "关闭",
@@ -25,6 +26,7 @@
     updating: "Updating", disabled: "Disabled", running: "Running", starting: "Starting", permission_required: "Needs permission", error: "Failed", offline: "Offline",
     permissions: "Request permissions", requesting: "Approve permissions on the device", container: "LightOS instance desktop", footnote: "Desktop capture runs only when enabled. System permissions require approval on the device.",
     stopped: "The desktop process stopped. Try enabling it again.", runtime: "Remote desktop", not_installed: "Not installed", installedUnknown: "Installed (version unknown)", latest: "Latest", install: "Install remote desktop", update: "Update remote desktop", instanceManaged: "Managed by LightOS",
+    client_update_required: "Update and restart the Lazycat PC client on this device before installing or updating remote desktop.",
     interruptNotice: "Updating will disconnect the current remote desktop session. Confirm to stop the service and update it. The service will resume when the update finishes.", cancel: "Cancel", confirm: "Confirm", stopping: "Stopping remote desktop",
     preparing: "Preparing", downloading: "Downloading", verifying: "Verifying", installing: "Installing", checking: "Checking the new version", cleaning: "Removing the old version", failedInstall: "Installation / update failed; retry is available", retryOperation: "Retry",
     usable: "Available", desktopUnavailable: "Desktop unavailable", details: "View details", permissionTitle: "Desktop access check", diagnosticDetails: "Diagnostic details", recheck: "Refresh status", rechecking: "Checking…", checkRequested: "Device status updates automatically from background checks.", close: "Close",
@@ -149,8 +151,10 @@
     const permissionStates = element("div", "permission-states");
     permissionStates.append(screen, input); permissions.append(permissionStates, request);
     const guidance = element("p", "permission-help");guidance.hidden = true;
-    heading.append(name, badge); actions.append(toggle, install, connect); body.append(heading, platform, version, permissions, guidance, operation, error, actions); card.append(cover, body);
-    card.parts = { version, install, operation, operationLabel, operationValue, progress, image, placeholder, name, badge, platform, permissions, screen, input, connect, toggle, request, error, guidance };
+    const runtimeHelp = element("p", "runtime-help", copy.client_update_required);runtimeHelp.hidden = true;
+    runtimeHelp.id = `runtime-help-${item.id}`;
+    heading.append(name, badge); actions.append(toggle, install, connect); body.append(heading, platform, version, permissions, guidance, operation, error, runtimeHelp, actions); card.append(cover, body);
+    card.parts = { version, install, operation, operationLabel, operationValue, progress, image, placeholder, name, badge, platform, permissions, screen, input, connect, toggle, request, error, guidance, runtimeHelp };
     toggle.addEventListener("click", () => act(card.target.id, card.target.enabled ? "stop" : "start"));
     request.addEventListener("click", () => linuxDevice(card.target) ? showPermissionDetails(card.target, connectionConsent(card.target)) : act(card.target.id, "permissions"));
     grid.append(card); return card;
@@ -193,6 +197,12 @@
     p.install.textContent = active ? copy.working : deployment.stage === "failed" ? copy.retryOperation : item.installed ? copy.update : copy.install;
     p.install.classList.toggle("install-primary", !item.installed);
     p.install.disabled = !item.online || !item.can_install || active || processing;
+    const clientUpdateRequired = item.kind === "device" && item.online && !p.install.hidden
+      && !item.can_install && !(item.controller_protocol >= 2) && !active && !processing;
+    p.runtimeHelp.hidden = !clientUpdateRequired;
+    p.install.title = clientUpdateRequired ? copy.client_update_required : "";
+    if (clientUpdateRequired) p.install.setAttribute("aria-describedby", p.runtimeHelp.id);
+    else p.install.removeAttribute("aria-describedby");
     p.permissions.hidden = false;
     p.toggle.hidden = !item.managed || !item.installed;
     p.toggle.textContent = processing ? copy.working : item.enabled ? copy.stop : copy.start;
@@ -240,7 +250,7 @@
       if (response.redirected || response.status === 401 || response.status === 403) throw Error("login_required");
       if (!response.ok) {
         const failure = await response.json().catch(() => ({}));
-        throw Error(failure.error === "update_confirmation_required" ? failure.error : "failed");
+        throw Error(["update_confirmation_required", "client_update_required"].includes(failure.error) ? failure.error : "failed");
       }
       warning.hidden = true;
       const reply = await response.json();
