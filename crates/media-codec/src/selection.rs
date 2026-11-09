@@ -99,10 +99,11 @@ pub fn choose_h264_backend(
                     && cap.codec_string.as_deref().is_some_and(valid_avc_codec)
             })
     };
-    if let Some(backend) = preference.requested_backend() {
-        if backend.is_hardware() && usable(backend) {
-            return Some(backend);
-        }
+    if let Some(backend) = preference.requested_backend()
+        && backend.is_hardware()
+        && usable(backend)
+    {
+        return Some(backend);
     }
     // A failed manual choice (or a saved legacy software preference) must not
     // bypass another verified hardware encoder. Software is the final fallback.

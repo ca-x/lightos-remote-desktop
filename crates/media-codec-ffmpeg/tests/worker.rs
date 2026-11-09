@@ -72,7 +72,7 @@ async fn real_worker_only_advertises_hardware_after_bounded_encode_decode_probe(
     )));
     let started = std::time::Instant::now();
     let caps = worker.probe().await;
-    assert_eq!(caps.len(), 4);
+    assert_eq!(caps.len(), EncoderBackend::HARDWARE.len());
     assert!(started.elapsed() < std::time::Duration::from_secs(12));
     for cap in caps {
         eprintln!(

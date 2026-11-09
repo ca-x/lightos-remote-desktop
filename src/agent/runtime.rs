@@ -89,13 +89,13 @@ impl Runtime {
             self.probe(false)?;
         }
 
-        if let Some(child) = &mut self.child {
-            if child.try_wait()?.is_some() {
-                self.child = None;
-                self.desktop["ready"] = json!(false);
-                self.error = Some("desktop_process_stopped".into());
-                self.start_at = Instant::now() + Duration::from_secs(15);
-            }
+        if let Some(child) = &mut self.child
+            && child.try_wait()?.is_some()
+        {
+            self.child = None;
+            self.desktop["ready"] = json!(false);
+            self.error = Some("desktop_process_stopped".into());
+            self.start_at = Instant::now() + Duration::from_secs(15);
         }
         if !enabled {
             self.desktop["enabled"] = json!(false);

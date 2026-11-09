@@ -157,8 +157,14 @@ pub fn rgba(buffer: &NativePixelBuffer) -> Result<Arc<[u8]>> {
     let mut pixels = vec![0; width * height * 4];
     for y in 0..height {
         for (source, target) in source[y * stride..y * stride + width * 4]
-            .chunks_exact(4)
-            .zip(pixels[y * width * 4..(y + 1) * width * 4].chunks_exact_mut(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(
+                pixels[y * width * 4..(y + 1) * width * 4]
+                    .as_chunks_mut::<4>()
+                    .0,
+            )
         {
             target.copy_from_slice(&[source[2], source[1], source[0], source[3]]);
         }

@@ -18,10 +18,13 @@ const preferenceSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/p
 const geometrySource = stripTypeScriptTypes(readFileSync(new URL("../web/src/picture-geometry.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const rotationSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/screen-rotation.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
 const touchPairSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/touch-pair.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
-const source = platformSource + "\n" + touchPairSource + "\n" + geometrySource + "\n" + rotationSource + "\n" + lightBookSource + "\n" + zoomSource + "\n" + cursorSource + "\n" + updatesSource + "\n" + resolutionSource + "\n" + mobileSource + "\n" + clipboardSource + "\n" + preferenceSource + "\n" + codecSource + "\n" + stripTypeScriptTypes(readFileSync(new URL("../web/src/client.ts", import.meta.url), "utf8"))
+const previewSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/preview.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
+const decoderSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/video-decoder.ts", import.meta.url), "utf8")).replace(/^export /gm, "").replace(/^import .* from .*;$/gm, "");
+const nativeInputSource = stripTypeScriptTypes(readFileSync(new URL("../web/src/native-input.ts", import.meta.url), "utf8")).replace(/^export /gm, "").replace(/^import .* from .*;$/gm, "");
+const source = previewSource + "\n" + decoderSource + "\n" + nativeInputSource + "\n" + platformSource + "\n" + touchPairSource + "\n" + geometrySource + "\n" + rotationSource + "\n" + lightBookSource + "\n" + zoomSource + "\n" + cursorSource + "\n" + updatesSource + "\n" + resolutionSource + "\n" + mobileSource + "\n" + clipboardSource + "\n" + preferenceSource + "\n" + codecSource + "\n" + stripTypeScriptTypes(readFileSync(new URL("../web/src/client.ts", import.meta.url), "utf8"))
 
   .replace(/^import .* from .*;$/gm, "")
-  .replace(/^export /gm, "") + '\nconst audioWorkerUrl = "./audio-worker.js"; const audioWorkletUrl = "./audio-worklet.js"; const client = createClient(clientOptions);';
+  .replace(/^export /gm, "") + '\nconst workerUrl = "./video-worker.js"; const audioWorkerUrl = "./audio-worker.js"; const audioWorkletUrl = "./audio-worklet.js"; const client = createClient(clientOptions);';
 const html = readFileSync(new URL("../web/src/App.tsx", import.meta.url), "utf8");
 const builtHtml = readFileSync(new URL("../web/dist/index.html", import.meta.url), "utf8");
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -64,9 +67,10 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}, pixelR
     }
     setAttribute(name, value) { this.attributes[name] = value; }
     removeAttribute(name) { delete this.attributes[name]; }
+    get options() { return this.children ?? []; }
     appendChild(child) { (this.children ??= []).push(child); }
     replaceChildren(...children) { this.children = children; }
-    getBoundingClientRect() { return { left: 10, top: 20, width: 200, height: 100 }; }
+    getBoundingClientRect() { return { left: 10, top: 20, right: 210, bottom: 120, width: 200, height: 100 }; }
     focus() { document.activeElement = this; }
     setPointerCapture(id) { this.captures.add(id); }
     hasPointerCapture(id) { return this.captures.has(id); }
@@ -116,7 +120,7 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}, pixelR
       assert.ok(code === undefined || code === 1000 || (code >= 3000 && code <= 4999), "Browser-legal close code");
       this.readyState = 2;
     }
-    finishClose() { this.readyState = 3; this.onclose?.(); }
+    finishClose() { this.readyState = 3; this.onclose?.({ code: 1000 }); }
     open() { this.readyState = 1; this.onopen?.(); }
     json(value) { this.onmessage?.({ data: JSON.stringify(value) }); }
     binary(data) { this.onmessage?.({ data }); }
@@ -152,6 +156,10 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}, pixelR
   window.AudioContext = AudioContext;
   const navigator = { platform, maxTouchPoints: touchPoints, clipboard: { readText: async () => "local text" } };
   const context = vm.createContext({ document, window, navigator, AbortController, AbortSignal, WebSocket, clientOptions,
+    setInterval, clearInterval,
+    get VideoDecoder() { return window.VideoDecoder; },
+    get EncodedVideoChunk() { return window.EncodedVideoChunk; },
+    EventTarget, Event, DOMException,
     URL, location: { href: `https://desktop.test${pathname}`, pathname, protocol: "https:" },
     ArrayBuffer, Uint8Array, DataView, TextEncoder, Blob, performance: { now: () => now },
     localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
@@ -167,6 +175,7 @@ function harness(pathname = "/", storage = new Map(), clientOptions = {}, pixelR
   const ready = (socket = sockets.at(-1), audio = true) => {
     socket.open();
     socket.json({ type: "ready", width: 1280, height: 720, audio });
+    document.fire("pointermove", { clientX: 50, clientY: 50, pointerType: "mouse" });
     return socket;
   };
   const fireKey = (code, properties = {}) => nodes.desktop.fire("keydown", {
@@ -639,7 +648,7 @@ test("toolbar tap opens without moving, cancelled drag restores location and rel
   assert.equal(handle.hasPointerCapture(2), false);
 });
 
-test("fullscreen preserves native paste while capturing other keys and emergency escape", async () => {
+test("fullscreen requests all available keys and emergency escape releases capture", async () => {
   const app = harness();
   const requests = [];
   let unlocks = 0;
@@ -648,9 +657,7 @@ test("fullscreen preserves native paste while capturing other keys and emergency
   app.nodes.fullscreen.fire("click");
   await flush();
   assert.equal(requests.length, 1);
-  assert.ok(requests[0][0].includes("MetaLeft"));
-  assert.ok(requests[0][0].includes("KeyC"));
-  assert.ok(!requests[0][0].includes("KeyV"), "browser must receive trusted paste");
+  assert.deepEqual(requests[0], [], "Keyboard Lock with no key list requests all available keys");
   assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "true");
   app.fireKey("Escape", { ctrlKey: true, altKey: true, shiftKey: true });
   assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "false");
@@ -726,7 +733,7 @@ test("late keyboard permission cannot capture after disconnect, denial and unsup
   assert.match(unsupported.nodes["keyboard-state"].textContent, /不支持/);
 });
 
-test("capture sends Super+Enter remotely while Ctrl+V keeps local clipboard paste available", async () => {
+test("desktop capture sends Super+Enter and Ctrl+V as physical remote chords", async () => {
   const app = harness();
   app.navigator.keyboard = { lock: async () => {}, unlock() {} };
   const socket = app.ready();
@@ -743,14 +750,14 @@ test("capture sends Super+Enter remotely while Ctrl+V keeps local clipboard past
   app.window.fire("keyup", { code: "MetaLeft" });
   socket.sent.length = 0;
   const paste = app.fireKey("KeyV", { ctrlKey: true });
-  assert.equal(paste.defaultPrevented, undefined);
-  assert.deepEqual(socket.sent, [{ type: "release" }]);
+  assert.equal(paste.defaultPrevented, true);
+  assert.deepEqual(socket.sent, [{ type: "key", code: 29, pressed: true }, { type: "key", code: 47, pressed: true }]);
   app.nodes.desktop.fire("blur");
   assert.equal(socket.sent.at(-1).type, "release");
   assert.equal(app.nodes["keyboard-capture"].attributes["aria-pressed"], "false");
   app.nodes.desktop.focus();
   const localPaste = app.fireKey("KeyV", { ctrlKey: true });
-  assert.equal(localPaste.defaultPrevented, undefined);
+  assert.equal(localPaste.defaultPrevented, true);
 });
 
 test("keyboard capture resumes after pending permission loses focus and after automatic reconnect", async () => {
@@ -969,6 +976,7 @@ test("H.264 waits for codec setup, acknowledges rendered frames and closes stale
     chunks = [];
     static async isConfigSupported() { return { supported: true }; }
     constructor(callbacks) { this.callbacks = callbacks; decoders.push(this); }
+    addEventListener() {}
     configure(config) { this.config = config; this.state = "configured"; }
     decode(chunk) { this.chunks.push(chunk); }
     close() { this.state = "closed"; }
@@ -1008,6 +1016,7 @@ test("pipelined H.264 shares one watchdog until all rendered frames are acknowle
     state = "unconfigured";
     decodeQueueSize = 0;
     chunks = [];
+    addEventListener() {}
     static async isConfigSupported() { return { supported: true }; }
     constructor(callbacks) { this.callbacks = callbacks; decoder = this; }
     configure() { this.state = "configured"; }
@@ -1319,7 +1328,7 @@ test("missing ready message times out without opening a concurrent socket", () =
 });
 
 test("composition and explicit Unicode text do not duplicate physical keys", () => {
-  const app = harness();
+  const app = harness("/", new Map(), {}, 1, 5, "iPad");
   const socket = app.ready();
   app.nodes.desktop.fire("compositionstart");
   app.fireKey("KeyA", { isComposing: true });
@@ -1338,10 +1347,11 @@ test("composition and explicit Unicode text do not duplicate physical keys", () 
   assert.equal(socket.sent.filter((command) => command.type === "text").length, 2);
 });
 
-test("desktop focus uses an editable IME and preserves physical keys without duplicating input", () => {
-  const app = harness();
+test("mobile keyboard commits printable text and IME input without duplicating physical keys", () => {
+  const app = harness("/", new Map(), {}, 1, 5, "iPad");
   const socket = app.ready();
-  app.nodes.desktop.fire("focus");
+  app.nodes["mobile-keyboard"].dataset = {};
+  app.nodes["mobile-shortcuts"].fire("click", { target: { closest: () => app.nodes["mobile-keyboard"] } });
   const input = app.nodes["mobile-input"];
   assert.equal(app.document.activeElement, input);
   assert.equal(input.disabled, false);
@@ -1349,11 +1359,12 @@ test("desktop focus uses an editable IME and preserves physical keys without dup
   assert.equal(down.defaultPrevented, undefined);
   assert.equal(socket.sent.some(c => c.type === "key"), false, "wait for native text vs IME decision");
   input.fire("beforeinput", { inputType: "insertText", data: "a", cancelable: true });
+  input.value = "\u200ba";
+  input.fire("input", { inputType: "insertText", data: "a" });
   app.window.fire("keyup", { code: "KeyA" });
-  assert.deepEqual(socket.sent.filter(c => c.type === "key"), [
-    { type: "key", code: 30, pressed: true }, { type: "key", code: 30, pressed: false },
-  ]);
-  assert.equal(socket.sent.some(c => c.type === "text"), false);
+  assert.equal(socket.sent.some(c => c.type === "key"), false);
+  assert.deepEqual(socket.sent.filter(c => c.type === "text"), [{ type: "text", text: "a" }]);
+  socket.sent.length = 0;
   input.fire("keydown", { code: "KeyN", key: "n" });
   input.fire("compositionstart");
   input.value = "\u200b你";
@@ -1365,14 +1376,13 @@ test("desktop focus uses an editable IME and preserves physical keys without dup
   assert.equal(socket.sent.some(c => c.code === 49), false, "initial IME key must not leak remotely");
 });
 
-test("clicking the canvas before readiness restores editable focus when physical setup finishes", () => {
+test("desktop canvas retains physical keyboard focus when physical setup finishes", () => {
   const app=harness();app.nodes.desktop.focus();
   const socket=app.ready();
   socket.json({type:'ready',desktop:'physical',width:1280,height:720,resize:false});
-  assert.equal(app.document.activeElement,app.nodes['mobile-input']);
-  app.nodes.desktop.focus();
+  assert.equal(app.document.activeElement,app.nodes.desktop);
   app.nodes.desktop.fire('pointerdown',{button:0,pointerId:1,clientX:50,clientY:50});
-  assert.equal(app.document.activeElement,app.nodes['mobile-input']);
+  assert.equal(app.document.activeElement,app.nodes.desktop);
 });
 
 test("repeated shortcut sender uses atomic chords and restores desktop keyboard focus", () => {
@@ -1395,8 +1405,8 @@ test("repeated shortcut sender uses atomic chords and restores desktop keyboard 
   assert.equal(socket.sent.filter(c => c.code === 45 && c.pressed === false).length, 30);
 });
 
-test("negotiated text paste uses the native clipboard and retains terminal Ctrl+Shift+V", () => {
-  const app = harness();
+test("negotiated mobile text paste uses the native clipboard and retains terminal Ctrl+Shift+V", () => {
+  const app = harness("/", new Map(), {}, 1, 5, "iPad");
   const socket = app.ready();
   socket.json({ type: "ready", width: 1280, height: 720, image_clipboard: true });
   app.fireKey("KeyV", { ctrlKey: true, shiftKey: true });
@@ -1887,9 +1897,12 @@ test("hardware backend defaults to auto, persists and is negotiated independentl
 });
 
 test("browser rejects the active hardware profile and requests another H264 backend before JPEG", async () => {
-  const app=harness();const socket=app.sockets.at(-1);socket.open();
+  const app=harness();app.window.VideoDecoder = class {};app.window.EncodedVideoChunk = class {};const socket=app.sockets.at(-1);socket.open();
   socket.json({type:"ready",width:1280,height:720,frame_ack:true,frame_ids:true,video_codecs:["h264","jpeg"],backend_selection:true});
   socket.sent.length=0;
+  socket.json({type:"video_config",codec:"avc1.invalid",width:1280,height:720,backend:"nvenc"});
+  await flush();
+  assert.ok(socket.sent.some(p=>p.type==="video"&&p.codec==="h264"&&!p.rejected_backend), "try browser software decoding before rejecting the server encoder");
   socket.json({type:"video_config",codec:"avc1.invalid",width:1280,height:720,backend:"nvenc"});
   await flush();
   assert.ok(socket.sent.some(p=>p.type==="video"&&p.codec==="h264"&&p.rejected_backend==="nvenc"));
@@ -1904,6 +1917,7 @@ for (const [control, preference] of [["encoder-backend", "software"], ["video-co
     app.window.VideoDecoder = class {
       static async isConfigSupported(config) { return { supported: true, config }; }
       constructor() { this.state = "unconfigured"; this.decodeQueueSize = 0; }
+      addEventListener() {}
       configure() { this.state = "configured"; }
       decode() {}
       close() { this.state = "closed"; }
@@ -2083,6 +2097,7 @@ test("scaled H264 associates source geometry with output timestamps", async () =
   let decoder;
   app.window.VideoDecoder = class {
     state = "unconfigured"; decodeQueueSize = 0; chunks = [];
+    addEventListener() {}
     static async isConfigSupported() { return { supported: true }; }
     constructor(callbacks) { this.callbacks = callbacks; decoder = this; }
     configure() { this.state = "configured"; }
@@ -2135,7 +2150,7 @@ test("physical picture zoom requests native video and survives encoding-size cha
   assert.equal(socket.sent.some(p => p.type === "resize"), false);
 });
 
-for (const [codec, backend] of [["auto", "auto"], ["h264", "software"], ["h264", "nvenc"], ["jpeg", "auto"]]) {
+for (const [codec, backend] of [["auto", "auto"], ["h264", "auto"], ["h264", "nvenc"], ["jpeg", "auto"]]) {
   test(`background encoder discovery preserves ${codec}/${backend} preference`, () => {
     const storage = new Map([["lightos-desktop-video-codec", codec], ["lightos-desktop-encoder-backend", backend]]);
     const app = harness("/", storage);
@@ -2220,8 +2235,8 @@ test("rotated mobile fullscreen negotiates landscape encoding bounds while contr
   app.run("client.destroy()");
 });
 
-test("Command paste never emits a bare remote Super tap, while Super chords and taps still work", () => {
-  const app=harness();const socket=app.ready();app.nodes.desktop.focus();socket.sent.length=0;
+test("mobile Command paste never emits a bare remote Super tap, while Super chords and taps still work", () => {
+  const app=harness("/",new Map(),{},1,5,"iPad");const socket=app.ready();app.nodes.desktop.focus();socket.sent.length=0;
   app.fireKey("MetaLeft",{metaKey:true});
   assert.equal(socket.sent.some(command=>command.type==="key"&&command.code===125),false);
   app.fireKey("KeyV",{metaKey:true});
@@ -2239,7 +2254,7 @@ test("Command paste never emits a bare remote Super tap, while Super chords and 
 
 test("Apple Command copy requests the remote copy action without leaking Super, and Linux Ctrl+C stays physical", () => {
   for (const platform of ["MacIntel", "Linux x86_64"]) {
-    const app=harness("/",new Map(),{},1,0,platform),socket=app.ready();
+    const app=harness("/",new Map(),{},1,platform==="MacIntel"?5:0,platform),socket=app.ready();
     socket.json({type:"ready",width:1280,height:720,clipboard_sync:true,clipboard_session:"b".repeat(32)});
     app.nodes.desktop.focus();socket.sent.length=0;
     const apple=platform==="MacIntel";
