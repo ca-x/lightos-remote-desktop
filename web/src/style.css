@@ -250,6 +250,10 @@ button { transition: background-color 125ms ease, color 125ms ease, opacity 125m
 @media (any-pointer: coarse) { :root input, :root textarea, :root select { font-size: 16px; } }
 
 .desktop-recovery { position: absolute; z-index: 6; left: 50%; top: 50%; transform: translate(-50%, -50%); width: max-content; max-width: calc(100% - 32px); padding: 16px 20px; border: 0; border-radius: 12px; background: var(--surface); color: var(--text); text-align: center; pointer-events: none; font-size: 14px; }
+.desktop-recovery button { pointer-events: auto; }
+.takeover-dialog { width: min(440px, 100%); height: auto; overflow-y: auto; }
+.takeover-description { margin: 0; padding: 0 24px; font-size: 14px; line-height: 1.7; }
+.takeover-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; padding: 24px; }
 .desktop-authorization { width: min(420px, calc(100% - 32px)); line-height: 1.7; box-shadow: 0 8px 32px #0003; }
 .desktop-authorization p { margin: 10px 0 0; font-size: 13px; }
 

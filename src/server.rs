@@ -12,7 +12,7 @@ use axum::{
     body::Body,
     extract::{
         OriginalUri, Query, State, WebSocketUpgrade,
-        ws::{Message, WebSocket},
+        ws::{CloseFrame, Message, WebSocket},
     },
     http::{HeaderMap, Request, StatusCode, header},
     middleware::{self, Next},
@@ -60,6 +60,8 @@ enum DesktopMode {
 struct DesktopRequest {
     desktop: Option<DesktopMode>,
     output: Option<String>,
+    #[serde(default)]
+    takeover: bool,
 }
 
 #[derive(Deserialize)]
@@ -79,6 +81,7 @@ pub struct AppState {
     host: Arc<dyn HostPlatform>,
     audio: Arc<dyn AudioCaptureFactory>,
     controller: Arc<AtomicBool>,
+    browser_controller: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
     input_failed: Arc<AtomicBool>,
     audio_hub: Arc<AudioHub>,
     cursor_hub: Arc<crate::cursor::Hub>,
@@ -155,6 +158,7 @@ impl AppState {
             host: crate::platform::current(),
             audio,
             controller: Arc::new(AtomicBool::new(false)),
+            browser_controller: Arc::new(tokio::sync::Mutex::new(None)),
             input_failed: Arc::new(AtomicBool::new(false)),
             audio_hub: Arc::new(AudioHub::default()),
             cursor_hub: Arc::new(crate::cursor::Hub::default()),
@@ -291,6 +295,7 @@ impl AppState {
             displays,
             config: self.config,
             controller: self.controller,
+            browser_controller: self.browser_controller,
             input_failed: self.input_failed,
             audio_hub: self.audio_hub,
             backend,
@@ -650,16 +655,6 @@ async fn upgrade(
     if !origin_allowed(&headers) {
         return (StatusCode::FORBIDDEN, "Same-origin WebSocket required").into_response();
     }
-    if state
-        .controller
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return (StatusCode::CONFLICT, "A controller is already connected").into_response();
-    }
-    let mut lease = ControllerLease {
-        state: state.clone(),
-    };
     let connection_id = NEXT_CONNECTION.fetch_add(1, Ordering::Relaxed);
     let mode = request.desktop.unwrap_or(state.desktop);
     let started = Instant::now();
@@ -668,6 +663,42 @@ async fn upgrade(
         .max_message_size(128 * 1024)
         .max_frame_size(128 * 1024)
         .on_upgrade(move |mut socket| async move {
+            // Serialize browser admission through the entire release barrier.
+            // Never clear the shared controller gate on behalf of its owner.
+            let mut owner = state.browser_controller.lock().await;
+            let occupied = state.controller.load(Ordering::Acquire);
+            let browser_active = owner.as_ref().is_some_and(|token| !token.is_cancelled());
+            let failure = if state.input_failed() {
+                Some(json!({"type":"error", "message":"Input release failed. Restart the remote desktop service before reconnecting.", "retryable":false}))
+            } else if occupied && (!request.takeover || !browser_active) {
+                Some(json!({"type":"controller_busy", "takeover_available":browser_active}))
+            } else {
+                if occupied {
+                    owner.as_ref().unwrap().cancel();
+                }
+                let released = timeout(Duration::from_secs(15), async {
+                    while state.controller.load(Ordering::Acquire) && !state.input_failed() {
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                }).await.is_ok();
+                if !released || state.input_failed() || state.controller
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+                    Some(json!({"type":"error", "message":"Could not release the previous connection. Try again or restart the remote desktop service.", "retryable":false}))
+                } else {
+                    None
+                }
+            };
+            if let Some(failure) = failure {
+                drop(owner);
+                let _ = timeout(Duration::from_secs(1), socket.send(Message::Text(failure.to_string().into()))).await;
+                let _ = timeout(Duration::from_secs(1), socket.close()).await;
+                return;
+            }
+            let takeover = tokio_util::sync::CancellationToken::new();
+            let _controller_finished = takeover.clone().drop_guard();
+            *owner = Some(takeover.clone());
+            drop(owner);
+            let mut lease = ControllerLease { state: state.clone() };
             let cancelled = Arc::new(AtomicBool::new(false));
             let initialize_cancelled = cancelled.clone();
             let (authorization, mut authorization_notice) = tokio::sync::oneshot::channel();
@@ -678,6 +709,10 @@ async fn upgrade(
             let result = loop {
                 tokio::select! {
                     biased;
+                    _ = takeover.cancelled() => {
+                        let _ = timeout(Duration::from_secs(1), socket.send(Message::Text(json!({"type":"controller_replaced"}).to_string().into()))).await;
+                        break None;
+                    },
                     result = &mut initialize => break Some(result),
                     notice = &mut authorization_notice, if awaiting_authorization => {
                         awaiting_authorization = false;
@@ -696,6 +731,7 @@ async fn upgrade(
                 let _ = timeout(Duration::from_secs(1), socket.close()).await;
                 let result = initialize.await;
                 let _ = tokio::task::spawn_blocking(move || drop(result)).await;
+                takeover.cancel();
                 lease.release().await;
                 tracing::info!(connection_id, elapsed_ms = started.elapsed().as_millis() as u64, "desktop initialization cancelled; controller released");
                 return;
@@ -703,13 +739,20 @@ async fn upgrade(
             match result {
                 Ok(Ok(selected)) => {
                     lease.state = selected.clone();
-                    let end = connection(socket, selected, connection_id, started).await;
+                    let end = connection(socket, selected, connection_id, started, takeover.clone()).await;
+                    takeover.cancel();
                     let released = lease.release().await;
                     tracing::info!(connection_id, "desktop controller released");
                     if let Some(mut end) = end {
                         if end.release_requested && released {
                             let acknowledgement = Message::Text(json!({"type":"released"}).to_string().into());
                             let _ = timeout(Duration::from_secs(1), end.writer.send(acknowledgement)).await;
+                        }
+                        if end.replaced {
+                            let _ = timeout(Duration::from_secs(1), end.writer.send(Message::Close(Some(CloseFrame {
+                                code: 4001,
+                                reason: "Controller replaced".into(),
+                            })))).await;
                         }
                         let close = timeout(Duration::from_secs(1), end.writer.close()).await;
                         tracing::info!(connection_id, flushed = matches!(close, Ok(Ok(()))), "desktop close handshake");
@@ -727,6 +770,7 @@ async fn upgrade(
                     let _ = timeout(Duration::from_secs(1), socket.close()).await;
                 }
             }
+            takeover.cancel();
             lease.release().await;
             tracing::info!(connection_id, "desktop controller released");
         })
@@ -816,6 +860,7 @@ async fn upgrade_audio(
 struct ConnectionEnd {
     writer: SplitSink<WebSocket, Message>,
     release_requested: bool,
+    replaced: bool,
 }
 
 async fn connection(
@@ -823,8 +868,39 @@ async fn connection(
     state: AppState,
     connection_id: u64,
     connection_started: Instant,
+    takeover: tokio_util::sync::CancellationToken,
 ) -> Option<ConnectionEnd> {
     let (mut writer, reader) = socket.split();
+    // Cover readiness probes as well as the streaming loop: a forgotten
+    // window may still be waiting for capabilities when it is taken over.
+    let result = tokio::select! {
+        biased;
+        _ = takeover.cancelled() => None,
+        result = stream_connection(&mut writer, reader, state, connection_id, connection_started) => Some(result),
+    };
+    if result.is_none() {
+        let _ = timeout(
+            Duration::from_secs(1),
+            writer.send(Message::Text(
+                json!({"type":"controller_replaced"}).to_string().into(),
+            )),
+        )
+        .await;
+    }
+    Some(ConnectionEnd {
+        writer,
+        release_requested: result.flatten().unwrap_or(false),
+        replaced: result.is_none(),
+    })
+}
+
+async fn stream_connection(
+    writer: &mut SplitSink<WebSocket, Message>,
+    reader: futures_util::stream::SplitStream<WebSocket>,
+    state: AppState,
+    connection_id: u64,
+    connection_started: Instant,
+) -> Option<bool> {
     let (control_tx, mut controls) = mpsc::channel(16);
     let (pacing_tx, mut pacing) =
         watch::channel(FrameScheduler::new(state.config.fps).expect("validated frame rate"));
@@ -1323,10 +1399,7 @@ async fn connection(
         state.backend.input().send(InputCommand::Release),
     )
     .await;
-    Some(ConnectionEnd {
-        writer,
-        release_requested,
-    })
+    Some(release_requested)
 }
 
 // A transient slow link must not tear down an otherwise live desktop. Input

@@ -23,6 +23,10 @@ retains its existing virtual desktops and systemd services. See
   light/dark/system theme preferences, stored locally without reconnecting.
   These themes affect only the controls, not the captured desktop.
 - View and control the desktop from a browser, with authentication and automatic reconnect.
+  If another browser window is connected, confirm “Take over picture” to disconnect it
+  and reconnect here, or cancel to leave it untouched. The replaced window explains
+  what happened and stops automatic reconnect; another takeover requires confirmation.
+  Desktop applications keep running. Non-browser controllers must disconnect first.
 - Enable/disable TLS RDP and set its port in Settings → RDP, using the same
   owned virtual desktop as the browser. It is off by default and retains the
   loopback bind policy; use SSH forwarding for remote access. Settings shows the

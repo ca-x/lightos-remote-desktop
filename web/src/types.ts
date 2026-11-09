@@ -52,6 +52,7 @@ export interface ClientOptions {
   onToolbarDirection?: (direction: ToolbarDirection) => void;
   translate?: (text: string) => string;
   onControls?: (state: ControlState) => void;
+  onOwnership?: (state: "busy" | "replaced" | "unavailable" | null) => void;
   onToolsOpen?: (open: boolean, focus: boolean) => void;
   isToolsOpen?: () => boolean;
 }
@@ -91,6 +92,7 @@ export interface Elements {
   "send-shortcut": HTMLButtonElement;
   audio: HTMLButtonElement;
   connection: HTMLButtonElement;
+  "takeover-connection": HTMLButtonElement;
   "mode-fit": HTMLButtonElement;
   "mode-actual": HTMLButtonElement;
   fullscreen: HTMLButtonElement;

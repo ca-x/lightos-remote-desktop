@@ -10,6 +10,11 @@ const en = {
   lightbookUnavailable: "Available on phones, tablets and foldable touch devices.",
   lightbookKeyboard: "Full keyboard", lightbookTrackpad: "Trackpad", lightbookTrackpadHint: "Trackpad", lightbookSpace: "Space",
   lightbookTrackpadHelp: "Move with one finger; tap to click; tap with two fingers for right-click; scroll with two fingers; double-tap and hold or hold still to drag.",
+  desktopOccupied: "Remote desktop is in use", desktopReplaced: "Remote desktop is connected in another window",
+  desktopOccupiedHint: "Take over the picture to continue here. Desktop applications will keep running.",
+  desktopControllerHint: "Another controller is connected. Disconnect it, then reconnect here.",
+  takeoverConfirmation: "Another window is using the remote desktop. Take over the picture? The previous window will be disconnected, but desktop applications will keep running.",
+  takeoverDesktop: "Take over picture", cancelTakeover: "Cancel", reconnectDesktop: "Reconnect",
   desktopNotConnected: "Desktop not connected", desktopRecoveryHint: "Reload the page to reconnect. Open the tools menu to check the status or select another desktop.",
   rdpTitle: "RDP access",
   rdpEnabled: "Enable RDP",
@@ -61,6 +66,11 @@ const zh: Record<keyof typeof en, string> = {
   lightbookUnavailable: "仅支持手机、平板和折叠屏触摸设备。",
   lightbookKeyboard: "全键盘", lightbookTrackpad: "触控板", lightbookTrackpadHint: "触控板", lightbookSpace: "空格",
   lightbookTrackpadHelp: "单指移动，轻点左键，双指轻点右键，双指滚动；双击后按住或按住不动可拖拽。",
+  desktopOccupied: "远程桌面正在被使用", desktopReplaced: "远程桌面已在其他窗口连接",
+  desktopOccupiedHint: "可点击「抢占画面」在当前窗口继续使用，桌面中已打开的应用不会关闭。",
+  desktopControllerHint: "其他控制端正在连接，请先断开该连接，再在此重新连接。",
+  takeoverConfirmation: "已有窗口正在使用远程桌面，是否抢占画面？抢占后，原窗口的远程连接将断开，桌面中已打开的应用保持运行。",
+  takeoverDesktop: "抢占画面", cancelTakeover: "取消", reconnectDesktop: "重新连接",
   desktopNotConnected: "桌面尚未连接", desktopRecoveryHint: "刷新页面可重新连接，打开工具菜单可查看状态或切换桌面。",
   rdpTitle: "RDP 接入",
   rdpEnabled: "启用 RDP",
@@ -123,6 +133,11 @@ const clientPairs: [string, string][] = [
   ["Connection is too slow; reconnecting to release input safely.", "连接过慢，正在重新连接以安全释放输入。"],
   ["Waiting for network", "等待网络恢复"],
   ["Connection stopped responding; reconnecting.", "连接长时间无响应，正在重新连接。"],
+  ["Remote desktop is connected in another window.", "远程桌面已在其他窗口连接。"],
+  ["Another window is using the remote desktop.", "已有窗口正在使用远程桌面。"],
+  ["Another controller is using the remote desktop. Disconnect it before reconnecting.", "其他控制端正在使用远程桌面，请先断开该连接再重新连接。"],
+  ["Input release failed. Restart the remote desktop service before reconnecting.", "键鼠控制未能安全释放，请重启远程桌面服务后重新连接。"],
+  ["Could not release the previous connection. Try again or restart the remote desktop service.", "未能释放原有连接，请重试或重启远程桌面服务。"],
   ["Connection close timed out; retrying.", "连接关闭超时，正在重试。"],
   ["Desktop readiness timed out; reconnecting.", "桌面就绪超时，正在重新连接。"],
   ["Desktop initialization timed out. Reconnect to try again.", "桌面初始化超时，请手动重新连接。"],
@@ -153,7 +168,7 @@ export function translateClient(text: string): string {
   const chinese = i18n.language.startsWith("zh");
   if (pair) return pair[chinese ? 1 : 0];
   for (const [prefix, chinesePrefix] of [["Server: ", "服务端："], ["Could not connect: ", "无法连接："], ["Audio unavailable: ", "音频不可用："], ["Fullscreen unavailable: ", "全屏不可用："], ["Keyboard capture unavailable: ", "键盘捕获不可用："]]) {
-    if (text.startsWith(prefix)) return (chinese ? chinesePrefix : prefix) + text.slice(prefix.length);
+    if (text.startsWith(prefix)) return (chinese ? chinesePrefix : prefix) + translateClient(text.slice(prefix.length));
   }
   if (chinese) return text
     .replace(/^Automatic reconnect stopped after two retries\. /, "自动重连已尝试两次并停止。")

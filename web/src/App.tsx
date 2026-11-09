@@ -85,6 +85,8 @@ function Workspace() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState(0);
   const [controls, setControls] = useState(initialControls);
+  const [ownership, setOwnership] = useState<"busy" | "replaced" | "unavailable" | null>(null);
+  const [takeoverOpen, setTakeoverOpen] = useState(false);
   const [language, setLanguage] = useState<LanguagePreference>(() => readPreference(languageKey, languages, "system"));
   const [theme, setTheme] = useState<ThemePreference>(() => readPreference(themeKey, themes, "system"));
   const [lightBookPreference, setLightBookPreference] = useState(() => readPreference(lightBookKey, lightBookModes, "off"));
@@ -104,6 +106,11 @@ function Workspace() {
         translate: translateClient,
         lightBook: lightBookState.current,
         onControls: setControls,
+        onOwnership(state) {
+          setOwnership(state);
+          setTakeoverOpen(state === "busy");
+          if (state === "busy") { setSettingsOpen(false); setUtility(null); setMenu(""); }
+        },
         onSessionView: setView,
         onStatus: (id, text) => setStatus((current) => ({ ...current, [id]: text })),
         onToolbarDock: setEdge,
@@ -198,7 +205,10 @@ function Workspace() {
     <canvas id="desktop" width="1280" height="720" tabIndex={0} aria-label={t("canvas")} />
     <img id="remote-cursor" className="remote-cursor" alt="" aria-hidden="true" hidden />
     <div id="desktop-recovery" className="desktop-recovery" role="status" hidden={controls.ready || controls.wanted}>
-      <strong>{t("desktopNotConnected")}</strong><p>{t("desktopRecoveryHint")}</p>
+      <strong>{t(ownership === "replaced" ? "desktopReplaced" : ownership ? "desktopOccupied" : "desktopNotConnected")}</strong>
+      <p>{ownership ? t(ownership === "unavailable" ? "desktopControllerHint" : "desktopOccupiedHint") : status.message || t("desktopRecoveryHint")}</p>
+      {ownership && ownership !== "unavailable" && <Button onClick={() => setTakeoverOpen(true)}>{t("takeoverDesktop")}</Button>}
+      {(!ownership || ownership === "unavailable") && <Button onClick={() => invoke("connection")}>{t("reconnectDesktop")}</Button>}
     </div>
     <div id="desktop-authorization" className="desktop-recovery desktop-authorization" role="status" aria-live="polite" hidden={!controls.authorizationPending || controls.ready || !controls.wanted}>
       <strong>{t("authorizationWaiting")}</strong><p>{t("authorizationWaitingHint")}</p>
@@ -307,9 +317,20 @@ function Workspace() {
       <Button id="mode-fit" /><Button id="mode-actual" /><Button id="switch-input-method" />
       <p id="state" /><p id="performance" /><p id="video-details" /><p id="message" />
       <p id="display-mode" />
-      <Button id="connection" />
+      <Button id="connection" /><Button id="takeover-connection" />
       <section id="desktop-controls"><Select id="desktop-source" /><div id="monitor-controls"><Select id="monitor-source" /></div><p id="desktop-status" /></section>
     </div>
+    <Dialog open={takeoverOpen} onClose={() => setTakeoverOpen(false)} className="settings-shell is-open">
+      <DialogBackdrop className="settings-backdrop" />
+      <div className="settings-positioner"><DialogPanel className="settings-dialog takeover-dialog">
+        <header className="settings-heading"><DialogTitle>{t("desktopOccupied")}</DialogTitle></header>
+        <p className="takeover-description">{t("takeoverConfirmation")}</p>
+        <div className="takeover-actions">
+          <Button data-autofocus onClick={() => setTakeoverOpen(false)}>{t("cancelTakeover")}</Button>
+          <Button onClick={() => { setTakeoverOpen(false); invoke("takeover-connection"); }}>{t("takeoverDesktop")}</Button>
+        </div>
+      </DialogPanel></div>
+    </Dialog>
     <Dialog static open={utility !== null} onClose={() => setUtility(null)} className={`settings-shell ${utility ? "is-open" : ""}`} inert={utility === null} aria-hidden={utility === null}>
       <DialogBackdrop className="settings-backdrop" /><div className="settings-positioner"><DialogPanel className="settings-dialog utility-dialog">
         <header className="settings-heading"><DialogTitle>{t(utility === "keyboard" ? "keyboard" : "clipboard")}</DialogTitle><Button className="icon-button" aria-label={t("closeSettings")} onClick={() => setUtility(null)}><X size={20} aria-hidden="true" /></Button></header>

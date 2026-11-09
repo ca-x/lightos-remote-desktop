@@ -77,6 +77,7 @@ export function createClient(options: ClientOptions = {}) {
   const sources = new Set<AudioBufferSourceNode>();
   let socket: WebSocket | null = null;
   let wanted = false;
+  let takeoverRequested = false;
   let ready = false;
   let desktopPaused = false;
   let cursorSession: string | null = null;
@@ -827,6 +828,9 @@ export function createClient(options: ClientOptions = {}) {
     url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
     if (desktopConfirmed) url.searchParams.set("desktop", desktopMode);
     if (desktopMode === "physical" && selectedOutput) url.searchParams.set("output", selectedOutput);
+    const takingOver = takeoverRequested;
+    takeoverRequested = false; // A retry must never evict another window without fresh consent.
+    if (takingOver) url.searchParams.set("takeover", "true");
     if (desktopChoices.length) desktopStatus(`正在连接${desktopLabel()}，尚未确认${selectedOutput ? ` · ${selectedOutput}` : ""}。`);
     let current;
     try { current = new WebSocket(url); } catch (error) {
@@ -836,7 +840,7 @@ export function createClient(options: ClientOptions = {}) {
       return;
     }
     socket = current;
-    armReadinessTimeout(current, 15000);
+    armReadinessTimeout(current, takingOver ? 30000 : 15000);
     current.binaryType = "arraybuffer";
     current.onopen = () => {
       if (current !== socket || !wanted || destroyed) { current.close(); return; }
@@ -848,7 +852,11 @@ export function createClient(options: ClientOptions = {}) {
       lastServerActivity = performance.now();
       if (switchingDesktop) {
         if (typeof event.data === "string") {
-          try { if (JSON.parse(event.data)?.type === "released") completeRelease(current); } catch {}
+          try {
+            const type = JSON.parse(event.data)?.type;
+            if (type === "released") completeRelease(current);
+            else if (type === "controller_busy" || type === "controller_replaced") receiveJSON(event.data);
+          } catch {}
         }
         return;
       }
@@ -873,14 +881,15 @@ export function createClient(options: ClientOptions = {}) {
       }
     };
     current.onerror = () => {
-      if (current !== socket || switchingDesktop) return;
+      if (current !== socket || switchingDesktop || !wanted) return;
       desktopStatus(`${desktopLabel()}连接失败，请检查会话是否可用，或切回虚拟桌面。`);
       connectionFailure ||= "Connection failed. Check browser authentication, server availability, or another active controller.";
       message(connectionFailure);
       closeSocket(current);
     };
-    current.onclose = () => {
+    current.onclose = (event) => {
       if (current !== socket) return;
+      if (event.code === 4001 && wanted) receiveJSON('{"type":"controller_replaced"}');
       cancelTimer(connectionTimer);
       connectionTimer = null;
       cancelTimer(closeTimer);
@@ -920,6 +929,7 @@ export function createClient(options: ClientOptions = {}) {
 
   function disconnect() {
     wanted = false;
+    takeoverRequested = false;
     switchingDesktop = false;
     releasingSocket = null;
     connectionFailure = "";
@@ -942,7 +952,26 @@ export function createClient(options: ClientOptions = {}) {
     try { value = JSON.parse(raw); } catch { message("Invalid server JSON."); return; }
     if (!value || typeof value !== "object") return;
     if (clipboard.receive(value)) return;
-    if (value.type === "desktop_initializing" && !ready && socket) {
+    if (value.type === "controller_busy" || value.type === "controller_replaced") {
+      const ownership = value.type === "controller_replaced" ? "replaced" : value.takeover_available === true ? "busy" : "unavailable";
+      wanted = false;
+      takeoverRequested = false;
+      cancelTimer(retryTimer); retryTimer = null;
+      cancelTimer(connectionTimer); connectionTimer = null;
+      cancelTimer(closeTimer); closeTimer = null;
+      switchingDesktop = false;
+      releasingSocket = null;
+      connectionFailure = ownership === "replaced"
+        ? "Remote desktop is connected in another window."
+        : ownership === "busy" ? "Another window is using the remote desktop."
+        : "Another controller is using the remote desktop. Disconnect it before reconnecting.";
+      resetSession();
+      setText("state", "Disconnected");
+      message(connectionFailure);
+      desktopStatus(connectionFailure);
+      options.onOwnership?.(ownership);
+      socket?.close(1000, "Controller unavailable");
+    } else if (value.type === "desktop_initializing" && !ready && socket) {
       desktopInitializing = true;
       authorizationPending = value.requires_consent === true;
       updateControls();
@@ -1879,14 +1908,21 @@ export function createClient(options: ClientOptions = {}) {
       if (ready && !desktopPaused) requestPreferredVideo();
     }
   });
+  function reconnect(takeover = false) {
+    if (destroyed || ready) return;
+    options.onOwnership?.(null);
+    takeoverRequested = takeover;
+    wanted = true; retries = 0; connectionFailure = "";
+    cancelTimer(retryTimer); retryTimer = null;
+    updateControls();
+    if (socket) closeSocket(socket, 1000, "Reconnect");
+    else connect();
+  }
   listen(element("connection"), "click", () => {
     if (wanted) disconnect();
-    else {
-      wanted = true; retries = 0; connectionFailure = ""; updateControls();
-      if (socket) closeSocket(socket, 1000, "Reconnect");
-      else connect();
-    }
+    else reconnect();
   });
+  listen(element("takeover-connection"), "click", () => reconnect(true));
   listen(element("audio"), "click", () => { void toggleAudio(); });
   listen(element("desktop-source"), "change", () => {
     switchDesktop(element("desktop-source").value);
