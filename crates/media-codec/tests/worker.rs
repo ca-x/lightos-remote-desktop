@@ -24,7 +24,7 @@ async fn missing_worker_never_advertises_hardware() {
         "/does-not-exist/lightos-codec-ffmpeg",
     ));
     let caps = worker.probe().await;
-    assert_eq!(caps.len(), 4);
+    assert_eq!(caps.len(), EncoderBackend::HARDWARE.len());
     assert!(caps.iter().all(|c| !c.available && c.reason.is_some()));
     assert!(worker.create(EncoderBackend::Vaapi, settings()).is_err());
 }
