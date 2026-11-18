@@ -6,6 +6,6 @@ buildscript: |
   set -eu
   mkdir -p content dist
   npm run build
-  python3 scripts/build-runtime-artifacts.py
+  python3 scripts/build-runtime-artifacts.py ${REMOTE_DESKTOP_RUNTIME_BUILD_OPTIONS:-}
   cd manager
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o ../content/remote-desktop-manager .

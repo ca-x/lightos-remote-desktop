@@ -182,7 +182,6 @@ pub(crate) struct CapabilityError {
 }
 #[cfg(target_os = "linux")]
 impl CapabilityError {
-    #[cfg(feature = "portal")]
     pub fn new(code: &'static str, detail: impl std::fmt::Display) -> Self {
         Self {
             code,

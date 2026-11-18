@@ -6,11 +6,12 @@ use anyhow::{Context, Result, ensure};
 use futures_util::future::BoxFuture;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-pub(crate) struct NestedDisplay {
+pub struct NestedDisplay {
     primary: Arc<dyn DisplayController>,
     target: SessionTarget,
     helper: PathBuf,
     operation: tokio::sync::Mutex<()>,
+    environment: std::collections::BTreeMap<String, String>,
 }
 
 impl NestedDisplay {
@@ -24,7 +25,33 @@ impl NestedDisplay {
             target,
             helper,
             operation: tokio::sync::Mutex::new(()),
+            environment: std::collections::BTreeMap::new(),
         }
+    }
+
+    pub fn with_environment(
+        primary: Arc<dyn DisplayController>,
+        target: SessionTarget,
+        helper: PathBuf,
+        environment: std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            primary,
+            target,
+            helper,
+            operation: tokio::sync::Mutex::new(()),
+            environment,
+        }
+    }
+
+    fn devkit(&self) -> bool {
+        self.environment
+            .get("LIGHTOS_REMOTE_DESKTOP_RESIZE_PARENT_KIND")
+            .map(String::as_str)
+            == Some("gnome-devkit")
+            || (self.environment.is_empty()
+                && std::env::var("LIGHTOS_REMOTE_DESKTOP_RESIZE_PARENT_KIND").as_deref()
+                    == Ok("gnome-devkit"))
     }
 
     async fn query(&self) -> Result<Vec<DisplayOutput>> {
@@ -35,6 +62,10 @@ impl NestedDisplay {
     async fn apply(&self, name: Option<&str>, mode: DisplayMode, fps: u32) -> Result<DisplayMode> {
         let _operation = self.operation.lock().await;
         mode.validate()?;
+        ensure!(
+            !self.devkit(),
+            "GNOME devkit monitor does not follow the nested parent; dynamic mode negotiation is not integrated"
+        );
         ensure!(
             mode.scale == 1.0,
             "nested desktop resizing currently requires scale 1"
@@ -54,7 +85,7 @@ impl NestedDisplay {
             return Ok(mode);
         }
         let selected = selected.name.clone();
-        command::run(
+        command::run_with_environment(
             &self.helper,
             &[
                 mode.width.to_string(),
@@ -62,6 +93,7 @@ impl NestedDisplay {
                 fps.to_string(),
             ],
             &self.target,
+            &self.environment,
         )
         .await?;
         loop {
@@ -85,6 +117,11 @@ impl DisplayController for NestedDisplay {
 
     fn capabilities(&self) -> BoxFuture<'_, DisplayCapabilities> {
         Box::pin(async {
+            if self.devkit() {
+                return DisplayCapabilities::unavailable(
+                    "GNOME devkit monitor does not follow the nested parent; dynamic mode negotiation is not integrated",
+                );
+            }
             match tokio::time::timeout(Duration::from_secs(3), self.query()).await {
                 Ok(Ok(outputs))
                     if outputs.len() == 1 && self.helper.is_absolute() && self.helper.is_file() =>

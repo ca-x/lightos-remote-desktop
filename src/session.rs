@@ -21,6 +21,7 @@ use display_control::SessionTarget;
 
 use crate::config::{Compositor, Config};
 
+pub(crate) mod installed;
 mod niri;
 mod physical;
 #[cfg(feature = "portal")]
@@ -198,7 +199,17 @@ impl Session {
                 .context("owned Wayland socket missing")?;
             let (target, lifetime) = crate::owned_wayland::verify(socket, pid)?;
             let runtime = target.runtime.clone();
-            let (pulse_server, audio_source) = physical_audio(&runtime, config.audio);
+            let (pulse_server, audio_source) =
+                if let Some(server) = config.virtual_environment.get("PULSE_SERVER") {
+                    let source = if config.audio {
+                        crate::virtual_x11::audio_source(config, &target, Some(server))?
+                    } else {
+                        None
+                    };
+                    (Some(server.clone()), source)
+                } else {
+                    physical_audio(&runtime, config.audio)
+                };
             return Ok(Self {
                 socket: socket.clone(),
                 runtime,
@@ -216,8 +227,24 @@ impl Session {
             });
         }
         if config.x11_display.is_some() {
-            let target = Self::configured_target(config)?;
-            let (pulse_server, audio_source) = physical_audio(&target.runtime, config.audio);
+            let mut target = Self::configured_target(config)?;
+            let ownership = crate::virtual_x11::verify(config, &mut target)?;
+            let owned = ownership.is_some();
+            let (pulse_server, audio_source) = if owned {
+                let server = config
+                    .virtual_environment
+                    .get("PULSE_SERVER")
+                    .cloned()
+                    .or_else(|| std::env::var("PULSE_SERVER").ok());
+                let source = if config.audio {
+                    crate::virtual_x11::audio_source(config, &target, server.as_deref())?
+                } else {
+                    None
+                };
+                (server, source)
+            } else {
+                physical_audio(&target.runtime, config.audio)
+            };
             return Ok(Self {
                 socket: PathBuf::new(),
                 runtime: target.runtime.clone(),
@@ -226,10 +253,10 @@ impl Session {
                 pulse_client_config: None,
                 audio_source,
                 target: Some(target),
-                owned: false,
+                owned,
                 children: Vec::new(),
                 temporary: None,
-                lock: None,
+                lock: ownership,
                 native_lifetime: None,
                 cancelled,
             });
@@ -657,7 +684,7 @@ impl Session {
             ),
         ] {
             let mut command = Command::new(program);
-            if compositor == Compositor::Niri {
+            if compositor != Compositor::Hyprland {
                 niri::isolate(&mut command);
             }
             command
@@ -679,7 +706,7 @@ impl Session {
         }
         let sink = format!("lightos_remote_{}", std::process::id());
         let mut command = Command::new("timeout");
-        if compositor == Compositor::Niri {
+        if compositor != Compositor::Hyprland {
             niri::isolate(&mut command);
         }
         command
@@ -710,6 +737,7 @@ impl Session {
 
     pub fn healthy(&mut self) -> bool {
         if self.owned
+            && self.children.is_empty()
             && self.signature.is_none()
             && self
                 .target
@@ -717,6 +745,24 @@ impl Session {
                 .is_some_and(|target| target.wayland_socket.is_some())
         {
             return self.lock.as_ref().is_some_and(crate::owned_wayland::alive);
+        }
+        if self.owned
+            && self.children.is_empty()
+            && self
+                .target
+                .as_ref()
+                .is_some_and(|target| target.x11_display.is_some())
+        {
+            return self.lock.as_ref().is_some_and(crate::virtual_x11::alive);
+        }
+        if self.owned
+            && self.target.is_some()
+            && self
+                .lock
+                .as_ref()
+                .is_some_and(|lifetime| !crate::owned_wayland::alive(lifetime))
+        {
+            return false;
         }
         self.native_lifetime
             .as_ref()

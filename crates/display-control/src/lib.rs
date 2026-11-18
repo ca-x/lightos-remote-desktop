@@ -27,6 +27,8 @@ pub use kscreen::KScreenDisplay;
 #[cfg(target_os = "linux")]
 pub use mutter::MutterDisplay;
 #[cfg(target_os = "linux")]
+pub use nested::NestedDisplay;
+#[cfg(target_os = "linux")]
 pub use session::{DesktopEnvironment, SessionTarget};
 #[cfg(target_os = "linux")]
 pub use wayland::WaylandDisplay;

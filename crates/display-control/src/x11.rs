@@ -10,7 +10,7 @@ use x11rb_async::{
     connection::Connection,
     protocol::{
         randr::{self, ConnectionExt as _, Rotation, SetConfig},
-        xproto::ConnectionExt as _,
+        xproto::{ConnectionExt as _, CreateWindowAux, WindowClass},
     },
     rust_connection::{RustConnection, StreamAdaptor},
 };
@@ -18,6 +18,7 @@ use x11rb_async::{
 type Resources = randr::GetScreenResourcesCurrentReply;
 type Crtc = randr::GetCrtcInfoReply;
 struct Output {
+    id: u32,
     info: DisplayOutput,
     crtc: u32,
     current: Crtc,
@@ -25,10 +26,33 @@ struct Output {
 }
 pub struct X11Display {
     target: SessionTarget,
+    dynamic_modes: bool,
+    mutter: Option<crate::MutterDisplay>,
+    operations: tokio::sync::Mutex<()>,
 }
 impl X11Display {
     pub fn new(target: SessionTarget) -> Self {
-        Self { target }
+        Self {
+            target,
+            dynamic_modes: false,
+            mutter: None,
+            operations: tokio::sync::Mutex::new(()),
+        }
+    }
+    pub fn virtual_display(target: SessionTarget) -> Self {
+        Self::virtual_session(
+            target,
+            std::env::var("LIGHTOS_REMOTE_DESKTOP_GNOME_X11").as_deref() == Ok("1"),
+        )
+    }
+    pub fn virtual_session(target: SessionTarget, gnome: bool) -> Self {
+        let mutter = gnome.then(|| crate::MutterDisplay::with_external_modes(target.clone()));
+        Self {
+            target,
+            dynamic_modes: true,
+            mutter,
+            operations: tokio::sync::Mutex::new(()),
+        }
     }
     async fn connect(
         &self,
@@ -97,6 +121,7 @@ impl X11Display {
         &self,
         request: Option<(Option<&str>, DisplayMode, u32)>,
     ) -> Result<Vec<DisplayOutput>> {
+        let _operation = self.operations.lock().await;
         let (connection, screen, drive) = self.connect().await?;
         let operation =
             async {
@@ -150,7 +175,86 @@ impl X11Display {
                                 .abs()
                                 .total_cmp(&(refresh(b) - fps as f64).abs())
                         })
-                        .context("requested RandR mode is unavailable")?;
+                        .cloned();
+                    let chosen = match chosen {
+                        Some(chosen) => chosen,
+                        None if self.dynamic_modes => {
+                            ensure!(
+                                outputs.len() == 1
+                                    && output.current.x == 0
+                                    && output.current.y == 0
+                                    && output.current.rotation == Rotation::ROTATE0,
+                                "dynamic virtual modes require one unrotated output"
+                            );
+                            let range = connection
+                                .randr_get_screen_size_range(root)
+                                .await?
+                                .reply()
+                                .await?;
+                            ensure!(
+                                mode.width >= u32::from(range.min_width)
+                                    && mode.width <= u32::from(range.max_width)
+                                    && mode.height >= u32::from(range.min_height)
+                                    && mode.height <= u32::from(range.max_height),
+                                "virtual resolution exceeds the framebuffer bounds"
+                            );
+                            let name: &[u8] = if mode_name(&resources, output.current.mode)
+                                == Some(b"LIGHTOS-AUTO-0")
+                            {
+                                b"LIGHTOS-AUTO-1"
+                            } else {
+                                b"LIGHTOS-AUTO-0"
+                            };
+                            if let Some(old) = resources
+                                .modes
+                                .iter()
+                                .find(|old| mode_name(&resources, old.id) == Some(name))
+                            {
+                                ensure!(
+                                    old.id != output.current.mode,
+                                    "refusing to replace an active virtual mode"
+                                );
+                                if output.modes.contains(&old.id) {
+                                    connection
+                                        .randr_delete_output_mode(output.id, old.id)
+                                        .await?
+                                        .check()
+                                        .await?;
+                                }
+                                connection.randr_destroy_mode(old.id).await?.check().await?;
+                            }
+                            let width = u16::try_from(mode.width)?;
+                            let height = u16::try_from(mode.height)?;
+                            let mut info = randr::ModeInfo {
+                                width,
+                                height,
+                                hsync_start: width,
+                                hsync_end: width,
+                                htotal: width,
+                                vsync_start: height,
+                                vsync_end: height,
+                                vtotal: height,
+                                dot_clock: u32::try_from(
+                                    u64::from(mode.width) * u64::from(mode.height) * u64::from(fps),
+                                )?,
+                                name_len: u16::try_from(name.len())?,
+                                ..Default::default()
+                            };
+                            info.id = connection
+                                .randr_create_mode(root, info, name)
+                                .await?
+                                .reply()
+                                .await?
+                                .mode;
+                            connection
+                                .randr_add_output_mode(output.id, info.id)
+                                .await?
+                                .check()
+                                .await?;
+                            info
+                        }
+                        None => anyhow::bail!("requested RandR mode is unavailable"),
+                    };
                     ensure!(
                         outputs.iter().all(|o| o.info.x >= 0 && o.info.y >= 0),
                         "unsupported negative RandR layout"
@@ -206,11 +310,21 @@ impl X11Display {
                             .check()
                             .await?;
                     }
+                    let config_timestamp = if self.dynamic_modes {
+                        connection
+                            .randr_get_screen_resources_current(root)
+                            .await?
+                            .reply()
+                            .await?
+                            .config_timestamp
+                    } else {
+                        resources.config_timestamp
+                    };
                     let changed = connection
                         .randr_set_crtc_config(
                             output.crtc,
                             0,
-                            resources.config_timestamp,
+                            config_timestamp,
                             output.current.x,
                             output.current.y,
                             chosen.id,
@@ -246,12 +360,54 @@ impl X11Display {
                             && crate::output_matches(&o.info, mode)),
                         "RandR acknowledged change without applying dimensions"
                     );
+                    if self.dynamic_modes {
+                        // Like xrefresh, expose the complete new virtual root.
+                        // Older compositors can otherwise retain the previous
+                        // drawable's damage clip after a shrink/grow sequence.
+                        // No pixels or input are changed on a physical display.
+                        let refresh = connection.generate_id().await?;
+                        connection
+                            .create_window(
+                                0,
+                                refresh,
+                                root,
+                                0,
+                                0,
+                                target_width,
+                                target_height,
+                                0,
+                                WindowClass::INPUT_OUTPUT,
+                                0,
+                                &CreateWindowAux::new()
+                                    .background_pixmap(0)
+                                    .override_redirect(1),
+                            )
+                            .await?
+                            .check()
+                            .await?;
+                        connection.map_window(refresh).await?.check().await?;
+                        connection.destroy_window(refresh).await?.check().await?;
+                    }
                     Ok(applied.into_iter().map(|o| o.info).collect())
                 } else {
                     Ok(outputs.into_iter().map(|o| o.info).collect())
                 }
             };
-        tokio::select! {result=operation=>result,error=drive=>{error?;unreachable!()}}
+        let transaction = async {
+            // Keep the compositor from querying a half-applied screen/CRTC
+            // layout, as xrandr does. This connection is private to this call;
+            // cancellation or an error closes it and releases the server grab.
+            let grabbed = self.dynamic_modes && request.is_some();
+            if grabbed {
+                connection.grab_server().await?.check().await?;
+            }
+            let result = operation.await;
+            if grabbed {
+                connection.ungrab_server().await?.check().await?;
+            }
+            result
+        };
+        tokio::select! {result=transaction=>result,error=drive=>{error?;unreachable!()}}
     }
     async fn bounded(
         &self,
@@ -262,6 +418,18 @@ impl X11Display {
             .context("RandR operation timed out")?
     }
 }
+fn mode_name(resources: &Resources, id: u32) -> Option<&[u8]> {
+    let mut offset = 0usize;
+    for mode in &resources.modes {
+        let end = offset.checked_add(usize::from(mode.name_len))?;
+        if mode.id == id {
+            return resources.names.get(offset..end);
+        }
+        offset = end;
+    }
+    None
+}
+
 fn local_display(display: &str) -> Result<(u16, usize)> {
     let value = display
         .strip_prefix(':')
@@ -314,6 +482,7 @@ async fn query(conn: &RustConnection, resources: &Resources) -> Result<Vec<Outpu
         );
         let name = String::from_utf8(info.name).context("invalid RandR output name")?;
         outputs.push(Output {
+            id: *id,
             info: DisplayOutput {
                 name: name.clone(),
                 description: name,
@@ -355,7 +524,31 @@ impl DisplayController for X11Display {
     ) -> BoxFuture<'a, Result<DisplayMode>> {
         Box::pin(async move {
             self.bounded(Some((name, mode, fps))).await?;
-            Ok(mode)
+            if let Some(mutter) = &self.mutter {
+                let mut last_failure = String::new();
+                let result = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        // RandR mode registration is delivered asynchronously
+                        // to Mutter; allow its state/serial to catch up.
+                        match mutter.resize(name, mode, fps).await {
+                            Ok(applied) => return Ok(applied),
+                            Err(error) => {
+                                last_failure = format!("{error:#}");
+                                tokio::time::sleep(Duration::from_millis(40)).await;
+                            }
+                        }
+                    }
+                })
+                .await;
+                match result {
+                    Ok(result) => result,
+                    Err(_) => anyhow::bail!(
+                        "Mutter did not adopt the registered virtual X11 mode: {last_failure}"
+                    ),
+                }
+            } else {
+                Ok(mode)
+            }
         })
     }
 }

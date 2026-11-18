@@ -70,7 +70,7 @@ def copy_libraries(target, source, destination):
 
 def notices(target, source, destination, configuration=''):
     notice = {'dependency': 'FFmpeg', 'license': 'LGPL-2.1-or-later', **LOCK[target], 'configuration': configuration,
-              'build_project': 'https://github.com/BtbN/FFmpeg-Builds/tree/autobuild-2026-11-02-12-51' if target != 'macos-source' else 'https://ffmpeg.org/'}
+              'build_project': LOCK[target]['url'].split('/releases/download/')[0] + '/tree/' + LOCK[target]['url'].split('/releases/download/')[1].split('/')[0] if target != 'macos-source' else 'https://ffmpeg.org/'}
     (destination / 'NOTICE.ffmpeg.json').write_text(json.dumps(notice, indent=2) + '\n')
     for name in ['LICENSE.txt', 'COPYING.LGPLv2.1']:
         if (source / name).exists():

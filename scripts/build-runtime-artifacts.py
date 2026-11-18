@@ -21,6 +21,7 @@ repo = Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--config", type=Path, default=repo / ".local/runtime-build.json")
 parser.add_argument("--output", type=Path, default=repo / "content/runtimes")
+parser.add_argument("--experimental-linux-virtual-desktop", action="store_true", help="Package the shared installed-session adapter for Linux PC validation (not release-accepted)")
 args = parser.parse_args()
 configuration = json.loads(args.config.read_text()) if args.config.exists() else {}
 cache = repo / ".local/runtime-build"
@@ -33,11 +34,12 @@ sources = [repo / "Cargo.toml", repo / "Cargo.lock"]
 sources += [repo / "scripts" / name for name in ["build-runtime-artifacts.py", "build-linux-runtime.py", "build-macos-runtimes.py", "build-macos-codec.py", "runtime_codec.py", "ffmpeg-videotoolbox-low-delay.patch"]]
 sources += [repo / ".github/scripts/prepare-spa-build-sdk.sh", repo / "config/codec-dependencies.json"]
 sources += [repo / "scripts/build-viewer-input.py"]
-for name in ["src", "crates", "web/dist", ".cargo", "native"]:
-    sources += [p for p in (repo / name).rglob("*") if p.is_file() and "target" not in p.relative_to(repo / name).parts]
+for name in ["src", "crates", "web/dist", ".cargo", "native", "config", "scripts/linux-session", "adapters/gnome-input"]:
+    sources += [p for p in (repo / name).rglob("*") if p.is_file() and not {"target", "__pycache__"}.intersection(p.relative_to(repo / name).parts)]
 digest = hashlib.sha256()
 for path in sorted(sources):
     digest.update(str(path.relative_to(repo)).encode()); digest.update(path.read_bytes())
+digest.update(b"linux-session-support=" + str(args.experimental_linux_virtual_desktop).encode())
 fingerprint = digest.hexdigest()
 
 def run(command, *, environment=None, cwd=repo, capture=False):
@@ -77,6 +79,14 @@ def build_linux():
     dependency = Path(result["ffmpeg"])
     copy_libraries("linux-x64", dependency, directory / "lib")
     notices("linux-x64", dependency, directory)
+    if args.experimental_linux_virtual_desktop:
+        support = directory / "session-support"
+        shutil.copytree(repo / "scripts/linux-session", support, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        for helper in support.glob("*.sh"):
+            helper.chmod(0o755)
+        shutil.copytree(repo / "adapters/gnome-input", support / "gnome-input")
+        (support / "config").mkdir()
+        shutil.copy2(repo / "config/90-lightos-audio.conf", support / "config/90-lightos-audio.conf")
     record("linux-x64")
 
 def build_windows():
@@ -150,6 +160,8 @@ for target, triple in triples.items():
     directory = native / target
     build = json.loads((directory / ".build.json").read_text())
     artifact = {"target": target, "version": version, "binary": build["binary"], "sha256": build["sha256"], "runtime_protocol": 2, "source_fingerprint": fingerprint}
+    if target == "linux-x64" and args.experimental_linux_virtual_desktop:
+        artifact["virtual_fallback"] = True
     team = directory / ".signing-team"
     if team.exists(): artifact["signing_team"] = team.read_text().strip()
     runtime_notices = cache / (target + "-NOTICE.txt")

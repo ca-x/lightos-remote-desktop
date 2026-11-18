@@ -17,7 +17,7 @@ args = parser.parse_args()
 args.source = args.source.resolve()
 args.output = args.output.resolve()
 environment = dict(os.environ)
-target_directory = args.source.parent / "target-cache"
+target_directory = Path(environment.get("CARGO_TARGET_DIR", args.source.parent / "target-cache"))
 environment["CARGO_TARGET_DIR"] = str(target_directory)
 environment.update(PATH=str(Path.home() / ".cargo/bin") + ":/opt/homebrew/bin:" + environment.get("PATH", ""), TURBOJPEG_SOURCE="vendor", TURBOJPEG_STATIC="1", MACOSX_DEPLOYMENT_TARGET="13.0", CARGO_PROFILE_RELEASE_STRIP="none", CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_DEBUG="2")
 for target, triple in [("darwin-arm64", "aarch64-apple-darwin"), ("darwin-x64", "x86_64-apple-darwin")]:

@@ -24,6 +24,15 @@ pub(crate) fn executable(name: &str) -> Result<PathBuf> {
 }
 
 pub(crate) async fn run(program: &Path, args: &[String], target: &SessionTarget) -> Result<String> {
+    run_with_environment(program, args, target, &std::collections::BTreeMap::new()).await
+}
+
+pub(crate) async fn run_with_environment(
+    program: &Path,
+    args: &[String],
+    target: &SessionTarget,
+    environment: &std::collections::BTreeMap<String, String>,
+) -> Result<String> {
     timeout(Duration::from_secs(3), async {
         let mut command = Command::new(program);
         command
@@ -38,6 +47,7 @@ pub(crate) async fn run(program: &Path, args: &[String], target: &SessionTarget)
             .env_remove("DBUS_SESSION_BUS_ADDRESS")
             .env("XDG_RUNTIME_DIR", &target.runtime)
             .env("LC_ALL", "C");
+        command.envs(environment);
         if let Some(socket) = &target.wayland_socket {
             command.env("WAYLAND_DISPLAY", socket);
         }

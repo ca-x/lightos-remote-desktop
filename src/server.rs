@@ -46,6 +46,7 @@ use crate::{
 
 #[cfg(all(test, target_os = "linux"))]
 mod scaling_tests;
+mod virtual_desktop;
 
 static NEXT_CONNECTION: AtomicU64 = AtomicU64::new(1);
 
@@ -62,6 +63,16 @@ struct DesktopRequest {
     output: Option<String>,
     #[serde(default)]
     takeover: bool,
+}
+
+struct BrowserController {
+    cancelled: tokio_util::sync::CancellationToken,
+    target: Arc<Mutex<DesktopSelection>>,
+}
+
+struct DesktopSelection {
+    desktop: DesktopMode,
+    output: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -81,7 +92,7 @@ pub struct AppState {
     host: Arc<dyn HostPlatform>,
     audio: Arc<dyn AudioCaptureFactory>,
     controller: Arc<AtomicBool>,
-    browser_controller: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
+    browser_controller: Arc<tokio::sync::Mutex<Option<BrowserController>>>,
     input_failed: Arc<AtomicBool>,
     audio_hub: Arc<AudioHub>,
     cursor_hub: Arc<crate::cursor::Hub>,
@@ -92,6 +103,7 @@ pub struct AppState {
     displays: Arc<dyn DisplayController>,
     codec_capabilities: Arc<CapabilityCache>,
     physical_capabilities: Arc<Mutex<Option<PhysicalCapabilities>>>,
+    virtual_desktop: Arc<virtual_desktop::VirtualDesktop>,
     #[cfg(test)]
     encode_pause: Option<Arc<EncodePause>>,
 }
@@ -146,11 +158,12 @@ impl AppState {
             &config,
         )));
         let rdp = Arc::new(crate::rdp::settings::Manager::new(&config));
-        Self {
+        let state = Self {
             rdp,
             mcp,
             codec_capabilities: Arc::new(CapabilityCache::default()),
             physical_capabilities: Arc::new(Mutex::new(None)),
+            virtual_desktop: Arc::new(virtual_desktop::VirtualDesktop::default()),
             displays,
             config: Arc::new(config),
             backend,
@@ -168,7 +181,11 @@ impl AppState {
             transient_backend: false,
             #[cfg(test)]
             encode_pause: None,
+        };
+        if desktop == DesktopMode::Virtual {
+            state.virtual_desktop.retain(&state);
         }
+        state
     }
 
     /// Cancel agent sessions and queued input before HTTP drains its connections.
@@ -180,6 +197,10 @@ impl AppState {
     /// this host, including connections using a transient physical backend.
     pub fn input_failed(&self) -> bool {
         self.input_failed.load(Ordering::Acquire)
+    }
+
+    pub fn shutdown_virtual_desktop(&self) {
+        self.virtual_desktop.stop();
     }
 
     #[cfg(feature = "rdp")]
@@ -248,14 +269,19 @@ impl AppState {
         // Its base configuration determines whether the retained virtual
         // desktop can be selected again.
         let virtual_available = self.host.supports_virtual(&self.config);
+        let virtual_reason = if virtual_available {
+            String::new()
+        } else {
+            self.host.virtual_unavailable_reason(&self.config)
+        };
         json!([
-            {"mode":"virtual","label":"虚拟桌面","available":virtual_available,"reason":if virtual_available { "" } else { "服务以外部桌面模式启动" }},
+            {"mode":"virtual","label":"虚拟桌面","available":virtual_available,"reason":virtual_reason},
             {"mode":"physical","label":"物理桌面","available":reason.is_none(),"reason":reason,"capabilities":physical.ok()}
         ])
     }
 
     fn select_desktop(
-        self,
+        mut self,
         request: DesktopRequest,
         cancelled: Arc<AtomicBool>,
         connection_id: u64,
@@ -269,6 +295,13 @@ impl AppState {
             && !self.backend.is_deferred()
             && (mode == DesktopMode::Virtual || self.backend.frame_is_fresh(Duration::from_secs(5)))
         {
+            return Ok(self);
+        }
+        if mode == DesktopMode::Virtual {
+            let _ = authorization.send(false);
+            self.virtual_desktop
+                .acquire(self.host.as_ref(), &self.config, cancelled)?
+                .apply(&mut self);
             return Ok(self);
         }
         ensure!(mode == DesktopMode::Physical, "虚拟桌面不可用");
@@ -291,6 +324,7 @@ impl AppState {
             rdp: self.rdp,
             codec_capabilities: self.codec_capabilities,
             physical_capabilities: self.physical_capabilities,
+            virtual_desktop: self.virtual_desktop,
             mcp: self.mcp,
             displays,
             config: self.config,
@@ -557,7 +591,7 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
             StatusCode::SERVICE_UNAVAILABLE
         },
         axum::Json(
-            json!({"native":true,"ready":ready,"controller_connected":state.controller.load(Ordering::Acquire),"input_release_failed":state.input_failed.load(Ordering::Acquire),"requires_consent":state.backend.is_deferred(),"desktop_backend":state.backend.kind(),"pid":std::process::id(),"transport":"websocket","video_codecs":state.codec_capabilities.snapshot().iter().filter(|c| c.available).map(|c| c.codec).collect::<Vec<_>>(),"codec_probe_complete":state.codec_capabilities.initialized()}),
+            json!({"native":true,"ready":ready,"controller_connected":state.controller.load(Ordering::Acquire),"input_release_failed":state.input_failed.load(Ordering::Acquire),"requires_consent":state.backend.is_deferred() && !state.config.on_demand_desktops(),"desktop_backend":state.backend.kind(),"pid":std::process::id(),"transport":"websocket","video_codecs":state.codec_capabilities.snapshot().iter().filter(|c| c.available).map(|c| c.codec).collect::<Vec<_>>(),"codec_probe_complete":state.codec_capabilities.initialized()}),
         ),
     )
 }
@@ -648,7 +682,7 @@ impl Drop for ControllerLease {
 
 async fn upgrade(
     State(state): State<AppState>,
-    Query(request): Query<DesktopRequest>,
+    Query(mut request): Query<DesktopRequest>,
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
@@ -667,14 +701,22 @@ async fn upgrade(
             // Never clear the shared controller gate on behalf of its owner.
             let mut owner = state.browser_controller.lock().await;
             let occupied = state.controller.load(Ordering::Acquire);
-            let browser_active = owner.as_ref().is_some_and(|token| !token.is_cancelled());
+            let browser_active = owner.as_ref().is_some_and(|controller| !controller.cancelled.is_cancelled());
+            // Opening the same desktop in a fresh window has no source choice
+            // yet. Explicit takeover continues the actual previous selection,
+            // not the host's default (which may be a locked physical desktop).
+            if occupied && browser_active && request.takeover && request.desktop.is_none() {
+                let target = owner.as_ref().unwrap().target.lock().unwrap_or_else(|error| error.into_inner());
+                request.desktop = Some(target.desktop);
+                if request.output.is_none() { request.output = target.output.clone(); }
+            }
             let failure = if state.input_failed() {
                 Some(json!({"type":"error", "message":"Input release failed. Restart the remote desktop service before reconnecting.", "retryable":false}))
             } else if occupied && (!request.takeover || !browser_active) {
                 Some(json!({"type":"controller_busy", "takeover_available":browser_active}))
             } else {
                 if occupied {
-                    owner.as_ref().unwrap().cancel();
+                    owner.as_ref().unwrap().cancelled.cancel();
                 }
                 let released = timeout(Duration::from_secs(15), async {
                     while state.controller.load(Ordering::Acquire) && !state.input_failed() {
@@ -696,14 +738,23 @@ async fn upgrade(
             }
             let takeover = tokio_util::sync::CancellationToken::new();
             let _controller_finished = takeover.clone().drop_guard();
-            *owner = Some(takeover.clone());
+            let selected_target = Arc::new(Mutex::new(DesktopSelection {
+                desktop: request.desktop.unwrap_or(state.desktop),
+                output: request.output.clone(),
+            }));
+            *owner = Some(BrowserController { cancelled: takeover.clone(), target: selected_target.clone() });
             drop(owner);
             let mut lease = ControllerLease { state: state.clone() };
             let cancelled = Arc::new(AtomicBool::new(false));
             let initialize_cancelled = cancelled.clone();
             let (authorization, mut authorization_notice) = tokio::sync::oneshot::channel();
             let mut initialize = tokio::task::spawn_blocking(move || {
-                state.select_desktop(request, initialize_cancelled, connection_id, authorization)
+                let selected = state.select_desktop(request, initialize_cancelled, connection_id, authorization)?;
+                *selected_target.lock().unwrap_or_else(|error| error.into_inner()) = DesktopSelection {
+                    desktop: selected.desktop,
+                    output: selected.output.clone(),
+                };
+                Ok::<_, anyhow::Error>(selected)
             });
             let mut awaiting_authorization = true;
             let result = loop {
@@ -730,7 +781,11 @@ async fn upgrade(
                 cancelled.store(true, Ordering::Release);
                 let _ = timeout(Duration::from_secs(1), socket.close()).await;
                 let result = initialize.await;
-                let _ = tokio::task::spawn_blocking(move || drop(result)).await;
+                let virtual_desktop = lease.state.virtual_desktop.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    drop(result);
+                    virtual_desktop.discard_cancelled_startup(&cancelled);
+                }).await;
                 takeover.cancel();
                 lease.release().await;
                 tracing::info!(connection_id, elapsed_ms = started.elapsed().as_millis() as u64, "desktop initialization cancelled; controller released");

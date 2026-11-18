@@ -4,11 +4,90 @@ The virtual/physical session discovery below describes Linux hosts. Windows and
 macOS share the current logged-in physical desktop and do not create the Linux
 virtual session; see [native host support](cross-platform-host.md).
 
-Owned virtual sessions advertise `resize_scale` for automatic high-density
+Supported owned virtual sessions advertise `resize_scale` for automatic high-density
 capture. Optional `resize.scale` accepts 1, 1.5, 2, 2.5 or 3; dimensions must fit
 the existing encoder limits and divide into whole logical pixels at that scale.
 Missing scale retains the legacy scale-1 behavior. Physical sessions reject
 resizing as before.
+
+## Linux PC: reuse installed desktop sessions (validation in progress)
+
+The PC adapter reuses the Linux instance launcher, capture/input backends and
+owned-display admission. Shared scripts live in `scripts/linux-session/`; the
+LightOS resource paths link to these same files. The former bare GNOME provider
+was withdrawn. No new compositor is selected merely because a PC runs Linux.
+
+The adapter discovers installed X11/Wayland desktop entries, preserving their
+commands and preferring the current desktop session/family. Omarchy/Hyprland and
+Niri use the existing native desktop owner and `session.json` handoff. Other
+supported desktops use the existing private bus, audio, Xvfb/nested compositor
+launcher, which publishes validated coordinates instead of another HTTP listener.
+Only locally owned processes/displays are admitted; browser requests cannot
+supply process IDs, sockets, authority files or session commands.
+
+A validation artifact includes `session-support` beside the runtime. Its presence
+allows older PC controllers, which already identify the physical desktop, to
+start a selection service without new controller flags. Explicit
+`--virtual-fallback` / `LIGHTOS_REMOTE_DESKTOP_VIRTUAL_FALLBACK=true` is also
+supported. Physical remains the default: locked/failed physical capture never
+silently starts a virtual desktop, unlocks the console or changes back after
+unlock. The recovery page offers **Use virtual desktop** only when available.
+
+Dependency diagnostics use the same `setup-dependencies.sh` as explicit install:
+
+```sh
+sh session-support/setup-dependencies.sh --check --session-only session-support
+# Debian/Ubuntu: inspect the missing-package transaction without applying it.
+sh session-support/setup-dependencies.sh --plan --session-only session-support
+```
+
+Set `LIGHTOS_REMOTE_DESKTOP_SESSION_ID` and `LIGHTOS_REMOTE_DESKTOP_SESSION` to
+the selected installed entry for these administrative commands. Routine probes
+and connections never install packages. The session-only mode skips container
+codec/driver preparation; it preserves an existing PulseAudio/PipeWire stack.
+An actual install requires explicit local authorization and elevated privileges.
+
+Existing X11 dynamic RandR and nested output controllers are reused, not replaced
+by the withdrawn prototype's fixed-resolution wrapper. **GNOME 49 devkit is a
+known compatibility gap:** resizing its outer Weston viewer does not change the
+actual virtual monitor. That specific path reports resize unavailable until
+proper mode negotiation is integrated; other owned paths retain their existing
+capabilities. This gap prevents release acceptance of the current PC adapter.
+
+Browser disconnect/reconnect and switching retain the created desktop and
+applications while the host process runs. The adapter currently still owns its
+launcher as a child: stopping/updating this host ends that on-demand session.
+Independent owner/transport supervision for PC runtime replacement remains
+unfinished; this is not a claim of persistent-owner upgrade support. A failed
+retained desktop is reported, not silently replaced with an empty desktop.
+MCP and the optional RDP server are not routed to this on-demand desktop.
+
+Ordinary artifacts do not include this unaccepted PC adapter's support payload.
+`--experimental-linux-virtual-desktop` includes the shared scripts and advertises
+`virtual_fallback` for validation builds. `virtual_available` remains distinct
+from physical screen/input grants. `can_start` can permit the selection service
+while physical access is locked/unavailable; neither proves desktop first-frame
+readiness. Windows/macOS independent-session providers remain unimplemented.
+
+## Occupied desktop and confirmed takeover
+
+A second browser/device session receives `controller_busy` instead of waiting on
+an empty canvas. For a browser-owned connection, the page opens a confirmation
+dialog with Cancel and Confirm. Cancel, Escape or dismissing the dialog leaves
+the original controller untouched and keeps an explicit takeover entry here.
+Non-browser controllers are not evicted; the page explains they must disconnect.
+
+Confirm sends a one-shot `takeover=true` request. The server cancels the original
+connection, waits for its input-release barrier, then admits the replacement.
+When the new window has not explicitly chosen a desktop source, it continues the
+previous controller's selected source and output, including an independent
+virtual desktop on a PC whose configured default is physical. Explicit source
+choices remain explicit; takeover never unlocks a physical session. The old
+window shows that another session has connected and stops automatic retries,
+including after network recovery. Another takeover requires fresh confirmation.
+The desktop owner and running applications are not restarted during handoff.
+
+## Switching and retained sessions
 
 The toolbar selects the desktop source, independently of fit, 1:1 and fullscreen.
 Page reload uses the service's configured base desktop: normally the virtual

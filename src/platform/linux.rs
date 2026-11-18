@@ -12,6 +12,16 @@ use std::sync::atomic::Ordering;
 mod idle;
 pub struct LinuxHost;
 
+struct PendingLifecycle;
+impl SessionLifecycle for PendingLifecycle {
+    fn healthy(&mut self) -> bool {
+        true
+    }
+    fn is_owned(&self) -> bool {
+        false
+    }
+}
+
 struct OwnedLifecycle {
     _idle: Option<idle::Inhibitor>,
     session: Session,
@@ -83,6 +93,49 @@ pub fn context(config: &Config, backend: Arc<dyn DesktopBackend>, session: Sessi
 
 fn session_displays(config: &Config, session: &Session) -> Arc<dyn DisplayController> {
     let target = session.target();
+    if session.is_owned() && config.virtual_x11_dynamic_modes && target.x11_display.is_some() {
+        return Arc::new(X11Display::virtual_session(
+            target,
+            config
+                .virtual_environment
+                .get("LIGHTOS_REMOTE_DESKTOP_GNOME_X11")
+                .is_some_and(|value| value == "1")
+                || std::env::var("LIGHTOS_REMOTE_DESKTOP_GNOME_X11").as_deref() == Ok("1"),
+        ));
+    }
+    if config.virtual_wayland_server_pid.is_some() && session.is_owned() {
+        if let Some(helper) = config
+            .virtual_environment
+            .get("LIGHTOS_REMOTE_DESKTOP_NESTED_RESIZE_HELPER")
+        {
+            // The transport keeps the physical desktop's environment. Select
+            // the query adapter from the verified owned compositor instead.
+            let compositor = std::fs::read_link(format!(
+                "/proc/{}/exe",
+                config.virtual_wayland_server_pid.unwrap()
+            ))
+            .ok();
+            let primary: Arc<dyn DisplayController> = match compositor
+                .as_deref()
+                .and_then(std::path::Path::file_name)
+                .and_then(|name| name.to_str())
+            {
+                Some("gnome-shell") => {
+                    Arc::new(display_control::MutterDisplay::new(target.clone()))
+                }
+                Some("kwin_wayland" | "kwin_wayland_wrapper") => {
+                    Arc::new(display_control::KScreenDisplay::new(target.clone()))
+                }
+                _ => Arc::new(WaylandDisplay::new(session.socket.clone())),
+            };
+            return Arc::new(display_control::NestedDisplay::with_environment(
+                primary,
+                target,
+                helper.into(),
+                config.virtual_environment.clone(),
+            ));
+        }
+    }
     if config.display_backend == display_control::DisplayBackend::Auto && session.is_native_niri() {
         return Arc::new(WaylandDisplay::new(session.socket.clone()));
     }
@@ -162,14 +215,74 @@ impl HostPlatform for LinuxHost {
         config: &Config,
         cancelled: Option<&AtomicBool>,
     ) -> Result<BackendReport> {
-        backend::probe(&Session::physical_target(config)?, true, cancelled)
+        let target = Session::physical_target(config)?;
+        backend::guarded::require_unlocked(&target)?;
+        backend::probe(&target, true, cancelled)
     }
     fn supports_virtual(&self, config: &Config) -> bool {
+        if config.on_demand_desktops() {
+            return crate::session::installed::available().is_ok();
+        }
         config.virtual_wayland_server_pid.is_some()
+            || config.virtual_x11_server_pid.is_some()
             || (config.wayland_socket.is_none() && config.x11_display.is_none())
     }
+    fn virtual_unavailable_reason(&self, config: &Config) -> String {
+        if config.on_demand_desktops() {
+            return crate::session::installed::available()
+                .err()
+                .map_or_else(String::new, |error| format!("{error:#}"));
+        }
+        "服务以外部桌面模式启动".into()
+    }
+    fn open_virtual(&self, config: &Config, cancelled: Arc<AtomicBool>) -> Result<HostSession> {
+        ensure!(
+            config.virtual_fallback,
+            "virtual desktop fallback is not enabled"
+        );
+        let (virtual_config, session) =
+            crate::session::installed::start(config, cancelled.clone())?;
+        self.attach(&virtual_config, session, cancelled)
+    }
     fn open(&self, config: &Config, cancelled: Arc<AtomicBool>) -> Result<HostSession> {
+        if config.on_demand_desktops() {
+            ensure!(
+                !cancelled.load(Ordering::Acquire),
+                "desktop startup cancelled"
+            );
+            return Ok(HostSession {
+                backend: Arc::new(backend::DeferredPortalBackend::new()),
+                displays: Arc::new(WaylandDisplay::new(std::path::PathBuf::new())),
+                lifecycle: Box::new(PendingLifecycle),
+                audio: Arc::new(PulseAudio {
+                    server: None,
+                    source: None,
+                }),
+                output: None,
+                outputs: Vec::new(),
+            });
+        }
         let session = Session::start_cancellable(config, cancelled.clone())?;
+        self.attach(config, session, cancelled)
+    }
+    fn open_physical(
+        &self,
+        config: &Config,
+        output: Option<String>,
+        cancelled: Arc<AtomicBool>,
+        authorization: tokio::sync::oneshot::Sender<bool>,
+    ) -> Result<HostSession> {
+        self.attach_physical(config, output, cancelled, authorization)
+    }
+}
+
+impl LinuxHost {
+    fn attach(
+        &self,
+        config: &Config,
+        session: Session,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<HostSession> {
         ensure!(!cancelled.load(Ordering::Acquire), "startup cancelled");
         let target = session.target();
         if let Some(pid) = config.virtual_wayland_server_pid {
@@ -222,7 +335,7 @@ impl HostPlatform for LinuxHost {
             };
         Ok(context(config, active, session))
     }
-    fn open_physical(
+    fn attach_physical(
         &self,
         config: &Config,
         output: Option<String>,
@@ -230,6 +343,7 @@ impl HostPlatform for LinuxHost {
         authorization: tokio::sync::oneshot::Sender<bool>,
     ) -> Result<HostSession> {
         let target = Session::physical_target(config)?;
+        backend::guarded::require_unlocked(&target)?;
         let selection = backend::probe(&target, true, Some(&cancelled))?;
         let selected = selection.require_available()?;
         let displays =

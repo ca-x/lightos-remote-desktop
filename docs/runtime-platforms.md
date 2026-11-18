@@ -61,8 +61,12 @@ different backend or repeatedly reopen consent. Without RandR metadata, an X11
 connection can still capture the root window; a specifically requested monitor
 must be resolved successfully. Physical desktop resizing remains forbidden.
 
-The owned virtual desktop remains isolated Cage/Hyprland. GNOME/KDE use the Portal
-path only when their installed portal advertises and grants these capabilities,
+The default owned virtual desktop remains isolated Cage/Hyprland, with native
+Niri as an alternative. The Linux PC adapter reuses these owners and the shared
+installed-session launcher for GNOME/KDE/X11 rather than adding bare GNOME.
+Packaging, dependency preparation, current lifecycle limits and the GNOME 49
+devkit resize gap are documented in [desktop switching](desktop-switching.md).
+Physical GNOME/KDE use the Portal path only when their installed portal advertises and grants these capabilities,
 and one provider can be tied to the selected compositor. The frontend, actual
 implementation and Mutter/KWin service identities must match that target; sharing
 a UID, runtime or user bus alone is insufficient.

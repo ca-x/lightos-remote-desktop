@@ -226,7 +226,8 @@ export function createClient(options: ClientOptions = {}) {
     return `${output.description ? `${output.description} · ` : ""}${outputSummary(output)} · 位置 (${output.x ?? "?"}, ${output.y ?? "?"})`;
   }
 
-  function populateDesktops(value: {desktops?: DesktopChoice[]; outputs?: DesktopOutput[]; reason?: string}) {
+  function populateDesktops(value: {current?: string; desktops?: DesktopChoice[]; outputs?: DesktopOutput[]; reason?: string}) {
+    if (!desktopConfirmed && (value.current === "physical" || value.current === "virtual")) desktopMode = value.current;
     discoveryReason = value.reason ?? "";
     desktopChoices = Array.isArray(value.desktops) ? value.desktops.filter((desktop) =>
       desktop && ["virtual", "physical"].includes(desktop.mode) && typeof desktop.label === "string") : [];
@@ -272,7 +273,7 @@ export function createClient(options: ClientOptions = {}) {
       desktopStatus(choice?.reason || "桌面不可用");
       return;
     }
-    if (mode === desktopMode && output === selectedOutput) return;
+    if (ready && mode === desktopMode && output === selectedOutput) return;
     const canRelease = ready && controlRelease && socket?.readyState === WebSocket.OPEN;
     const releasePending = socket !== null && releasingSocket === socket;
     release();
@@ -443,7 +444,7 @@ export function createClient(options: ClientOptions = {}) {
   }
   const cursor = createCursorLayer(canvas, element("remote-cursor"), () => latestRtt ?? 0, pictureBounds, () => pictureRotated);
   const pictureZoom = createPictureZoom({ canvas, viewport, bounds: pictureBounds,
-    enabled: () => ready && !desktopPaused && desktopMode === "physical",
+    enabled: () => ready && !desktopPaused && (desktopMode === "physical" || mobile?.isTouch() === true),
     touching: () => mobile?.touching() ?? false, changed: () => { cursor.layout(); scheduleVideoScale(); } });
   const screenRotation = createScreenRotation({
     active: () => !!mobile?.isFullscreen() && !destroyed,

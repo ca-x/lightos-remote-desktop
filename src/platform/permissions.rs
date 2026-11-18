@@ -10,6 +10,9 @@ pub struct PermissionReport {
     #[serde(flatten)]
     pub permissions: Permissions,
     pub can_start: bool,
+    /// Independent of the physical screen/input grant. Only opt-in hosts may
+    /// keep the selection service running using this capability.
+    pub virtual_available: bool,
     pub request_mode: &'static str,
     pub reason_code: &'static str,
     pub settings: Vec<&'static str>,
@@ -28,6 +31,7 @@ impl PermissionReport {
         Self {
             permissions,
             can_start,
+            virtual_available: false,
             request_mode: mode,
             reason_code: code,
             settings,
@@ -62,6 +66,21 @@ impl PermissionReport {
 }
 
 pub fn report(config: &Config, request: bool) -> Result<PermissionReport> {
+    let report = physical_report(config, request)?;
+    #[cfg(target_os = "linux")]
+    {
+        let mut report = report;
+        if config.on_demand_desktops() {
+            report.virtual_available = super::current().supports_virtual(config);
+            report.can_start |= report.virtual_available;
+        }
+        Ok(report)
+    }
+    #[cfg(not(target_os = "linux"))]
+    Ok(report)
+}
+
+fn physical_report(config: &Config, request: bool) -> Result<PermissionReport> {
     #[cfg(target_os = "macos")]
     {
         let _ = config;
@@ -91,6 +110,12 @@ pub fn report(config: &Config, request: bool) -> Result<PermissionReport> {
                 ));
             }
         };
+        if let Err(error) = crate::backend::guarded::require_unlocked(&target) {
+            let code = error
+                .downcast_ref::<crate::backend::CapabilityError>()
+                .map_or("session_unavailable", |error| error.code);
+            return Ok(PermissionReport::unavailable(format!("{error:#}"), code));
+        }
         let selection = match crate::backend::probe(&target, true, None) {
             Ok(selection) => selection,
             Err(error) => {
@@ -127,7 +152,7 @@ pub fn report(config: &Config, request: bool) -> Result<PermissionReport> {
                     }
                     Err(error) => Some(format!("{error:#}")),
                 };
-                let mut result = report(config, false)?;
+                let mut result = physical_report(config, false)?;
                 if let Some(error) = error {
                     result.reason_code = "authorization_failed";
                     result.permissions.reason = Some(error);

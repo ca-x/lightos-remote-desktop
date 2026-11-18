@@ -427,6 +427,14 @@ pub struct Config {
     )]
     #[arg(hide = !cfg!(target_os = "linux"))]
     pub x11_display: Option<String>,
+    /// PID of the owned Xvfb/Xephyr serving this independent desktop.
+    #[arg(long, requires = "x11_display", hide = !cfg!(target_os = "linux"))]
+    pub virtual_x11_server_pid: Option<u32>,
+    #[arg(long, requires = "virtual_x11_server_pid", hide = !cfg!(target_os = "linux"))]
+    pub virtual_x11_dynamic_modes: bool,
+    /// Coordinates published by the owned session launcher, never browser input.
+    #[arg(skip)]
+    pub virtual_environment: std::collections::BTreeMap<String, String>,
     /// Exact X11 authorization file; defaults to XAUTHORITY or ~/.Xauthority.
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_XAUTHORITY")]
     #[arg(hide = !cfg!(target_os = "linux"))]
@@ -453,6 +461,9 @@ pub struct Config {
     )]
     #[arg(hide = !cfg!(target_os = "linux"))]
     pub compositor: Compositor,
+    /// Offer an explicitly selected owned desktop using the installed Linux session.
+    #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_VIRTUAL_FALLBACK", default_value_t = false, hide = !cfg!(target_os = "linux"))]
+    pub virtual_fallback: bool,
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_DESKTOP_CONFIG")]
     #[arg(hide = !cfg!(target_os = "linux"))]
     pub desktop_config: Option<PathBuf>,
@@ -475,6 +486,14 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn on_demand_desktops(&self) -> bool {
+        self.virtual_fallback
+            && self.compositor == Compositor::Hyprland
+            && self.session_runtime.is_none()
+            && self.virtual_wayland_server_pid.is_none()
+            && self.virtual_x11_server_pid.is_none()
+    }
+
     pub fn niri_config(&self) -> Result<PathBuf> {
         let home = std::env::var_os("HOME").map(PathBuf::from);
         self.niri_config_from_home(home.as_deref())
@@ -518,7 +537,19 @@ impl Config {
 
     /// The service-owned runtime is a fallback, never a competing target.
     pub fn apply_service_defaults(&mut self, default_runtime: Option<PathBuf>) {
-        if self.session_runtime.is_none()
+        // Older PC controllers already identify the physical login but know no
+        // virtual capability flag. A packaged session-support payload enables
+        // selection without changing the physical target or container defaults.
+        #[cfg(target_os = "linux")]
+        if (self.wayland_socket.is_some() || self.x11_display.is_some())
+            && self.virtual_wayland_server_pid.is_none()
+            && self.virtual_x11_server_pid.is_none()
+            && crate::session::installed::payload().is_ok()
+        {
+            self.virtual_fallback = true;
+        }
+        if !self.virtual_fallback
+            && self.session_runtime.is_none()
             && self.wayland_socket.is_none()
             && self.x11_display.is_none()
         {
@@ -528,7 +559,7 @@ impl Config {
 
     #[cfg(target_os = "linux")]
     pub fn omarchy_path(&self) -> Result<Option<PathBuf>> {
-        if self.compositor == Compositor::Niri
+        if self.compositor != Compositor::Hyprland
             || self.desktop_shell == DesktopShell::Minimal
             || self.desktop_config.is_some()
             || self.wayland_socket.is_some()
@@ -557,6 +588,7 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         self.rdp.validate(
             !cfg!(target_os = "linux")
+                || self.on_demand_desktops()
                 || self.wayland_socket.is_some()
                 || self.x11_display.is_some(),
         )?;
@@ -568,6 +600,8 @@ impl Config {
                 && self.physical_runtime_dir.is_none()
                 && self.x11_display.is_none()
                 && self.xauthority.is_none()
+                && self.virtual_x11_server_pid.is_none()
+                && !self.virtual_x11_dynamic_modes
                 && self.runtime_dir.is_none()
                 && self.session_runtime.is_none()
                 && self.desktop_config.is_none()
@@ -575,10 +609,21 @@ impl Config {
                 && self.compositor == Compositor::Hyprland
                 && self.desktop_shell == DesktopShell::Auto
                 && self.display_backend == display_control::DisplayBackend::Auto
+                && !self.virtual_fallback
                 && self.cage.as_os_str() == "cage",
             "Linux desktop/session options are unsupported on this platform"
         );
         self.validate_compositor()?;
+        if self.virtual_fallback {
+            ensure!(
+                self.on_demand_desktops()
+                    && self.desktop_config.is_none()
+                    && self.aquamarine_dir.is_none()
+                    && self.runtime_dir.is_none()
+                    && self.desktop_shell == DesktopShell::Auto,
+                "virtual fallback requires a physical PC host without owned-session or custom compositor options"
+            );
+        }
         let (width, height) = self.dimensions()?;
         ensure!(
             (320..=3840).contains(&width) && (200..=2160).contains(&height),

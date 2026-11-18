@@ -86,7 +86,10 @@ async fn main() -> Result<()> {
         .init();
     let mut cli = Cli::parse();
     match &mut cli.command {
-        Action::Serve(config) | Action::Doctor(config) | Action::Probe { config, .. } => {
+        Action::Serve(config)
+        | Action::Doctor(config)
+        | Action::Probe { config, .. }
+        | Action::Permissions { config, .. } => {
             config.apply_service_defaults(
                 std::env::var_os("LIGHTOS_REMOTE_DESKTOP_DEFAULT_SESSION_RUNTIME")
                     .map(PathBuf::from),
@@ -359,10 +362,12 @@ async fn serve(config: Config, stop_event: Option<String>) -> Result<()> {
         monitor.shutdown_mcp();
         monitor.rdp.shutdown().await;
         monitor.backend.stop();
+        monitor.shutdown_virtual_desktop();
     }).await;
     state.shutdown_mcp();
     state.rdp.shutdown().await;
     state.backend.stop();
+    state.shutdown_virtual_desktop();
     result?;
     ensure!(
         !failed.load(std::sync::atomic::Ordering::Acquire),

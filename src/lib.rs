@@ -26,6 +26,8 @@ pub mod session;
 pub mod video;
 mod viewer_input;
 #[cfg(target_os = "linux")]
+mod virtual_x11;
+#[cfg(target_os = "linux")]
 pub mod wayland;
 
 pub mod platform;

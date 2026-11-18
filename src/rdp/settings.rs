@@ -95,6 +95,7 @@ impl Manager {
             path,
             config: config.rdp.clone(),
             attached: (!cfg!(target_os = "linux")
+                || config.on_demand_desktops()
                 || config.wayland_socket.is_some()
                 || config.x11_display.is_some()),
             runtime: Mutex::new(Runtime {

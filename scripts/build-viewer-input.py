@@ -25,7 +25,7 @@ elif a.target=='win32-x64':
     if sys.platform=='win32':run(['cl','/nologo','/O2','/MT','/EHsc',str(source/'windows.cpp'),'/Fe:'+str(output),'/Fo:'+str(output.with_suffix('.obj')),'/link','user32.lib'])
     else:
         sdk=Path(os.environ.get('XWIN_ROOT',Path.home()/'.cache/cargo-xwin/xwin'))
-        run(['clang-cl','--target=x86_64-pc-windows-msvc','-fuse-ld=lld','/nologo','/O2','/MT','/EHsc',*['/imsvc'+str(sdk/q) for q in ['crt/include','sdk/include/ucrt','sdk/include/shared','sdk/include/um']],str(source/'windows.cpp'),'/Fe:'+str(output),'/Fo:'+str(output.with_suffix('.obj')),'/link',*['/libpath:'+str(sdk/q) for q in ['crt/lib/x86_64','sdk/lib/um/x86_64','sdk/lib/ucrt/x86_64']],'user32.lib'])
+        run(['clang-cl','--target=x86_64-pc-windows-msvc','-fuse-ld=lld','/nologo','/O2','/MT','/EHsc',*['/imsvc'+str(sdk/q) for q in ['crt/include','sdk/include/ucrt','sdk/include/shared','sdk/include/um']],'/Tp'+str(source/'windows.cpp'),'/Fe:'+str(output),'/Fo:'+str(output.with_suffix('.obj')),'/link',*['/libpath:'+str(sdk/q) for q in ['crt/lib/x86_64','sdk/lib/um/x86_64','sdk/lib/ucrt/x86_64']],'user32.lib'])
     output.with_suffix('.obj').unlink(missing_ok=True)
 else:raise SystemExit('Unsupported viewer input target')
 notices=['Viewing-device keyboard capture. Wayland protocol copyright notices:\n']

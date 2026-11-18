@@ -405,6 +405,34 @@ pub struct GuardedBackend {
     worker: std::sync::Mutex<Option<thread::JoinHandle<()>>>,
 }
 
+/// Read-only preflight before opening a capture/input session. The guard below
+/// still verifies again and monitors changes, so unlocking during discovery or
+/// locking during initialization never grants access by itself.
+pub(crate) fn require_unlocked(target: &SessionTarget) -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let locked = runtime.block_on(async {
+        let authority = tokio::time::timeout(Duration::from_secs(2), SessionLock::discover(target))
+            .await
+            .context("lock-state discovery timed out")??;
+        match authority {
+            Some(authority) => tokio::time::timeout(Duration::from_secs(1), authority.locked())
+                .await
+                .context("lock-state query timed out")?,
+            None => Ok(false),
+        }
+    })?;
+    if locked {
+        return Err(super::CapabilityError::new(
+            "session_locked",
+            "物理桌面已锁定，请在被控电脑解锁后重连；不会自动解锁或切换桌面",
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// Blocking setup. On systems without logind no lock authority is invented;
 /// native desktop authorization remains authoritative. Once a matching login
 /// session has been found, loss of its lock state blocks both capture and input.

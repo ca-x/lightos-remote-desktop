@@ -45,6 +45,12 @@ pub trait HostPlatform: Send + Sync {
         cancelled: Option<&AtomicBool>,
     ) -> Result<BackendReport>;
     fn supports_virtual(&self, config: &Config) -> bool;
+    fn virtual_unavailable_reason(&self, _config: &Config) -> String {
+        "此主机尚不支持独立虚拟桌面".into()
+    }
+    fn open_virtual(&self, _config: &Config, _cancelled: Arc<AtomicBool>) -> Result<HostSession> {
+        anyhow::bail!("Independent virtual desktop is unavailable on this host")
+    }
     fn open(&self, config: &Config, cancelled: Arc<AtomicBool>) -> Result<HostSession>;
     fn open_physical(
         &self,

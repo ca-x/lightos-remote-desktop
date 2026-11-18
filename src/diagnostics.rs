@@ -10,11 +10,14 @@ pub enum SessionMode {
     PersistentAttach,
     ExternalWayland,
     ExternalX11,
+    DesktopSelection,
 }
 
 impl SessionMode {
     pub fn from_config(config: &Config) -> Self {
-        if config.x11_display.is_some() {
+        if config.on_demand_desktops() {
+            Self::DesktopSelection
+        } else if config.x11_display.is_some() {
             Self::ExternalX11
         } else if config.wayland_socket.is_some() {
             Self::ExternalWayland

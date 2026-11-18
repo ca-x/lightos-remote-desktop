@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Button, Dialog, DialogBackdrop, DialogPanel, DialogTitle, Field, Input, Label, Tab, TabGroup, TabList, TabPanel, TabPanels } from "@headlessui/react";
+import { Button, Dialog, DialogBackdrop, DialogDescription, DialogPanel, DialogTitle, Field, Input, Label, Tab, TabGroup, TabList, TabPanel, TabPanels } from "@headlessui/react";
 import { Activity, Bot, Check, ChevronRight, Clipboard, Expand, House, Info, Keyboard, Menu, Monitor, Palette, Settings2, Shrink, SlidersHorizontal, Volume2, VolumeX, RotateCw, X } from "lucide-react";
 import logo from "./assets/logo.webp?inline";
 import * as Menubar from "@radix-ui/react-menubar";
@@ -209,6 +209,10 @@ function Workspace() {
       <p>{ownership ? t(ownership === "unavailable" ? "desktopControllerHint" : "desktopOccupiedHint") : status.message || t("desktopRecoveryHint")}</p>
       {ownership && ownership !== "unavailable" && <Button onClick={() => setTakeoverOpen(true)}>{t("takeoverDesktop")}</Button>}
       {(!ownership || ownership === "unavailable") && <Button onClick={() => invoke("connection")}>{t("reconnectDesktop")}</Button>}
+      {!ownership && controls.desktopMode !== "virtual" && controls.choices.some((choice) => choice.mode === "virtual" && choice.available) && <>
+        <Button disabled={controls.switchingDesktop} onClick={() => choose("desktop-source", "virtual")}>{t("useVirtualDesktop")}</Button>
+        <p>{t("virtualDesktopHint")}</p>
+      </>}
     </div>
     <div id="desktop-authorization" className="desktop-recovery desktop-authorization" role="status" aria-live="polite" hidden={!controls.authorizationPending || controls.ready || !controls.wanted}>
       <strong>{t("authorizationWaiting")}</strong><p>{t("authorizationWaitingHint")}</p>
@@ -324,10 +328,10 @@ function Workspace() {
       <DialogBackdrop className="settings-backdrop" />
       <div className="settings-positioner"><DialogPanel className="settings-dialog takeover-dialog">
         <header className="settings-heading"><DialogTitle>{t("desktopOccupied")}</DialogTitle></header>
-        <p className="takeover-description">{t("takeoverConfirmation")}</p>
+        <DialogDescription className="takeover-description">{t("takeoverConfirmation")}</DialogDescription>
         <div className="takeover-actions">
           <Button data-autofocus onClick={() => setTakeoverOpen(false)}>{t("cancelTakeover")}</Button>
-          <Button onClick={() => { setTakeoverOpen(false); invoke("takeover-connection"); }}>{t("takeoverDesktop")}</Button>
+          <Button onClick={() => { setTakeoverOpen(false); invoke("takeover-connection"); }}>{t("confirmTakeover")}</Button>
         </div>
       </DialogPanel></div>
     </Dialog>

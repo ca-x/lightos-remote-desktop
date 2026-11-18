@@ -14,6 +14,7 @@
     client_update_required: "请先更新并重启这台设备上的懒猫 PC 客户端，再安装或更新远程桌面。",
     interruptNotice: "更新会中断当前远程桌面连接。确认后将自动关闭服务并更新，完成后恢复服务。", cancel: "取消", confirm: "确认", stopping: "正在关闭远程桌面",
     preparing: "正在准备", downloading: "正在下载", verifying: "正在校验", installing: "正在安装", checking: "正在检查新版本", cleaning: "正在清理旧版本", failedInstall: "安装 / 更新失败，可重试", retryOperation: "重试",
+    virtualAvailable: "可连接独立虚拟桌面；物理桌面仍需解锁或授权，不会自动切换。", physicalLocked: "物理桌面已锁定，请在被控电脑解锁后重新连接。",
     usable: "可用", desktopUnavailable: "桌面不可用", details: "查看原因", permissionTitle: "桌面访问检查", diagnosticDetails: "诊断详情", recheck: "刷新状态", rechecking: "正在检查…", checkRequested: "设备状态会根据后台检查结果自动更新。", close: "关闭",
     connectionHelp: "首次使用请先申请权限。", enableConnectionHelp: "可先申请权限，再开启远程桌面。", currentConnectionHelp: "可在此申请权限，授权后从另一台设备连接。",
     authorizeAt: name => `请在「${name}」电脑的系统窗口中允许屏幕与输入访问。当前页面会显示申请结果。`, authorizationSuccess: "已授权。现在可以连接桌面。", authorizationPending: "正在等待被控电脑确认…", authorizationIncomplete: "授权尚未完成。请处理被控电脑上的系统提示，或重新申请。", authorizationNotSaved: "系统没有保存这次授权，连接桌面时仍需确认。", retryAuthorization: "重新申请", authorizationUpdate: "请先更新这台设备的远程桌面，再使用独立授权入口。", authorizationNotStarted: "申请尚未启动，请稍后重试。",
@@ -31,6 +32,7 @@
     client_update_required: "Update and restart the Lazycat PC client on this device before installing or updating remote desktop.",
     interruptNotice: "Updating will disconnect the current remote desktop session. Confirm to stop the service and update it. The service will resume when the update finishes.", cancel: "Cancel", confirm: "Confirm", stopping: "Stopping remote desktop",
     preparing: "Preparing", downloading: "Downloading", verifying: "Verifying", installing: "Installing", checking: "Checking the new version", cleaning: "Removing the old version", failedInstall: "Installation / update failed; retry is available", retryOperation: "Retry",
+    virtualAvailable: "A separate virtual desktop is available. Physical access still requires unlocking or consent; switching is never automatic.", physicalLocked: "The physical desktop is locked. Unlock the controlled computer before reconnecting.",
     usable: "Available", desktopUnavailable: "Desktop unavailable", details: "View details", permissionTitle: "Desktop access check", diagnosticDetails: "Diagnostic details", recheck: "Refresh status", rechecking: "Checking…", checkRequested: "Device status updates automatically from background checks.", close: "Close",
     connectionHelp: "Request permissions before first use.", enableConnectionHelp: "You can approve permissions before enabling the desktop.", currentConnectionHelp: "Approve permissions here, then connect from another device.",
     authorizeAt: name => `Allow screen and input access in the system dialog on “${name}”. The result will appear here.`, authorizationSuccess: "Permissions approved. You can now connect to the desktop.", authorizationPending: "Waiting for approval on the controlled computer…", authorizationIncomplete: "Approval is not complete. Respond to the system dialog on the controlled computer or request again.", authorizationNotSaved: "The system did not retain this approval. Confirmation is still needed when connecting.", retryAuthorization: "Request again", authorizationUpdate: "Update this device's desktop runtime before requesting permissions here.", authorizationNotStarted: "The request has not started. Try again shortly.",
@@ -48,6 +50,8 @@
   const connectionConsent = item => linuxDevice(item) && (item.permissions?.backend === "portal" || item.permissions?.request_mode === "on_connection" || item.requires_consent === true) && ![item.permissions?.screen, item.permissions?.input].every(value => value === "granted");
   function permissionHelp(item) {
     if (!linuxDevice(item) || !item.installed) return "";
+    if (item.permissions?.virtual_available === true) return copy.virtualAvailable;
+    if (item.permissions?.reason_code === "session_locked") return copy.physicalLocked;
     if (connectionConsent(item)) return item.current_device ? copy.currentConnectionHelp : item.enabled ? copy.connectionHelp : copy.enableConnectionHelp;
     if (item.permissions?.can_start === false) return copy.permissionHelp[item.permissions.reason_code] || copy.permissionHelp.capture_unavailable;
     return "";
@@ -189,6 +193,7 @@
     }
     const processing = Boolean(pending);
     const linux = linuxDevice(item), deferred = connectionConsent(item), unavailable = linux && permissions.can_start === false;
+    const physicalUnavailable = linux && permissions.reason_code === "session_locked";
     p.name.textContent = item.name; p.name.title = item.name;
     const icon = platformIcon(item);
     p.icon.dataset.platform = icon; p.icon.alt = platformNames[icon]; p.icon.title = platformNames[icon];
@@ -243,6 +248,11 @@
     p.request.textContent = permissions.requesting ? copy.requesting : copy.permissions;
     p.request.disabled = item.online === false || !item.managed || !item.installed || processing || switching || permissions.requesting === true;
     p.request.title = !item.installed ? copy.not_installed : "";
+    if (linux && item.managed && item.installed) {
+      p.request.hidden = permissionApproved || !(unavailable || deferred || physicalUnavailable);
+      p.request.textContent = permissions.requesting ? copy.requesting : deferred ? copy.permissions : copy.details;
+      p.request.title = permissionHelp(item);
+    }
     const ready = !item.current_device && item.online !== false && item.ready === true && !switching && pending?.action !== "stop" && !(deferred && permissions.requesting);
     p.connect.setAttribute("aria-disabled", String(!ready)); p.connect.tabIndex = ready ? 0 : -1;
     if (ready) p.connect.href = item.url; else p.connect.removeAttribute("href");

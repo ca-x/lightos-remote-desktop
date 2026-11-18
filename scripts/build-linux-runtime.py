@@ -27,7 +27,13 @@ if hashlib.sha256(archive.read_bytes()).hexdigest() != checksum:
 root = cache / "rootfs"
 root.mkdir(exist_ok=True)
 if not (root / "usr/bin/apt-get").exists():
-    subprocess.run(["bsdtar", "-xf", str(archive), "-C", str(root), "--no-same-owner"], check=True)
+    # Ubuntu rootfs archives contain absolute symlinks (e.g. alternatives).
+    # Extract only the checksum-pinned rootfs with a system archive tool;
+    # Python's data filter deliberately rejects this filesystem layout.
+    extractor = shutil.which("bsdtar") or shutil.which("tar")
+    if not extractor:
+        raise SystemExit("Ubuntu build root extraction requires bsdtar or tar")
+    subprocess.run([extractor, "-xf", str(archive), "-C", str(root), "--no-same-owner"], check=True)
 (root / "usr/sbin/policy-rc.d").write_text("#!/bin/sh\nexit 101\n")
 (root / "usr/sbin/policy-rc.d").chmod(0o755)
 target, logs = cache / "target", cache / "logs"

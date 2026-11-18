@@ -13,15 +13,16 @@ import (
 )
 
 type runtimeArtifact struct {
-	Target        string `json:"target"`
-	Version       string `json:"version"`
-	Binary        string `json:"binary"`
-	SHA256        string `json:"sha256"`
-	ArchiveSHA256 string `json:"archive_sha256"`
-	ArchiveSize   int64  `json:"archive_size"`
-	DownloadPath  string `json:"download_path"`
-	Protocol      int    `json:"runtime_protocol"`
-	SigningTeam   string `json:"signing_team,omitempty"`
+	Target          string `json:"target"`
+	Version         string `json:"version"`
+	Binary          string `json:"binary"`
+	SHA256          string `json:"sha256"`
+	ArchiveSHA256   string `json:"archive_sha256"`
+	ArchiveSize     int64  `json:"archive_size"`
+	DownloadPath    string `json:"download_path"`
+	Protocol        int    `json:"runtime_protocol"`
+	VirtualFallback bool   `json:"virtual_fallback,omitempty"`
+	SigningTeam     string `json:"signing_team,omitempty"`
 }
 type runtimeCatalog struct {
 	Version   string                     `json:"version"`
@@ -48,6 +49,9 @@ func loadRuntimeCatalog() (*runtimeCatalog, error) {
 	for _, target := range []string{"darwin-arm64", "darwin-x64", "win32-x64", "linux-x64"} {
 		artifact, ok := catalog.Targets[target]
 		digest, decodeErr := hex.DecodeString(artifact.SHA256)
+		if artifact.VirtualFallback && target != "linux-x64" {
+			return nil, fmt.Errorf("unsupported virtual desktop runtime: %s", target)
+		}
 		if !ok || artifact.Target != target || artifact.Version != catalog.Version || artifact.Version == "" || artifact.Protocol != 2 || decodeErr != nil || len(digest) != 32 || artifact.ArchiveSize < 1 || !strings.HasPrefix(artifact.DownloadPath, "/api/runtimes/"+target+"/") {
 			return nil, fmt.Errorf("invalid runtime catalog entry: %s", target)
 		}

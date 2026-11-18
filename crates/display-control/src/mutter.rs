@@ -18,10 +18,21 @@ const SERVICE: &str = "org.gnome.Mutter.DisplayConfig";
 
 pub struct MutterDisplay {
     target: SessionTarget,
+    external_modes: bool,
 }
 impl MutterDisplay {
     pub fn new(target: SessionTarget) -> Self {
-        Self { target }
+        Self {
+            target,
+            external_modes: false,
+        }
+    }
+    /// Adopt modes changed on the same owned X server through RandR.
+    pub fn with_external_modes(target: SessionTarget) -> Self {
+        Self {
+            target,
+            external_modes: true,
+        }
     }
     async fn connection(&self) -> Result<Connection> {
         let address = self
@@ -59,7 +70,7 @@ impl MutterDisplay {
         let current = outputs(&state)?;
         let selected = crate::select_output(&current, name)?;
         let name = selected.name.clone();
-        if crate::output_matches(selected, requested) {
+        if !self.external_modes && crate::output_matches(selected, requested) {
             return Ok(requested);
         }
         let config = configuration(&state, &name, requested, fps)?;
