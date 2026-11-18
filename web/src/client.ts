@@ -913,7 +913,12 @@ export function createClient(options: ClientOptions = {}) {
         switchingDesktop = false;
         updateControls();
         connect();
-      } else scheduleRetry();
+      } else if (wanted) {
+        scheduleRetry();
+      } else if (!desktopChoices.length) {
+        // Connection teardown can cancel the first desktop discovery.
+        void refreshDesktops();
+      }
     };
   }
 
