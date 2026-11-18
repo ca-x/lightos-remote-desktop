@@ -9,3 +9,4 @@
 *.lpk
 /manager/manager
 __pycache__/
+.DS_Store
