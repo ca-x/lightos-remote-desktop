@@ -13,6 +13,7 @@ import { createCursorLayer } from "./cursor";
 import { createClipboard } from "./clipboard";
 import { captureResolution, encodingBounds, CAPTURE_SCALES, LEGACY_SCALES } from "./resolution";
 import { decodeDesktopTiles, parseDesktopUpdate } from "./desktop-updates";
+import { isAndroidPlatform } from "./platform";
 import audioWorkerUrl from "./audio-worker.js?url";
 import audioWorkletUrl from "./audio-worklet.js?url";
 
@@ -63,7 +64,8 @@ export function createClient(options: ClientOptions = {}) {
   const canvas = element("desktop");
   canvas.setAttribute("inputmode", "none");
   const preview = createSessionPreview(canvas);
-  const drawing = canvas.getContext("2d", { alpha: false, desynchronized: true });
+  // Android's low-latency canvas path can fail to present the desktop layer.
+  const drawing = canvas.getContext("2d", { alpha: false, desynchronized: !isAndroidPlatform() });
   const viewport = element("viewport");
   const textBox = element("text");
   const controls = ["apply-size", "send-text", "clipboard-get", "clipboard-set", "paste-local", "keyboard-capture", "send-shortcut", "switch-input-method"] as const;
@@ -1338,6 +1340,8 @@ export function createClient(options: ClientOptions = {}) {
             videoFrameIds.delete(frame.timestamp);
             updateVideoWatchdog();
             if (frameAcknowledgements) acknowledgeFrame(id);
+          } catch (error) {
+            fallbackVideo(errorMessage(error));
           } finally { frame.close(); }
         },
         error(error) { if (token === videoToken && session === generation && ready) fallbackVideo(error.message); },

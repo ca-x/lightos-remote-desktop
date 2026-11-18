@@ -128,6 +128,7 @@ function Workspace() {
         },
       });
       lifecycle.current = client;
+      void client.refreshDesktops();
     });
     return () => { cancelAnimationFrame(initialization); lifecycle.current = null; client?.destroy(); };
   }, []);
@@ -186,6 +187,14 @@ function Workspace() {
   const showSettings = (tab = settingsTab) => { setMenu(""); setSettingsTab(tab); setSettingsOpen(true); };
   const showUtility = (mode: "clipboard" | "keyboard") => { setMenu(""); setUtility(mode); };
   const noResize = !controls.ready || !controls.resizeAvailable;
+  const canUseVirtual = !ownership && controls.desktopMode !== "virtual"
+    && controls.choices.some((choice) => choice.mode === "virtual" && choice.available);
+  const entry = new URL(window.location.href);
+  const managerEntry = /^\/desktop\/[a-f0-9]{32}\//.test(entry.pathname);
+  const viaLightOS = managerEntry && entry.searchParams.get("from") === "lightos";
+  const homeHref = viaLightOS ? "/return/lightos" : "/";
+  const homeLabel = t(viaLightOS || entry.pathname.startsWith("/remote-desktop/")
+    ? "mobileLightOSHome" : managerEntry ? "mobileRemoteHome" : "mobileHome");
   const shortcut = (item: MobileShortcut) => {
     const names: Record<string, string> = { ArrowUp: t("arrowUp"), ArrowDown: t("arrowDown"), ArrowLeft: t("arrowLeft"), ArrowRight: t("arrowRight"), Backspace: t("backspace") };
     const label = item.modifier ? t("stickyKey", { key: item.label }) : names[item.key ?? ""] ?? item.label;
@@ -204,15 +213,17 @@ function Workspace() {
     onKeyDownCapture={(event) => { event.currentTarget.dataset.input = "keyboard"; document.documentElement.dataset.input = "keyboard"; }}>
     <canvas id="desktop" width="1280" height="720" tabIndex={0} aria-label={t("canvas")} />
     <img id="remote-cursor" className="remote-cursor" alt="" aria-hidden="true" hidden />
-    <div id="desktop-recovery" className="desktop-recovery" role="status" hidden={controls.ready || controls.wanted}>
-      <strong>{t(ownership === "replaced" ? "desktopReplaced" : ownership ? "desktopOccupied" : "desktopNotConnected")}</strong>
-      <p>{ownership ? t(ownership === "unavailable" ? "desktopControllerHint" : "desktopOccupiedHint") : status.message || t("desktopRecoveryHint")}</p>
-      {ownership && ownership !== "unavailable" && <Button onClick={() => setTakeoverOpen(true)}>{t("takeoverDesktop")}</Button>}
-      {(!ownership || ownership === "unavailable") && <Button onClick={() => invoke("connection")}>{t("reconnectDesktop")}</Button>}
-      {!ownership && controls.desktopMode !== "virtual" && controls.choices.some((choice) => choice.mode === "virtual" && choice.available) && <>
-        <Button disabled={controls.switchingDesktop} onClick={() => choose("desktop-source", "virtual")}>{t("useVirtualDesktop")}</Button>
-        <p>{t("virtualDesktopHint")}</p>
-      </>}
+    <div id="desktop-recovery" className="desktop-recovery" hidden={controls.ready || controls.wanted}>
+      <div role="status">
+        <strong>{t(ownership === "replaced" ? "desktopReplaced" : ownership ? "desktopOccupied" : "desktopNotConnected")}</strong>
+        <p className="desktop-recovery-message">{ownership ? t(ownership === "unavailable" ? "desktopControllerHint" : "desktopOccupiedHint") : status.message || t("desktopRecoveryHint")}</p>
+      </div>
+      {canUseVirtual && <p className="desktop-recovery-hint">{t("virtualDesktopHint")}</p>}
+      <div className="desktop-recovery-actions">
+        {ownership && ownership !== "unavailable" && <Button className="recovery-primary" onClick={() => setTakeoverOpen(true)}>{t("takeoverDesktop")}</Button>}
+        {(!ownership || ownership === "unavailable") && <Button className={canUseVirtual ? undefined : "recovery-primary"} onClick={() => invoke("connection")}>{t("reconnectDesktop")}</Button>}
+        {canUseVirtual && <Button className="recovery-primary" disabled={controls.switchingDesktop} onClick={() => choose("desktop-source", "virtual")}>{t("useVirtualDesktop")}</Button>}
+      </div>
     </div>
     <div id="desktop-authorization" className="desktop-recovery desktop-authorization" role="status" aria-live="polite" hidden={!controls.authorizationPending || controls.ready || !controls.wanted}>
       <strong>{t("authorizationWaiting")}</strong><p>{t("authorizationWaitingHint")}</p>
@@ -228,10 +239,10 @@ function Workspace() {
       </div>
       <div className="mobile-shortcut-row lightbook-regular" role="toolbar" aria-label={t("mobileRow2")}>
         <button id="mobile-menu" className="mobile-key" type="button" data-mobile-action="menu" aria-label={t("mobileMenu")} title={t("mobileMenu")}><Menu size={18} aria-hidden="true" /></button>
-        <a id="mobile-home" className="mobile-key mobile-home" href="/" aria-label={t("mobileHome")} title={t("mobileHome")}><House size={18} aria-hidden="true" /></a>
+        <a id="mobile-home" className="mobile-key mobile-home" href={homeHref} aria-label={homeLabel} title={homeLabel}><House size={18} aria-hidden="true" /></a>
         <ScrollArea axis="x" className="mobile-key-scroll-frame" contentClassName="mobile-key-scroll">{MOBILE_ROWS[1].map(shortcut)}</ScrollArea>
       </div>
-      <LightBook active={lightBookActive} ready={controls.ready} audioAvailable={controls.audioAvailable} audioEnabled={controls.audioEnabled} fullscreen={view.fullscreen} />
+      <LightBook active={lightBookActive} ready={controls.ready} audioAvailable={controls.audioAvailable} audioEnabled={controls.audioEnabled} fullscreen={view.fullscreen} homeHref={homeHref} homeLabel={homeLabel} />
     </nav>
     <aside id="tools" className={open ? "is-open" : ""} data-edge={edge} aria-label={t("title")}>
       <div className="tool-shell">

@@ -133,6 +133,7 @@ func main() {
 	mux.HandleFunc("/api/hosts/{id}/{action}", s.hosts.control)
 	mux.HandleFunc("/api/previews/{id}", s.preview)
 	mux.HandleFunc("/desktop/", s.desktop)
+	mux.HandleFunc("GET /return/lightos", returnToLightOS)
 	mux.Handle("/", http.FileServer(http.FS(web)))
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")

@@ -55,12 +55,12 @@ func delegatedGET(ctx context.Context, raw string, headers http.Header, output a
 	return json.NewDecoder(io.LimitReader(res.Body, 4<<20)).Decode(output)
 }
 
-func (s desktopSource) targets(ctx context.Context, headers http.Header) ([]desktopTarget, error) {
+func appOrigin(ctx context.Context, headers http.Header, appID string) (*url.URL, error) {
 	var domain struct {
 		Domain string `json:"Domain"`
 		Error  string `json:"Error"`
 	}
-	if err := delegatedGET(ctx, "http://app.home.system.lzcx/sys/api/queryAppDomain?appid="+url.QueryEscape(s.AppID), headers, &domain); err != nil {
+	if err := delegatedGET(ctx, "http://app.home.system.lzcx/sys/api/queryAppDomain?appid="+url.QueryEscape(appID), headers, &domain); err != nil {
 		return nil, err
 	}
 	if domain.Error != "" || domain.Domain == "" {
@@ -69,6 +69,26 @@ func (s desktopSource) targets(ctx context.Context, headers http.Header) ([]desk
 	base, err := url.Parse("https://" + domain.Domain)
 	if err != nil || base.Hostname() == "" || base.User != nil || base.Path != "" || base.RawQuery != "" || base.Fragment != "" {
 		return nil, errors.New("invalid source domain")
+	}
+	return base, nil
+}
+
+func returnToLightOS(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	base, err := appOrigin(ctx, r.Header, "cloud.lazycat.lightos.entry")
+	if err != nil || base == nil {
+		writeFailure(w, http.StatusBadGateway, "lightos_unavailable")
+		return
+	}
+	base.Path = "/"
+	http.Redirect(w, r, base.String(), http.StatusSeeOther)
+}
+
+func (s desktopSource) targets(ctx context.Context, headers http.Header) ([]desktopTarget, error) {
+	base, err := appOrigin(ctx, headers, s.AppID)
+	if err != nil || base == nil {
+		return nil, err
 	}
 	var items []struct {
 		Name       string `json:"name"`

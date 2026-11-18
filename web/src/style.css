@@ -249,8 +249,18 @@ button { transition: background-color 125ms ease, color 125ms ease, opacity 125m
 /* Avoid focus-triggered page magnification in touch webviews. */
 @media (any-pointer: coarse) { :root input, :root textarea, :root select { font-size: 16px; } }
 
-.desktop-recovery { position: absolute; z-index: 6; left: 50%; top: 50%; transform: translate(-50%, -50%); width: max-content; max-width: calc(100% - 32px); padding: 16px 20px; border: 0; border-radius: 12px; background: var(--surface); color: var(--text); text-align: center; pointer-events: none; font-size: 14px; }
-.desktop-recovery button { pointer-events: auto; }
+.desktop-recovery { position: absolute; z-index: 6; inset: 50% auto auto 50%; transform: translate(-50%, -50%); width: min(440px, calc(100% - 32px)); max-height: calc(100% - 24px); overflow: auto; padding: 22px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.desktop-recovery strong { font-size: 16px; font-weight: 650; }
+.desktop-recovery-message { max-height: min(160px, 30dvh); overflow: auto; overscroll-behavior: contain; white-space: pre-wrap; font-size: 13px; }
+.desktop-recovery-hint { margin-top: 12px; font-size: 13px; }
+.desktop-recovery-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.desktop-recovery-actions button { min-height: 40px; padding-inline: 14px; }
+.desktop-recovery-actions .recovery-primary { background: var(--accent); color: var(--surface); }
+.desktop-recovery-actions .recovery-primary:is(:hover, :active):not(:disabled) { background: color-mix(in srgb, var(--accent) 84%, var(--surface)); }
+@media (max-width: 420px) {
+  .desktop-recovery { padding: 18px; }
+  .desktop-recovery-actions button { flex: 1 1 136px; min-height: 44px; }
+}
 .takeover-dialog { width: min(440px, 100%); height: auto; overflow-y: auto; }
 .takeover-description { margin: 0; padding: 0 24px; font-size: 14px; line-height: 1.7; }
 .takeover-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; padding: 24px; }

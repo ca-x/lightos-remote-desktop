@@ -49,7 +49,9 @@ const rows: Key[][] = [
   [key("ShiftLeft", "Shift", 2.25), ...letters("ZXCVBNM"), key("Comma", ",", 1, "<"), key("Period", ".", 1, ">"), key("Slash", "/", 1, "?"), key("ShiftRight", "Shift", 2.75)],
 ];
 
-export function LightBook({ active, ready, audioAvailable, audioEnabled, fullscreen }: { active: boolean; ready: boolean; audioAvailable: boolean; audioEnabled: boolean; fullscreen: boolean }) {
+export function LightBook({ active, ready, audioAvailable, audioEnabled, fullscreen, homeHref, homeLabel }: {
+  active: boolean; ready: boolean; audioAvailable: boolean; audioEnabled: boolean; fullscreen: boolean; homeHref: string; homeLabel: string;
+}) {
   const {t} = useTranslation();
   const deck = useRef<HTMLElement>(null);
   useLayoutEffect(() => {
@@ -69,7 +71,7 @@ export function LightBook({ active, ready, audioAvailable, audioEnabled, fullscr
         <button type="button" className="lightbook-tool" data-mobile-action="fullscreen" aria-label={t(fullscreen ? "exitFullscreen" : "fullscreen")} title={t(fullscreen ? "exitFullscreen" : "fullscreen")} aria-pressed={fullscreen}>{fullscreen ? <Shrink size={17}/> : <Expand size={17}/>}</button>
         <button type="button" className="lightbook-tool" data-mobile-action="keyboard" disabled={!ready} aria-label={t("showKeyboard")} title={t("showKeyboard")} aria-pressed={false}><Globe2 size={17}/></button>
         <button type="button" className="lightbook-tool" data-mobile-action="menu" aria-label={t("mobileMenu")} title={t("mobileMenu")}><Menu size={17}/></button>
-        <a className="lightbook-tool" href="/" aria-label={t("mobileHome")} title={t("mobileHome")}><House size={17}/></a>
+        <a className="lightbook-tool" href={homeHref} aria-label={homeLabel} title={homeLabel}><House size={17} aria-hidden="true"/></a>
       </div>
     </div>
     <div id="lightbook-keys" className="lightbook-keys" role="group" aria-label={t("lightbookKeyboard")}>

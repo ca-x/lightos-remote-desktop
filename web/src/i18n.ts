@@ -4,7 +4,7 @@ import { languageKey, languages, readPreference, resolveLanguage } from "./prefe
 
 const en = {
   useVirtualDesktop: "Use virtual desktop",
-  virtualDesktopHint: "Opens a separate desktop, not the windows on the physical desktop. The physical desktop stays locked. Reconnecting keeps virtual applications running; disabling or updating the service closes them.",
+  virtualDesktopHint: "Open a separate desktop. Its apps stay open when you reconnect.",
   authorizationWaiting: "Waiting for permission on the controlled computer",
   authorizationWaitingHint: "On that computer, allow screen and input access in the system dialog. The desktop will appear here after approval.",
   fullKeyboardMode: "Full keyboard mode",
@@ -56,13 +56,14 @@ const en = {
   version: "Software version", waiting: "Waiting for video", connecting: "Connecting. Your browser handles authentication.",
   drag: "Drag to any screen edge. Alt+Arrow moves this toolbar with the keyboard.",
   physicalResize: "Physical monitor resolution cannot be changed here.",
-  mobileInput: "Remote desktop keyboard input", mobileShortcuts: "Desktop shortcuts", mobileRow1: "Keyboard and navigation", mobileRow2: "Shortcuts and symbols", mobileMenu: "Desktop menu", mobileHome: "Return to LightOS",
+  mobileInput: "Remote desktop keyboard input", mobileShortcuts: "Desktop shortcuts", mobileRow1: "Keyboard and navigation", mobileRow2: "Shortcuts and symbols", mobileMenu: "Desktop menu", mobileHome: "Return home",
+  mobileLightOSHome: "Return to LightOS", mobileRemoteHome: "Return to Lazycat Remote",
   showKeyboard: "Show keyboard", hideKeyboard: "Hide keyboard", stickyKey: "Sticky {{key}}", arrowUp: "Up arrow", arrowDown: "Down arrow", arrowLeft: "Left arrow", arrowRight: "Right arrow", backspace: "Backspace",
   touchHelp: "Tap to click, drag with one finger, hold to right-click, and scroll with two fingers. Use the leftmost keyboard button to show or hide the keyboard. Highlighted modifiers apply to the next key.",
 };
 const zh: Record<keyof typeof en, string> = {
   useVirtualDesktop: "使用虚拟桌面",
-  virtualDesktopHint: "打开独立桌面，不包含物理桌面已打开的窗口，也不会解锁物理桌面。断线重连保留虚拟应用，关闭或更新服务会结束这些应用。",
+  virtualDesktopHint: "打开独立桌面，断线重连后可继续使用原来的应用。",
   authorizationWaiting: "等待被控电脑确认权限",
   authorizationWaitingHint: "请在被控电脑的系统弹窗中允许屏幕与输入访问。确认后，这里会自动显示桌面画面。",
   fullKeyboardMode: "全键盘模式",
@@ -113,7 +114,8 @@ const zh: Record<keyof typeof en, string> = {
   preferences: "外观与语言", language: "语言", theme: "主题", system: "跟随系统", browser: "跟随浏览器", light: "浅色", dark: "深色",
   version: "软件版本", waiting: "等待画面", connecting: "正在连接，身份验证使用浏览器登录对话框。",
   drag: "拖动到屏幕任意边缘；Alt+方向键也可调整工具栏位置。", physicalResize: "物理桌面不支持在此更改显示器分辨率。",
-  mobileInput: "远程桌面键盘输入", mobileShortcuts: "桌面快捷键", mobileRow1: "键盘与导航", mobileRow2: "组合键与符号", mobileMenu: "桌面菜单", mobileHome: "返回 LightOS 管理页",
+  mobileInput: "远程桌面键盘输入", mobileShortcuts: "桌面快捷键", mobileRow1: "键盘与导航", mobileRow2: "组合键与符号", mobileMenu: "桌面菜单", mobileHome: "返回首页",
+  mobileLightOSHome: "返回 LightOS 首页", mobileRemoteHome: "返回懒猫远程",
   showKeyboard: "展开键盘", hideKeyboard: "收起键盘", stickyKey: "粘滞 {{key}}", arrowUp: "向上", arrowDown: "向下", arrowLeft: "向左", arrowRight: "向右", backspace: "退格",
   touchHelp: "点按点击，单指拖动，长按右键，双指滚动。使用第一行最左侧的键盘按钮展开或收起键盘；高亮的修饰键作用于下一次按键。",
 };
