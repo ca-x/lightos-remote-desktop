@@ -7,6 +7,7 @@ use std::{
         unix::{fs::MetadataExt, net::UnixStream},
     },
     path::{Path, PathBuf},
+    process::Child,
 };
 
 use anyhow::{Context, Result, ensure};
@@ -14,7 +15,11 @@ use display_control::SessionTarget;
 
 use crate::config::Config;
 
-pub(crate) fn verify(config: &Config, target: &mut SessionTarget) -> Result<Option<File>> {
+pub(crate) fn verify(
+    config: &Config,
+    target: &mut SessionTarget,
+    launcher: Option<&Child>,
+) -> Result<Option<File>> {
     let Some(pid) = config.virtual_x11_server_pid else {
         return Ok(None);
     };
@@ -54,7 +59,8 @@ pub(crate) fn verify(config: &Config, target: &mut SessionTarget) -> Result<Opti
         "virtual X11 requires an owned Xvfb or Xephyr server"
     );
     ensure!(
-        fs::read(process.join("cgroup"))? == fs::read("/proc/self/cgroup")?,
+        fs::read(process.join("cgroup"))?
+            == fs::read(crate::session::launcher_cgroup_path(launcher))?,
         "virtual X11 server must belong to the same service"
     );
     let display = target

@@ -1,4 +1,4 @@
-//! Lock-state gating for attached graphical sessions. Never unlocks the desktop.
+//! Track the exact physical login and let native backends reach its lock screen.
 use super::{BackendKind, DesktopBackend, Frame, InputCommand, InputGuard};
 use anyhow::{Context, Result, bail, ensure};
 use display_control::SessionTarget;
@@ -395,20 +395,29 @@ enum LockSource {
     Known(Option<Arc<dyn LockMonitor>>),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Access {
+    Desktop,
+    LockScreen,
+    Blocked,
+}
+
+fn supports_lock_screen(backend: BackendKind) -> bool {
+    matches!(backend, BackendKind::X11 | BackendKind::Wayland)
+}
+
 pub struct GuardedBackend {
     inner: Arc<dyn DesktopBackend>,
     frames: watch::Receiver<Option<Arc<Frame>>>,
     input: mpsc::Sender<InputCommand>,
-    blocked: Arc<AtomicBool>,
+    access: watch::Receiver<Access>,
     stopped: Arc<AtomicBool>,
     generation: Arc<AtomicU64>,
     worker: std::sync::Mutex<Option<thread::JoinHandle<()>>>,
 }
 
-/// Read-only preflight before opening a capture/input session. The guard below
-/// still verifies again and monitors changes, so unlocking during discovery or
-/// locking during initialization never grants access by itself.
-pub(crate) fn require_unlocked(target: &SessionTarget) -> Result<()> {
+/// Verify the login before opening capture or asking for Portal consent.
+pub(crate) fn require_attachable(target: &SessionTarget, backend: BackendKind) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -423,10 +432,10 @@ pub(crate) fn require_unlocked(target: &SessionTarget) -> Result<()> {
             None => Ok(false),
         }
     })?;
-    if locked {
+    if locked && !supports_lock_screen(backend) {
         return Err(super::CapabilityError::new(
             "session_locked",
-            "物理桌面已锁定，请在被控电脑解锁后重连；不会自动解锁或切换桌面",
+            "当前桌面的屏幕共享接口不支持锁屏控制，请在被控电脑解锁后重连",
         )
         .into());
     }
@@ -434,13 +443,14 @@ pub(crate) fn require_unlocked(target: &SessionTarget) -> Result<()> {
 }
 
 /// Blocking setup. On systems without logind no lock authority is invented;
-/// native desktop authorization remains authoritative. Once a matching login
-/// session has been found, loss of its lock state blocks both capture and input.
+/// native desktop authorization remains authoritative. Loss of a known login's
+/// lock state blocks capture and input for every backend.
 pub fn attach(
     inner: Arc<dyn DesktopBackend>,
     target: SessionTarget,
 ) -> Result<Arc<dyn DesktopBackend>> {
-    attach_with_source(inner, LockSource::Discover(target))
+    let allow_lock_screen = supports_lock_screen(inner.kind());
+    attach_with_source(inner, LockSource::Discover(target), allow_lock_screen)
 }
 
 #[cfg(test)]
@@ -448,22 +458,22 @@ fn attach_with_monitor(
     inner: Arc<dyn DesktopBackend>,
     monitor: Option<Arc<dyn LockMonitor>>,
 ) -> Result<Arc<dyn DesktopBackend>> {
-    attach_with_source(inner, LockSource::Known(monitor))
+    attach_with_source(inner, LockSource::Known(monitor), false)
 }
 
 fn attach_with_source(
     inner: Arc<dyn DesktopBackend>,
     source: LockSource,
+    allow_lock_screen: bool,
 ) -> Result<Arc<dyn DesktopBackend>> {
     let (frames_tx, frames) = watch::channel(None);
     let (input, mut commands) = mpsc::channel::<InputCommand>(128);
-    let blocked = Arc::new(AtomicBool::new(true));
+    let (access_tx, access) = watch::channel(Access::Blocked);
     let stopped = Arc::new(AtomicBool::new(false));
     let generation = Arc::new(AtomicU64::new(0));
     let worker_generation = generation.clone();
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
     let worker_inner = inner.clone();
-    let worker_blocked = blocked.clone();
     let worker_stopped = stopped.clone();
     let worker = thread::Builder::new().name("desktop-lock-guard".into()).spawn(move || {
         let result = (|| -> Result<()> {
@@ -480,16 +490,18 @@ fn attach_with_source(
                     Some(authority) => tokio::time::timeout(Duration::from_secs(1), authority.locked()).await.context("lock-state query timed out")??,
                     None => false,
                 };
-                ensure!(!initial, "selected desktop is locked");
-                worker_blocked.store(false, Ordering::Release);
+                ensure!(!initial || allow_lock_screen, "selected desktop is locked");
+                let mut current_access = if initial { Access::LockScreen } else { Access::Desktop };
+                access_tx.send_replace(current_access);
                 let mut source = worker_inner.frames();
-                frames_tx.send_replace(source.borrow().clone());
+                let mut fresh_after = if initial { Some(Instant::now()) } else { None };
+                if !initial {
+                    frames_tx.send_replace(source.borrow().clone());
+                }
                 let _ = ready_tx.send(Ok(()));
                 let mut ticks = tokio::time::interval(Duration::from_millis(250));
                 ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                let mut last_blocked = false;
                 let mut input_gate = CancellationToken::new();
-                let mut fresh_after = None;
                 let monitored: Result<()> = async {
                 loop {
                     if worker_stopped.load(Ordering::Acquire) { break; }
@@ -498,7 +510,9 @@ fn attach_with_source(
                             let Some(command) = command else { break; };
                             if release_command(&command) {
                                 tokio::time::timeout(Duration::from_millis(500), worker_inner.input().send(unwrapped_release(command))).await.context("input queue timed out")??;
-                            } else if !worker_blocked.load(Ordering::Acquire) {
+                            } else if current_access == Access::Desktop
+                                || (current_access == Access::LockScreen && lock_screen_input(&command))
+                            {
                                 let command = match command {
                                     InputCommand::Guarded { command, mut guard } => {
                                         guard.lock_cancellation = Some(input_gate.clone());
@@ -517,34 +531,32 @@ fn attach_with_source(
                         changed = source.changed() => { if changed.is_err() { break; } },
                         _ = ticks.tick() => {
                             if let Some(authority) = &authority {
-                                let locked = !matches!(tokio::time::timeout(Duration::from_secs(1), authority.locked()).await, Ok(Ok(false)));
-                                if locked {
+                                let next_access = match tokio::time::timeout(Duration::from_secs(1), authority.locked()).await {
+                                    Ok(Ok(false)) => Access::Desktop,
+                                    Ok(Ok(true)) if allow_lock_screen => Access::LockScreen,
+                                    _ => Access::Blocked,
+                                };
+                                if next_access != current_access {
+                                    access_tx.send_replace(Access::Blocked);
                                     input_gate.cancel();
-                                } else if last_blocked {
-                                    // Advance the epoch and require a new capture before
-                                    // reporting the desktop as unlocked to readers.
                                     worker_generation.fetch_add(1, Ordering::AcqRel);
+                                    // Drop queued input and cached pixels before exposing the
+                                    // next screen, including a native lock screen.
+                                    frames_tx.send_replace(None);
+                                    if current_access != Access::Blocked {
+                                        let backend = worker_inner.clone();
+                                        let released = tokio::task::spawn_blocking(move || backend.release_input()).await.unwrap_or(false);
+                                        if !released { worker_inner.stop(); bail!("could not release input on desktop lock transition"); }
+                                    }
                                     input_gate = CancellationToken::new();
                                     fresh_after = Some(Instant::now());
+                                    current_access = next_access;
+                                    access_tx.send_replace(current_access);
                                 }
-                                worker_blocked.store(locked, Ordering::Release);
                             }
                         }
                     }
-                    let locked = worker_blocked.load(Ordering::Acquire);
-                    if locked && !last_blocked {
-                        worker_generation.fetch_add(1, Ordering::AcqRel);
-                    }
-                    if locked && !last_blocked {
-                        // Hide the last captured frame before waiting for input
-                        // cleanup; refresh requests must not expose it meanwhile.
-                        frames_tx.send_replace(None);
-                        let backend = worker_inner.clone();
-                        let released = tokio::task::spawn_blocking(move || backend.release_input()).await.unwrap_or(false);
-                        if !released { worker_inner.stop(); bail!("could not release input on desktop lock"); }
-                    }
-                    last_blocked = locked;
-                    let next = if locked {
+                    let next = if current_access == Access::Blocked {
                         None
                     } else {
                         source.borrow().clone().filter(|frame| {
@@ -569,7 +581,7 @@ fn attach_with_source(
         })();
         if let Err(error) = result { let _ = ready_tx.send(Err(format!("{error:#}"))); }
         worker_stopped.store(true, Ordering::Release);
-        worker_blocked.store(true, Ordering::Release);
+        access_tx.send_replace(Access::Blocked);
         frames_tx.send_replace(None);
         worker_inner.stop();
     })?;
@@ -578,7 +590,7 @@ fn attach_with_source(
             inner,
             frames,
             input,
-            blocked,
+            access,
             stopped,
             generation,
             worker: std::sync::Mutex::new(Some(worker)),
@@ -597,6 +609,16 @@ fn attach_with_source(
         }
     }
 }
+fn lock_screen_input(command: &InputCommand) -> bool {
+    match command {
+        InputCommand::Guarded { command, .. } => lock_screen_input(command),
+        // Text commands may use the desktop clipboard. Send raw keyboard and
+        // pointer events to the OS prompt, which owns password verification.
+        InputCommand::Text { .. } => false,
+        _ => true,
+    }
+}
+
 fn release_command(command: &InputCommand) -> bool {
     match command {
         InputCommand::Release | InputCommand::ReleaseSync { .. } => true,
@@ -656,13 +678,13 @@ impl DesktopBackend for GuardedBackend {
     fn clipboard_revision(&self) -> BoxFuture<'_, Result<super::ClipboardRevision>> {
         Box::pin(async {
             let generation = self.generation.load(Ordering::Acquire);
-            ensure!(!self.paused(), "desktop locked or unavailable");
+            ensure!(!self.clipboard_blocked(), "desktop locked or unavailable");
             let revision = tokio::select! {
                 result=self.inner.clipboard_revision()=>result?,
                 _=self.wait_for_lock(generation)=>bail!("desktop locked during clipboard read"),
             };
             ensure!(
-                self.generation.load(Ordering::Acquire) == generation && !self.paused(),
+                self.generation.load(Ordering::Acquire) == generation && !self.clipboard_blocked(),
                 "desktop locked during clipboard read"
             );
             Ok(revision)
@@ -671,13 +693,13 @@ impl DesktopBackend for GuardedBackend {
     fn clipboard_read_png(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>>> {
         Box::pin(async {
             let generation = self.generation.load(Ordering::Acquire);
-            ensure!(!self.paused(), "desktop locked or unavailable");
+            ensure!(!self.clipboard_blocked(), "desktop locked or unavailable");
             let image = tokio::select! {
                 result=self.inner.clipboard_read_png()=>result?,
                 _=self.wait_for_lock(generation)=>bail!("desktop locked during clipboard read"),
             };
             ensure!(
-                self.generation.load(Ordering::Acquire) == generation && !self.paused(),
+                self.generation.load(Ordering::Acquire) == generation && !self.clipboard_blocked(),
                 "desktop locked during clipboard read"
             );
             Ok(image)
@@ -686,21 +708,24 @@ impl DesktopBackend for GuardedBackend {
     fn clipboard_write_png<'a>(&'a self, data: &'a [u8]) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let generation = self.generation.load(Ordering::Acquire);
-            ensure!(!self.paused(), "desktop locked or unavailable");
+            ensure!(!self.clipboard_blocked(), "desktop locked or unavailable");
             tokio::select! {
                 biased;
                 _ = self.wait_for_lock(generation) => bail!("desktop locked during clipboard write"),
                 result = self.inner.clipboard_write_png(data) => result?,
             }
             ensure!(
-                self.generation.load(Ordering::Acquire) == generation && !self.paused(),
+                self.generation.load(Ordering::Acquire) == generation && !self.clipboard_blocked(),
                 "desktop locked during clipboard write"
             );
             Ok(())
         })
     }
     fn paused(&self) -> bool {
-        self.blocked.load(Ordering::Acquire) || self.inner.paused()
+        *self.access.borrow() == Access::Blocked || self.inner.paused()
+    }
+    fn audio_paused(&self) -> bool {
+        self.clipboard_blocked()
     }
     fn is_stopped(&self) -> bool {
         self.stopped.load(Ordering::Acquire) || self.inner.is_stopped()
@@ -716,7 +741,6 @@ impl DesktopBackend for GuardedBackend {
     }
     fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
-        self.blocked.store(true, Ordering::Release);
         self.inner.stop();
         if let Some(worker) = self.worker.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = worker.join();
@@ -725,13 +749,13 @@ impl DesktopBackend for GuardedBackend {
     fn clipboard_read(&self) -> BoxFuture<'_, Result<String>> {
         Box::pin(async {
             let generation = self.generation.load(Ordering::Acquire);
-            ensure!(!self.paused(), "desktop locked or unavailable");
+            ensure!(!self.clipboard_blocked(), "desktop locked or unavailable");
             let text = tokio::select! {
                 result = self.inner.clipboard_read() => result?,
                 _ = self.wait_for_lock(generation) => bail!("desktop locked during clipboard read"),
             };
             ensure!(
-                self.generation.load(Ordering::Acquire) == generation && !self.paused(),
+                self.generation.load(Ordering::Acquire) == generation && !self.clipboard_blocked(),
                 "desktop locked during clipboard read"
             );
             Ok(text)
@@ -740,13 +764,13 @@ impl DesktopBackend for GuardedBackend {
     fn clipboard_write<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let generation = self.generation.load(Ordering::Acquire);
-            ensure!(!self.paused(), "desktop locked or unavailable");
+            ensure!(!self.clipboard_blocked(), "desktop locked or unavailable");
             tokio::select! {
                 result = self.inner.clipboard_write(text) => result?,
                 _ = self.wait_for_lock(generation) => bail!("desktop locked during clipboard write"),
             }
             ensure!(
-                self.generation.load(Ordering::Acquire) == generation && !self.paused(),
+                self.generation.load(Ordering::Acquire) == generation && !self.clipboard_blocked(),
                 "desktop locked during clipboard write"
             );
             Ok(())
@@ -754,10 +778,14 @@ impl DesktopBackend for GuardedBackend {
     }
 }
 impl GuardedBackend {
+    fn clipboard_blocked(&self) -> bool {
+        *self.access.borrow() != Access::Desktop || self.inner.paused() || self.is_stopped()
+    }
+
     async fn wait_for_lock(&self, generation: u64) {
         let mut updates = self.frames.clone();
         loop {
-            if self.paused() || self.generation.load(Ordering::Acquire) != generation {
+            if self.clipboard_blocked() || self.generation.load(Ordering::Acquire) != generation {
                 return;
             }
             if updates.changed().await.is_err() {

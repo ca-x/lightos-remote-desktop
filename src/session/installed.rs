@@ -18,6 +18,82 @@ struct Ready {
     environment: BTreeMap<String, String>,
 }
 
+pub(super) struct Scope {
+    unit: String,
+    runtime: PathBuf,
+    login_runtime: PathBuf,
+}
+
+impl Scope {
+    fn new(runtime: &Path) -> Result<Self> {
+        let name = runtime
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("virtual runtime name missing")?;
+        let uid = unsafe { libc::geteuid() };
+        Ok(Self {
+            unit: format!("lightos-{name}.scope"),
+            runtime: runtime.to_path_buf(),
+            login_runtime: PathBuf::from(format!("/run/user/{uid}")),
+        })
+    }
+
+    fn launcher(&self) -> Command {
+        // The private systemd user manager moves processes into init.scope.
+        // Give it a delegated scope containing only this desktop's processes.
+        let mut command = Command::new("systemd-run");
+        super::niri::isolate(&mut command);
+        command
+            .env("XDG_RUNTIME_DIR", &self.login_runtime)
+            .args(["--user", "--scope", "--quiet"])
+            .args(["--property=Delegate=yes", "--property=TimeoutStopSec=3s"])
+            .arg(format!("--unit={}", self.unit))
+            .arg(format!(
+                "--setenv=XDG_RUNTIME_DIR={}",
+                self.runtime.display()
+            ))
+            .args(["--", "/bin/sh"]);
+        command
+    }
+}
+
+impl Drop for Scope {
+    fn drop(&mut self) {
+        let mut command = Command::new("timeout");
+        super::niri::isolate(&mut command);
+        let _ = command
+            .env("XDG_RUNTIME_DIR", &self.login_runtime)
+            .args(["5s", "systemctl", "--user", "--quiet", "stop", "--"])
+            .arg(&self.unit)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+
+        // systemd makes these directories read-only or mode 000, so TempDir
+        // cannot otherwise remove the stopped desktop's private runtime.
+        let uid = unsafe { libc::geteuid() };
+        let mut directory = self.runtime.clone();
+        for name in ["systemd", "inaccessible", "dir"] {
+            directory.push(name);
+            let Ok(metadata) = fs::symlink_metadata(&directory) else {
+                break;
+            };
+            if !metadata.is_dir() || metadata.uid() != uid {
+                break;
+            }
+            if metadata.mode() & 0o700 != 0o700 {
+                let _ = fs::set_permissions(&directory, fs::Permissions::from_mode(0o700));
+            }
+        }
+    }
+}
+
+fn uses_private_user_manager(desktop: &Desktop) -> bool {
+    let session = format!("{}:{}", desktop.id, desktop.command).to_ascii_lowercase();
+    !session.contains("niri") && !session.contains("hyprland")
+}
+
 pub(crate) fn payload() -> Result<PathBuf> {
     let executable = std::env::current_exe()?;
     let root = executable
@@ -221,14 +297,17 @@ fn arguments(value: &str) -> Result<Vec<String>> {
 pub(crate) fn available() -> Result<()> {
     let payload = payload()?;
     let selected = desktop()?;
-    if selected.id.starts_with("wayland:")
-        && !selected.id.contains("hyprland")
-        && !selected.id.contains("niri")
-    {
+    if uses_private_user_manager(&selected) {
         ensure!(
-            cfg!(feature = "portal"),
-            "Installed Wayland desktop capture requires the portal build feature"
+            platform_detect::find_executable(Path::new("systemd-run")).is_some(),
+            "Installed virtual desktop requires systemd-run to isolate its user manager"
         );
+        if selected.id.starts_with("wayland:") {
+            ensure!(
+                cfg!(feature = "portal"),
+                "Installed Wayland desktop capture requires the portal build feature"
+            );
+        }
     }
     // One dependency definition serves containers, PC diagnostics and explicit
     // installation. This mode never invokes a package manager or codec worker.
@@ -272,14 +351,24 @@ pub(crate) fn start(config: &Config, cancelled: Arc<AtomicBool>) -> Result<(Conf
         temporary: Some(temporary),
         lock: None,
         native_lifetime: None,
+        installed_scope: None,
         cancelled: cancelled.clone(),
     };
     for directory in ["config", "cache", "state"] {
         secure_directory(&runtime.join(directory))?;
     }
     let payload = payload()?;
-    let mut command = Command::new("/bin/sh");
-    super::niri::isolate(&mut command);
+    let mut command = if uses_private_user_manager(&selected) {
+        let scope = Scope::new(&runtime)?;
+        let command = scope.launcher();
+        owner.installed_scope = Some(scope);
+        command
+    } else {
+        let mut command = Command::new("/bin/sh");
+        super::niri::isolate(&mut command);
+        command.env("XDG_RUNTIME_DIR", &runtime);
+        command
+    };
     command
         .arg(payload.join("session.sh"))
         .env("LIGHTOS_REMOTE_DESKTOP_PROGRAM", std::env::current_exe()?)
@@ -294,7 +383,6 @@ pub(crate) fn start(config: &Config, cancelled: Arc<AtomicBool>) -> Result<(Conf
         .env("LIGHTOS_REMOTE_DESKTOP_SESSION_ID", &selected.id)
         .env("LIGHTOS_REMOTE_DESKTOP_SESSION", &selected.command)
         .env("LIGHTOS_REMOTE_DESKTOP_RUNTIME_DIR", &runtime)
-        .env("XDG_RUNTIME_DIR", &runtime)
         .env("XDG_CACHE_HOME", runtime.join("cache"))
         .env("XDG_STATE_HOME", runtime.join("state"));
     if !selected.id.contains("hyprland") {
@@ -373,9 +461,10 @@ pub(crate) fn start(config: &Config, cancelled: Arc<AtomicBool>) -> Result<(Conf
         settings.virtual_x11_server_pid = parsed.virtual_x11_server_pid;
         settings.virtual_x11_dynamic_modes = parsed.virtual_x11_dynamic_modes;
         settings.virtual_environment = descriptor.environment;
-        Session::start_cancellable(&settings, cancelled)?
+        Session::start_in_launcher(&settings, cancelled, owner.children.first())?
     };
     attached.children.append(&mut owner.children);
+    attached.installed_scope = owner.installed_scope.take();
     attached.temporary = owner.temporary.take();
     Ok((settings, attached))
 }

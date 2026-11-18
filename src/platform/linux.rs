@@ -216,8 +216,11 @@ impl HostPlatform for LinuxHost {
         cancelled: Option<&AtomicBool>,
     ) -> Result<BackendReport> {
         let target = Session::physical_target(config)?;
-        backend::guarded::require_unlocked(&target)?;
-        backend::probe(&target, true, cancelled)
+        let report = backend::probe(&target, true, cancelled)?;
+        if let Some(selected) = report.selected {
+            backend::guarded::require_attachable(&target, selected)?;
+        }
+        Ok(report)
     }
     fn supports_virtual(&self, config: &Config) -> bool {
         if config.on_demand_desktops() {
@@ -343,9 +346,9 @@ impl LinuxHost {
         authorization: tokio::sync::oneshot::Sender<bool>,
     ) -> Result<HostSession> {
         let target = Session::physical_target(config)?;
-        backend::guarded::require_unlocked(&target)?;
         let selection = backend::probe(&target, true, Some(&cancelled))?;
         let selected = selection.require_available()?;
+        backend::guarded::require_attachable(&target, selected)?;
         let displays =
             config
                 .display_backend

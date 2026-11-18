@@ -122,6 +122,10 @@ pub trait DesktopBackend: Send + Sync {
     fn paused(&self) -> bool {
         false
     }
+    /// Some backends can show an OS lock screen while desktop audio is paused.
+    fn audio_paused(&self) -> bool {
+        self.paused()
+    }
     fn is_stopped(&self) -> bool {
         false
     }

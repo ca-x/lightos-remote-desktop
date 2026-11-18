@@ -972,7 +972,7 @@ async fn stream_connection(
         state.audio_hub.start(
             state.audio.clone(),
             Arc::new(move || {
-                (!backend.paused() && !backend.is_stopped()).then(|| backend.privacy_epoch())
+                (!backend.audio_paused() && !backend.is_stopped()).then(|| backend.privacy_epoch())
             }),
         )
     });

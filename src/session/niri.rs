@@ -493,6 +493,7 @@ pub(super) fn start(
         temporary,
         lock: Some(lock),
         native_lifetime: None,
+        installed_scope: None,
         cancelled,
     };
     ensure!(

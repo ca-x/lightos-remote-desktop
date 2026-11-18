@@ -39,7 +39,7 @@ impl SessionAudio {
 }
 impl AudioCaptureFactory for SessionAudio {
     fn available(&self) -> bool {
-        !self.backend.is_stopped() && !self.backend.paused() && self.source.available()
+        !self.backend.is_stopped() && !self.backend.audio_paused() && self.source.available()
     }
     fn start(&self, format: AudioFormat) -> Result<Box<dyn AudioCapture>> {
         if !self.available() {
@@ -66,7 +66,7 @@ struct PrivateAudio {
 impl PrivateAudio {
     fn valid(&self) -> bool {
         !self.backend.is_stopped()
-            && !self.backend.paused()
+            && !self.backend.audio_paused()
             && self.backend.privacy_epoch() == self.epoch
     }
 }

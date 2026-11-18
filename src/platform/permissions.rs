@@ -110,12 +110,6 @@ fn physical_report(config: &Config, request: bool) -> Result<PermissionReport> {
                 ));
             }
         };
-        if let Err(error) = crate::backend::guarded::require_unlocked(&target) {
-            let code = error
-                .downcast_ref::<crate::backend::CapabilityError>()
-                .map_or("session_unavailable", |error| error.code);
-            return Ok(PermissionReport::unavailable(format!("{error:#}"), code));
-        }
         let selection = match crate::backend::probe(&target, true, None) {
             Ok(selection) => selection,
             Err(error) => {
@@ -125,14 +119,23 @@ fn physical_report(config: &Config, request: bool) -> Result<PermissionReport> {
                 ));
             }
         };
-        if let Err(error) = selection.require_available() {
-            let code = selection
-                .candidates
-                .iter()
-                .rev()
-                .find_map(|candidate| candidate.reason_code)
-                .unwrap_or("capture_unavailable");
-            return Ok(PermissionReport::unavailable(error.to_string(), code));
+        let selected = match selection.require_available() {
+            Ok(selected) => selected,
+            Err(error) => {
+                let code = selection
+                    .candidates
+                    .iter()
+                    .rev()
+                    .find_map(|candidate| candidate.reason_code)
+                    .unwrap_or("capture_unavailable");
+                return Ok(PermissionReport::unavailable(error.to_string(), code));
+            }
+        };
+        if let Err(error) = crate::backend::guarded::require_attachable(&target, selected) {
+            let code = error
+                .downcast_ref::<crate::backend::CapabilityError>()
+                .map_or("session_unavailable", |error| error.code);
+            return Ok(PermissionReport::unavailable(format!("{error:#}"), code));
         }
         if selection.requires_consent() {
             let approved = selection.candidates.iter().any(|candidate| {

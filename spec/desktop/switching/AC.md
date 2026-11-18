@@ -57,9 +57,19 @@ And 恢复失败时提示用户重试，画面连接不受影响
 ID: SC-EXPLICIT-VIRTUAL-DESKTOP-WHILE-PHYSICAL-LOCKED
 Profile: draft
 Gate: required
-Given 用户有权访问的设备已开启远程桌面，物理桌面已锁定且设备具备独立虚拟会话能力
+Given 用户有权访问的设备已开启远程桌面，当前物理桌面已锁定，系统禁止共享锁屏，且设备具备独立虚拟会话能力
 When 用户连接物理桌面
 Then 页面明确提示物理桌面已锁定，不自动切换或解锁，并提供使用虚拟桌面的选择
 When 用户选择使用虚拟桌面并打开应用，再断开并重新连接该虚拟桌面
 Then 用户可查看并操作独立桌面，原有虚拟应用仍在运行，物理桌面保持锁定
 And 物理桌面解锁后不会自动改变当前所选桌面
+
+# 场景 8：连接物理桌面的锁屏并恢复原会话
+ID: SC-UNLOCK-PHYSICAL-DESKTOP-THROUGH-SYSTEM-PROMPT
+Profile: draft
+Gate: required
+Given 用户已获准远程访问该物理桌面，桌面已锁定，且系统允许共享锁屏画面和输入
+When 用户远程连接物理桌面
+Then 连接显示该桌面的系统锁屏界面，桌面音频和剪贴板暂停
+When 用户在系统锁屏界面输入正确的密码
+Then 用户可以在同一连接中继续使用原有桌面会话

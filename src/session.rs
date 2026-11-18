@@ -64,6 +64,7 @@ pub struct Session {
     target: Option<SessionTarget>,
     owned: bool,
     children: Vec<Child>,
+    installed_scope: Option<installed::Scope>,
     temporary: Option<tempfile::TempDir>,
     lock: Option<File>,
     native_lifetime: Option<File>,
@@ -90,6 +91,7 @@ impl Session {
             temporary: None,
             lock: None,
             native_lifetime: None,
+            installed_scope: None,
             cancelled,
         }
     }
@@ -115,6 +117,7 @@ impl Session {
             temporary: None,
             lock: None,
             native_lifetime: None,
+            installed_scope: None,
             cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -187,6 +190,14 @@ impl Session {
     }
 
     pub fn start_cancellable(config: &Config, cancelled: Arc<AtomicBool>) -> Result<Self> {
+        Self::start_in_launcher(config, cancelled, None)
+    }
+
+    fn start_in_launcher(
+        config: &Config,
+        cancelled: Arc<AtomicBool>,
+        launcher: Option<&Child>,
+    ) -> Result<Self> {
         ensure!(
             unsafe { libc::geteuid() } != 0,
             "desktop service must run as a non-root user"
@@ -197,7 +208,7 @@ impl Session {
                 .wayland_socket
                 .as_ref()
                 .context("owned Wayland socket missing")?;
-            let (target, lifetime) = crate::owned_wayland::verify(socket, pid)?;
+            let (target, lifetime) = crate::owned_wayland::verify(socket, pid, launcher)?;
             let runtime = target.runtime.clone();
             let (pulse_server, audio_source) =
                 if let Some(server) = config.virtual_environment.get("PULSE_SERVER") {
@@ -223,12 +234,13 @@ impl Session {
                 temporary: None,
                 lock: Some(lifetime),
                 native_lifetime: None,
+                installed_scope: None,
                 cancelled,
             });
         }
         if config.x11_display.is_some() {
             let mut target = Self::configured_target(config)?;
-            let ownership = crate::virtual_x11::verify(config, &mut target)?;
+            let ownership = crate::virtual_x11::verify(config, &mut target, launcher)?;
             let owned = ownership.is_some();
             let (pulse_server, audio_source) = if owned {
                 let server = config
@@ -258,6 +270,7 @@ impl Session {
                 temporary: None,
                 lock: ownership,
                 native_lifetime: None,
+                installed_scope: None,
                 cancelled,
             });
         }
@@ -313,6 +326,7 @@ impl Session {
                 temporary: None,
                 lock: None,
                 native_lifetime: None,
+                installed_scope: None,
                 cancelled,
             });
         }
@@ -365,6 +379,7 @@ impl Session {
             temporary,
             lock: Some(lock),
             native_lifetime: None,
+            installed_scope: None,
             cancelled,
         };
         let bus_path = session.runtime.join("bus");
@@ -1103,6 +1118,7 @@ impl Drop for Session {
             }
             let _ = child.wait();
         }
+        self.installed_scope.take();
         self.lock.take();
         self.temporary.take();
     }
@@ -1124,6 +1140,13 @@ fn child_exited(child: &Child) -> Result<bool> {
         std::io::Error::last_os_error()
     );
     Ok(unsafe { status.si_pid() } != 0)
+}
+
+pub(crate) fn launcher_cgroup_path(launcher: Option<&Child>) -> PathBuf {
+    match launcher {
+        Some(launcher) => PathBuf::from(format!("/proc/{}/cgroup", launcher.id())),
+        None => PathBuf::from("/proc/self/cgroup"),
+    }
 }
 
 #[cfg(test)]
@@ -1831,6 +1854,7 @@ mod tests {
             temporary: None,
             lock: None,
             native_lifetime: None,
+            installed_scope: None,
             cancelled: Arc::new(AtomicBool::new(false)),
         };
         drop(session);

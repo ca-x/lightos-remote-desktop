@@ -10,9 +10,14 @@ use std::{
         unix::{fs::MetadataExt, net::UnixStream},
     },
     path::{Path, PathBuf},
+    process::Child,
 };
 
-pub(crate) fn verify(socket: &Path, pid: u32) -> Result<(SessionTarget, File)> {
+pub(crate) fn verify(
+    socket: &Path,
+    pid: u32,
+    launcher: Option<&Child>,
+) -> Result<(SessionTarget, File)> {
     ensure!(pid > 1, "invalid owned compositor PID");
     let uid = unsafe { libc::geteuid() };
     let runtime = socket
@@ -47,7 +52,7 @@ pub(crate) fn verify(socket: &Path, pid: u32) -> Result<(SessionTarget, File)> {
             )),
         "unsupported owned compositor"
     );
-    let own = fs::read_to_string("/proc/self/cgroup")?;
+    let own = fs::read_to_string(crate::session::launcher_cgroup_path(launcher))?;
     let other = fs::read_to_string(process.join("cgroup"))?;
     let own = own
         .lines()
@@ -63,7 +68,7 @@ pub(crate) fn verify(socket: &Path, pid: u32) -> Result<(SessionTarget, File)> {
             parent
                 .rsplit('/')
                 .next()
-                .is_some_and(|unit| unit.ends_with(".service"))
+                .is_some_and(|unit| unit.ends_with(".service") || unit.ends_with(".scope"))
         })
         .unwrap_or(own);
     ensure!(
