@@ -50,9 +50,8 @@ pub fn permissions(request: bool) -> Result<Permissions> {
             GuiSession::current()?.active,
             "permission requests require an unlocked GUI session"
         );
-        if !matches!(before.screen, PermissionState::Granted) {
-            unsafe { CGRequestScreenCaptureAccess() };
-        }
+        // The accessibility prompt is asynchronous. Request it before the
+        // screen prompt so a system dialog cannot delay dispatching the other.
         if !matches!(before.input, PermissionState::Granted) {
             // Both keys and values are retained with the CoreFoundation callbacks.
             let key = unsafe { kAXTrustedCheckOptionPrompt };
@@ -76,20 +75,8 @@ pub fn permissions(request: bool) -> Result<Permissions> {
                 CFRelease(options.cast());
             }
         }
-        // Accessibility consent is asynchronous. Keep the requesting process
-        // alive while the user grants access; callers may cancel this process.
-        let deadline = Instant::now() + Duration::from_secs(90);
-        while Instant::now() < deadline {
-            let current = platform.permissions()?;
-            if matches!(current.screen, PermissionState::Granted)
-                && matches!(current.input, PermissionState::Granted)
-            {
-                return Ok(current);
-            }
-            if !GuiSession::current()?.active {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(250));
+        if !matches!(before.screen, PermissionState::Granted) {
+            unsafe { CGRequestScreenCaptureAccess() };
         }
     }
     platform.permissions()

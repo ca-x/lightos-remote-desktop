@@ -103,6 +103,7 @@ func (c *runtimeCatalog) decorate(target *desktopTarget) {
 	target.Installed, _ = agent["installed"].(bool)
 	protocol, _ := agent["controller_protocol"].(float64)
 	target.ControllerProtocol = int(protocol)
+	target.PermissionCheck, _ = agent["permission_check"].(bool)
 	if protocol < 2 && (target.RuntimeVersion != "" || target.Ready) {
 		target.Installed = true
 	}

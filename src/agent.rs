@@ -108,6 +108,10 @@ pub async fn run(options: Options) -> Result<()> {
             "/permissions",
             post(|State(c), h| command(c, h, "permissions")),
         )
+        .route(
+            "/permissions-check",
+            post(|State(c), h| command(c, h, "permissions-check")),
+        )
         .with_state(controller);
     let client = network::client()?;
     let mut runtime = Runtime::new();
@@ -140,10 +144,14 @@ pub async fn run(options: Options) -> Result<()> {
                             "start" => { enabled = true; if runtime.permissions["can_start"] != true { runtime.request_permissions().await?; } }
                             "stop" => { enabled = false; runtime.stop().await; }
                             "permissions" => { runtime.request_permissions().await?; }
+                            #[cfg(target_os = "macos")]
+                            "permissions-check" => { runtime.refresh_permissions()?; }
                             _ => {}
                         }
-                        save(&directory, &active.identity, enabled)?;
-                        next_heartbeat = Instant::now();
+                        if action != "permissions-check" {
+                            save(&directory, &active.identity, enabled)?;
+                            next_heartbeat = Instant::now();
+                        }
                     }
                 }
                 _ = ticker.tick() => {}

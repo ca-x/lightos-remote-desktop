@@ -18,6 +18,10 @@ pub fn secret() -> String {
 pub struct Runtime {
     child: Option<Child>,
     permission: Option<(Child, Instant, bool)>,
+    #[cfg(target_os = "macos")]
+    permission_requests: Vec<(Child, Instant)>,
+    #[cfg(target_os = "macos")]
+    checked_for_start: bool,
     pub permissions: Value,
     pub desktop: Value,
     pub error: Option<String>,
@@ -30,6 +34,10 @@ impl Runtime {
         Self {
             child: None,
             permission: None,
+            #[cfg(target_os = "macos")]
+            permission_requests: Vec::new(),
+            #[cfg(target_os = "macos")]
+            checked_for_start: false,
             permissions: json!({"screen":"unknown","input":"unknown","can_start":false,"requesting":false}),
             desktop: json!({"enabled":false,"ready":false}),
             error: None,
@@ -39,14 +47,32 @@ impl Runtime {
     }
 
     pub async fn request_permissions(&mut self) -> Result<()> {
-        if let Some((mut child, _, _)) = self.permission.take() {
-            let _ = child.kill().await;
+        #[cfg(target_os = "macos")]
+        {
+            let child = Self::permission_command(true)?
+                .stdout(Stdio::null())
+                .spawn()?;
+            self.permission_requests.push((child, Instant::now()));
         }
-        self.probe(true)?;
+        #[cfg(not(target_os = "macos"))]
+        {
+            if let Some((mut child, _, _)) = self.permission.take() {
+                let _ = child.kill().await;
+            }
+            self.probe(true)?;
+        }
         Ok(())
     }
 
-    fn probe(&mut self, request: bool) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    pub fn refresh_permissions(&mut self) -> Result<()> {
+        if self.permission.is_none() {
+            self.probe(false)?;
+        }
+        Ok(())
+    }
+
+    fn permission_command(request: bool) -> Result<Command> {
         let mut command = Command::new(std::env::current_exe()?);
         #[cfg(windows)]
         command.creation_flags(0x08000000);
@@ -54,10 +80,13 @@ impl Runtime {
         if request {
             command.arg("--request");
         }
-        let child = command
+        command.stderr(Stdio::null()).kill_on_drop(true);
+        Ok(command)
+    }
+
+    fn probe(&mut self, request: bool) -> Result<()> {
+        let child = Self::permission_command(request)?
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
             .spawn()?;
         self.permission = Some((child, Instant::now(), request));
         self.permissions["requesting"] = json!(request);
@@ -71,6 +100,10 @@ impl Runtime {
         directory: &Path,
         client: &reqwest::Client,
     ) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        self.permission_requests.retain_mut(|(child, started)| {
+            started.elapsed() < Duration::from_secs(120) && matches!(child.try_wait(), Ok(None))
+        });
         if let Some((child, started, request)) = self.permission.as_mut() {
             let done = child.try_wait()?.is_some();
             if done || started.elapsed() > Duration::from_secs(if *request { 120 } else { 8 }) {
@@ -83,10 +116,18 @@ impl Runtime {
                 if output.status.success() && output.stdout.len() < 16384 {
                     self.permissions = serde_json::from_slice(&output.stdout)?;
                     self.permissions["requesting"] = json!(false);
+                    if cfg!(target_os = "macos") && self.permissions["can_start"] != true {
+                        self.desktop["ready"] = json!(false);
+                    }
                 }
             }
-        } else if Instant::now() >= self.probe_at {
+        } else if !cfg!(target_os = "macos") && Instant::now() >= self.probe_at {
             self.probe(false)?;
+        }
+        #[cfg(target_os = "macos")]
+        if enabled && !self.checked_for_start {
+            self.refresh_permissions()?;
+            self.checked_for_start = true;
         }
 
         if let Some(child) = &mut self.child
@@ -104,6 +145,7 @@ impl Runtime {
         self.desktop["enabled"] = json!(true);
         if self.child.is_none()
             && self.permissions["can_start"] == true
+            && (!cfg!(target_os = "macos") || self.permission.is_none())
             && Instant::now() >= self.start_at
         {
             self.start(directory).await?;
@@ -121,11 +163,12 @@ impl Runtime {
                 Ok(r) if r.status().is_success() => r.json::<Value>().await.ok(),
                 _ => None,
             };
-            let ready = health.as_ref().is_some_and(|v| {
-                v["native"] == true
-                    && v["ready"] == true
-                    && v["pid"].as_u64() == child.id().map(u64::from)
-            });
+            let ready = (!cfg!(target_os = "macos") || self.permissions["can_start"] == true)
+                && health.as_ref().is_some_and(|v| {
+                    v["native"] == true
+                        && v["ready"] == true
+                        && v["pid"].as_u64() == child.id().map(u64::from)
+                });
             self.desktop["ready"] = json!(ready);
             self.desktop["requires_consent"] = json!(
                 health
@@ -177,6 +220,11 @@ impl Runtime {
     }
 
     pub async fn stop(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            self.permission_requests.clear();
+            self.checked_for_start = false;
+        }
         if let Some((mut child, _, _)) = self.permission.take() {
             let _ = child.kill().await;
         }
@@ -225,6 +273,6 @@ impl Runtime {
         } else {
             "starting"
         };
-        json!({"version":env!("CARGO_PKG_VERSION"),"enabled":enabled,"ready":self.desktop["ready"] == true,"status":status,"permissions":self.permissions,"error":self.error})
+        json!({"version":env!("CARGO_PKG_VERSION"),"enabled":enabled,"ready":self.desktop["ready"] == true,"status":status,"permissions":self.permissions,"permission_check":cfg!(target_os = "macos"),"error":self.error})
     }
 }

@@ -43,6 +43,7 @@ type desktopTarget struct {
 	Ready           bool           `json:"ready"`
 	Status          string         `json:"status,omitempty"`
 	Permissions     map[string]any `json:"permissions,omitempty"`
+	PermissionCheck bool           `json:"permission_check,omitempty"`
 	Preview         string         `json:"preview,omitempty"`
 }
 

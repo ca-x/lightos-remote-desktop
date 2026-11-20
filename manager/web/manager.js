@@ -47,6 +47,10 @@
   let permissionDevice = null;
   let permissionMode = "diagnostics", authorizationSubmission = null, authorizationNotice = "";
   const linuxDevice = item => item.kind === "device" && item.platform === "linux";
+  const macDevice = item => item?.kind === "device" && ["darwin", "macos"].includes(item.platform);
+  const macPermissionsHelp = zh
+    ? "在被控 Mac 的「隐私与安全性」中为懒猫远程允许屏幕录制和辅助功能。两项都要开启。"
+    : "On the controlled Mac, allow both Screen Recording and Accessibility for Lazycat Remote in Privacy & Security.";
   const connectionConsent = item => linuxDevice(item) && (item.permissions?.backend === "portal" || item.permissions?.request_mode === "on_connection" || item.requires_consent === true) && ![item.permissions?.screen, item.permissions?.input].every(value => value === "granted");
   function permissionHelp(item) {
     if (!linuxDevice(item) || !item.installed) return "";
@@ -200,6 +204,7 @@
     const iconSource = `./platforms/${icon}.svg`;
     if (p.icon.getAttribute("src") !== iconSource) p.icon.src = iconSource;
     p.platform.textContent = item.kind === "instance" ? copy.container : platforms[item.platform] || item.platform || "";
+    const mac = macDevice(item);
     const permissionApproved = permissions.screen === "granted" && permissions.input === "granted";
     p.permissionSummary.textContent = permissionApproved ? copy.permissionApproved : copy.permissionUnapproved;
     p.permissionSummary.hidden = item.kind !== "device";
@@ -245,15 +250,17 @@
     p.toggle.disabled = item.online === false || processing || switching;
     p.toggle.ariaLabel = `${item.enabled ? copy.stop : copy.start}: ${item.name}`;
     p.request.hidden = item.kind !== "device" || permissionApproved;
-    p.request.textContent = permissions.requesting ? copy.requesting : copy.permissions;
-    p.request.disabled = item.online === false || !item.managed || !item.installed || processing || switching || permissions.requesting === true;
+    p.request.textContent = !mac && permissions.requesting ? copy.requesting : copy.permissions;
+    p.request.disabled = item.online === false || !item.managed || !item.installed || switching ||
+      (!mac && (processing || permissions.requesting === true));
     p.request.title = !item.installed ? copy.not_installed : "";
     if (linux && item.managed && item.installed) {
       p.request.hidden = permissionApproved || !(unavailable || deferred || physicalUnavailable);
       p.request.textContent = permissions.requesting ? copy.requesting : deferred ? copy.permissions : copy.details;
       p.request.title = permissionHelp(item);
     }
-    const ready = !item.current_device && item.online !== false && item.ready === true && !switching && pending?.action !== "stop" && !(deferred && permissions.requesting);
+    const ready = !item.current_device && item.online !== false && item.ready === true && !switching && pending?.action !== "stop" &&
+      (!mac || permissionApproved) && !(deferred && permissions.requesting);
     p.connect.setAttribute("aria-disabled", String(!ready)); p.connect.tabIndex = ready ? 0 : -1;
     if (ready) p.connect.href = item.url; else p.connect.removeAttribute("href");
     p.connectLabel.textContent = item.current_device ? copy.currentDevice : ready ? copy.enterDesktop
@@ -264,7 +271,11 @@
     p.connect.ariaLabel = item.current_device ? copy.currentDevice : `${copy.enterDesktop}: ${item.name}`;
     const runtimeMessage = deployment.stage === "failed" ? deployment.error || copy.failedInstall
       : item.runtime_error === "desktop_process_stopped" ? copy.stopped : item.runtime_error || "";
+    const macHint = mac && item.managed && item.installed && !permissionApproved;
+    if (macHint) p.request.setAttribute("aria-describedby", p.error.id);
+    else p.request.removeAttribute("aria-describedby");
     const message = [...new Set([card.actionError || "", runtimeMessage, clientUpdateRequired ? copy.client_update_required : "",
+      macHint ? macPermissionsHelp : "",
       unavailable ? permissions.reason || permissionHelp(item) : ""].filter(Boolean))].join("\n");
     if (p.error.textContent !== message) p.error.textContent = message;
     p.error.hidden = !message;
@@ -283,9 +294,13 @@
     empty.hidden = visible.length > 0; status.textContent = copy.count(visible.length);
   }
   async function act(id, action) {
-    if (pendingActions.has(id)) return;
-    pendingActions.set(id, { action, until: Date.now() + 15000 });
-    const card = cards.get(id); if (card) { card.actionError = ""; updateCard(card, card.target); }
+    const card = cards.get(id);
+    const repeatable = action === "permissions" && macDevice(card?.target);
+    if (!repeatable) {
+      if (pendingActions.has(id)) return;
+      pendingActions.set(id, { action, until: Date.now() + 15000 });
+    }
+    if (card) { card.actionError = ""; updateCard(card, card.target); }
     try {
       const response = await fetch(`/api/hosts/${encodeURIComponent(id)}/${action}`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}", signal: AbortSignal.timeout(16000) });
       if (response.redirected || response.status === 401 || response.status === 403) throw Error("login_required");
@@ -295,7 +310,7 @@
       }
       warning.hidden = true;
       const reply = await response.json();
-      if (action === "permissions") pendingActions.delete(id);
+      if (action === "permissions" && !repeatable) pendingActions.delete(id);
       const state = reply?.state;
       controlRevision += 1;
       if (card && state && typeof state.ready === "boolean" && typeof state.enabled === "boolean") {
@@ -306,7 +321,7 @@
       await load(true);
       return reply;
     } catch (error) {
-      pendingActions.delete(id);
+      if (!repeatable) pendingActions.delete(id);
       if (error.message === "update_confirmation_required") {
         await load();
         if (await confirmUpdate()) await act(id, "update-confirmed");
@@ -319,12 +334,34 @@
       if (card) updateCard(card, card.target);
     }
   }
+  let permissionRefresh;
+  function refreshMacPermissions() {
+    const scope = permissionRefresh;
+    if (!scope || document.hidden || Date.now() < scope.nextCheck) return;
+    for (const { target: item } of cards.values()) {
+      if (!macDevice(item) || item.online === false || !item.managed || !item.installed || !item.permission_check ||
+          !["idle", "completed", "failed"].includes(item.deployment?.stage || "idle") || scope.pending.has(item.id)) continue;
+      scope.pending.add(item.id);
+      scope.nextCheck = Date.now() + 2000;
+      void fetch(`/api/hosts/${encodeURIComponent(item.id)}/permissions-check`, {
+        method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}",
+        signal: scope.controller.signal,
+      }).then(async response => {
+        if (!response.ok) return;
+        const { state } = await response.json();
+        const card = cards.get(item.id);
+        if (permissionRefresh !== scope || !card || !state?.permissions ||
+            state.version !== card.target.runtime_version || document.hidden) return;
+        updateCard(card, { ...card.target, permissions: state.permissions });
+      }).catch(() => {}).finally(() => scope.pending.delete(item.id));
+    }
+  }
   async function load(force = false) {
     if (document.hidden) return;
     if (busy) { reloadRequested ||= force; return; }
     busy = true;
     refreshedAt = Date.now();
-    const revision = controlRevision;
+    const revision = controlRevision, scope = permissionRefresh;
     if (!cards.size) status.textContent = copy.loading;
     const controller = new AbortController(); pending = controller;
     const timeout = setTimeout(() => controller.abort(), 20000);
@@ -339,9 +376,11 @@
         if (!item || typeof item.id !== "string" || typeof item.url !== "string" || typeof item.name !== "string") return false;
         try { const url = new URL(item.url, location.href); return url.protocol === "https:" && !url.username && !url.password || url.origin === location.origin && url.pathname.startsWith("/desktop/"); } catch { return false; }
       });
+      if (scope !== permissionRefresh || document.hidden) return;
       render(targets); warning.textContent = copy.unavailable; warning.hidden = !data.unavailable?.length;
+      refreshMacPermissions();
     } catch (error) {
-      if (document.hidden && controller.signal.aborted) return;
+      if (scope !== permissionRefresh || document.hidden) return;
       status.textContent = ""; warning.textContent = copy[error.message] || copy.failed; warning.hidden = false;
       if (error.message === "login_required") render([]);
     } finally {
@@ -349,15 +388,29 @@
       if (reloadRequested) { reloadRequested = false; void load(); }
     }
   }
-  document.addEventListener("visibilitychange", () => { if (document.hidden) pending?.abort(); else void load(); });
   function refresh() {
+    refreshMacPermissions();
     const transitioning = [...pendingActions.values()].some(p => p.action === "start" || p.action === "stop") || [...cards.values()].some(card => card.target.status === "starting");
     const active = [...cards.values()].some(card => !["idle", "completed", "failed"].includes(card.target.deployment?.stage || "idle"));
     const requesting = [...cards.values()].some(card => card.target.permissions?.requesting);
     if (Date.now() - refreshedAt >= (transitioning ? 250 : active || requesting ? 1000 : 4000)) void load();
   }
-  let timer = setInterval(refresh, 250);
-  window.addEventListener("pagehide", () => { pending?.abort(); clearInterval(timer); timer = undefined; });
-  window.addEventListener("pageshow", event => { if (event.persisted) { timer ??= setInterval(refresh, 250); void load(); } });
-  void load();
+  let timer;
+  function startRefresh() {
+    if (document.hidden || timer !== undefined) return;
+    permissionRefresh = { controller: new AbortController(), pending: new Set(), nextCheck: 0 };
+    timer = setInterval(refresh, 250);
+    void load(true);
+  }
+  function stopRefresh() {
+    pending?.abort();
+    permissionRefresh?.controller.abort();
+    permissionRefresh = undefined;
+    clearInterval(timer);
+    timer = undefined;
+  }
+  document.addEventListener("visibilitychange", () => { if (document.hidden) stopRefresh(); else startRefresh(); });
+  window.addEventListener("pagehide", stopRefresh);
+  window.addEventListener("pageshow", startRefresh);
+  startRefresh();
 })();

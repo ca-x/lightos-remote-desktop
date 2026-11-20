@@ -12,7 +12,7 @@ import (
 
 func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 	action := r.PathValue("action")
-	if r.Method != http.MethodPost || (action != "start" && action != "stop" && action != "permissions" && action != "install" && action != "update" && action != "update-confirmed") {
+	if r.Method != http.MethodPost || (action != "start" && action != "stop" && action != "permissions" && action != "permissions-check" && action != "install" && action != "update" && action != "update-confirmed") {
 		writeFailure(w, http.StatusMethodNotAllowed, "invalid_action")
 		return
 	}
