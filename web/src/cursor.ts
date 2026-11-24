@@ -142,7 +142,7 @@ export function createCursorLayer(canvas: HTMLCanvasElement, overlay: HTMLImageE
     }
     open();
   }
-  canvas.addEventListener("pointerenter", event => { layout(); move(event.clientX,event.clientY,event.pointerType); }, { signal: listeners.signal });
+  canvas.addEventListener("pointerenter", event => { layout(); if (event.pointerType !== "touch") move(event.clientX,event.clientY,event.pointerType); }, { signal: listeners.signal });
   canvas.addEventListener("pointerleave", () => { inside = false; render(); }, { signal: listeners.signal });
   window.addEventListener("resize", layout, { signal: listeners.signal });
   window.visualViewport?.addEventListener("resize", layout, { signal: listeners.signal });

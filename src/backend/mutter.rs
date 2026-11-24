@@ -665,7 +665,7 @@ async fn apply_input(
             release(session, keys, buttons).await?;
         }
         InputCommand::Text { .. } => bail!("committed text must use the prepared selection"),
-        InputCommand::Guarded { .. } => unreachable!(),
+        InputCommand::Guarded { .. } | InputCommand::PendingMove { .. } => unreachable!(),
     }
     Ok(())
 }

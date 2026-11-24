@@ -38,7 +38,7 @@ use tokio::{
 use crate::{
     audio::{AudioCapture, AudioCaptureFactory, AudioFormat},
     audio_channel::{self, AudioHub},
-    backend::{self, BackendKind, BackendReport, DesktopBackend, InputCommand},
+    backend::{self, BackendKind, BackendReport, DesktopBackend, InputCommand, PendingPointerMove},
     clipboard::ImageUpload,
     config::Config,
     platform::{HostPlatform, HostSession, SessionLifecycle},
@@ -1605,6 +1605,7 @@ async fn receive_commands(
     pacing: watch::Sender<FrameScheduler>,
     clipboard: Option<ClipboardInput>,
 ) -> bool {
+    let mut pending_move: Option<PendingPointerMove> = None;
     while let Ok(Some(Ok(message))) = timeout(Duration::from_secs(60), reader.next()).await {
         match message {
             Message::Text(text) => {
@@ -1615,6 +1616,7 @@ async fn receive_commands(
                     && value["type"] == "clipboard_paste_text"
                     && let Some(scope) = &clipboard
                 {
+                    pending_move = None;
                     if let Some(order) = value["order"].as_u64() {
                         scope
                             .gate
@@ -1637,6 +1639,7 @@ async fn receive_commands(
                     && (1..=9007199254740991).contains(&id)
                     && matches!(code, 45 | 46)
                 {
+                    pending_move = None;
                     let _gate = if let Some(scope) = &clipboard {
                         scope
                             .gate
@@ -1712,11 +1715,29 @@ async fn receive_commands(
                 if let Ok(command) = serde_json::from_str::<InputCommand>(&text)
                     && command.validate().is_ok()
                 {
+                    let command = if let InputCommand::Move { x, y } = command {
+                        // One queued position per uninterrupted run of moves.
+                        // The backend takes it closest to actual input injection.
+                        if pending_move
+                            .as_ref()
+                            .is_some_and(|position| position.replace(x, y))
+                        {
+                            continue;
+                        }
+                        let position = PendingPointerMove::new(x, y);
+                        pending_move = Some(position.clone());
+                        InputCommand::PendingMove { position }
+                    } else {
+                        // A discrete input must see the cursor at the position
+                        // that preceded it, even if more movement arrives.
+                        pending_move = None;
+                        command
+                    };
                     let _gate = if !matches!(
                         command,
                         InputCommand::Release
                             | InputCommand::ReleaseSync { .. }
-                            | InputCommand::Move { .. }
+                            | InputCommand::PendingMove { .. }
                             | InputCommand::Scroll { .. }
                             | InputCommand::Key { pressed: false, .. }
                     ) {
@@ -1779,6 +1800,7 @@ async fn receive_commands(
                         _ => {}
                     }
                 }
+                pending_move = None;
                 if controls.try_send(text.to_string()).is_err() {
                     break;
                 }
@@ -2595,8 +2617,8 @@ mod tests {
         );
         receive_commands(reader, input, controls, pacing, None).await;
         assert!(matches!(
-            received.recv().await,
-            Some(InputCommand::Move { .. })
+            received.recv().await.and_then(InputCommand::into_active),
+            Some((InputCommand::Move { .. }, None))
         ));
         assert!(matches!(
             received.recv().await,

@@ -297,11 +297,20 @@ func (h *hostRegistry) proxy(w http.ResponseWriter, r *http.Request) {
 				req.Header.Set("lzc_dapi_auth_token", token.Token)
 			}
 			req.SetBasicAuth("lightos", host.Desktop.Password)
+			if path == "" || path == "index.html" {
+				req.Header.Del("Accept-Encoding")
+			}
 			req.Header.Del("X-LightOS-Viewer-Input")
 			if viewerInput {
 				req.Header.Set("X-LightOS-Viewer-Input", "1")
 			}
 		}, Transport: transport, FlushInterval: -1,
+		ModifyResponse: func(response *http.Response) error {
+			if path == "" || path == "index.html" {
+				return decorateDesktopPage(response, host.Name, false)
+			}
+			return nil
+		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, _ error) {
 			http.Error(w, "Remote desktop is unavailable", http.StatusBadGateway)
 		},

@@ -1,4 +1,4 @@
-import { Ampersand, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Asterisk, AtSign, ChevronUp, Delete, DollarSign, Equal, Globe2, Hash, House, Menu, Minus, Percent, Plus, Expand, Shrink, Volume2, VolumeX } from "lucide-react";
+import { Ampersand, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Asterisk, AtSign, ChevronUp, Delete, DollarSign, Equal, Globe2, Hash, Keyboard, Touchpad, House, Menu, Minus, Percent, Plus, Expand, Shrink, Volume2, VolumeX } from "lucide-react";
 import { useLayoutEffect, useRef, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { createLightBookLegendLayout } from "./lightbook-legend-layout";
@@ -49,14 +49,14 @@ const rows: Key[][] = [
   [key("ShiftLeft", "Shift", 2.25), ...letters("ZXCVBNM"), key("Comma", ",", 1, "<"), key("Period", ".", 1, ">"), key("Slash", "/", 1, "?"), key("ShiftRight", "Shift", 2.75)],
 ];
 
-export function LightBook({ active, ready, audioAvailable, audioEnabled, fullscreen, homeHref, homeLabel }: {
-  active: boolean; ready: boolean; audioAvailable: boolean; audioEnabled: boolean; fullscreen: boolean; homeHref: string; homeLabel: string;
+export function LightBook({ active, ready, audioAvailable, audioEnabled, fullscreen, trackpad, onToggleTrackpad, homeHref, homeLabel }: {
+  active: boolean; ready: boolean; audioAvailable: boolean; audioEnabled: boolean; fullscreen: boolean; trackpad: boolean; onToggleTrackpad: () => void; homeHref: string; homeLabel: string;
 }) {
   const {t} = useTranslation();
   const deck = useRef<HTMLElement>(null);
   useLayoutEffect(() => {
     if (active && deck.current) return createLightBookLegendLayout(deck.current);
-  }, [active]);
+  }, [active, trackpad]);
   const renderKey = (item: Key) => <button key={item.code} type="button" className={`lightbook-key ${!item.upper && item.code.length > 3 && !item.code.startsWith("Key") && !item.code.startsWith("Digit") ? "lightbook-key-wide" : ""}`}
     data-lightbook-key={item.code} style={{gridColumn:`span ${(item.units ?? 1)*4}`, "--lightbook-key-units":item.units ?? 1, "--lightbook-label-limit":Math.max(1,item.label.length*.6)} as CSSProperties}
     disabled={!ready} aria-label={item.code === "Space" ? t("lightbookSpace") : item.label} aria-pressed={/^(Control|Alt|Meta|Shift)|CapsLock/.test(item.code) ? false : undefined}>
@@ -67,6 +67,9 @@ export function LightBook({ active, ready, audioAvailable, audioEnabled, fullscr
     <div className="lightbook-controls">
       <span className="lightbook-brand">LightOS</span>
       <div>
+        <button type="button" className="lightbook-tool" onClick={onToggleTrackpad}
+          aria-label={t(trackpad ? "lightbookKeyboard" : "lightbookTrackpad")} title={t(trackpad ? "lightbookKeyboard" : "lightbookTrackpad")}
+          aria-pressed={trackpad}>{trackpad ? <Keyboard size={17} aria-hidden="true"/> : <Touchpad size={17} aria-hidden="true"/>}</button>
         <button type="button" className="lightbook-tool" data-mobile-action="audio" disabled={!ready || !audioAvailable} aria-label={t(audioEnabled ? "audioOff" : "audioOn")} title={t(audioEnabled ? "audioOff" : "audioOn")} aria-pressed={audioEnabled}>{audioEnabled ? <Volume2 size={17}/> : <VolumeX size={17}/>}</button>
         <button type="button" className="lightbook-tool" data-mobile-action="fullscreen" aria-label={t(fullscreen ? "exitFullscreen" : "fullscreen")} title={t(fullscreen ? "exitFullscreen" : "fullscreen")} aria-pressed={fullscreen}>{fullscreen ? <Shrink size={17}/> : <Expand size={17}/>}</button>
         <button type="button" className="lightbook-tool" data-mobile-action="keyboard" disabled={!ready} aria-label={t("showKeyboard")} title={t("showKeyboard")} aria-pressed={false}><Globe2 size={17}/></button>
@@ -74,7 +77,7 @@ export function LightBook({ active, ready, audioAvailable, audioEnabled, fullscr
         <a className="lightbook-tool" href={homeHref} aria-label={homeLabel} title={homeLabel}><House size={17} aria-hidden="true"/></a>
       </div>
     </div>
-    <div id="lightbook-keys" className="lightbook-keys" role="group" aria-label={t("lightbookKeyboard")}>
+    <div id="lightbook-keys" className="lightbook-keys" hidden={trackpad} role="group" aria-label={t("lightbookKeyboard")}>
       {rows.map((row,i) => <div className={`lightbook-key-row ${i===0 ? "lightbook-function-row" : ""}`} key={i}>{row.map(renderKey)}</div>)}
       <div className="lightbook-key-row lightbook-bottom-row">
         {[key("ControlLeft","Ctrl"),key("MetaLeft","Super",1.5),key("AltLeft","Alt",1.25),key("Space"," ",5.5),key("AltRight","Alt",1.25),key("MetaRight","Super",1.5)].map(item => renderKey(item))}
@@ -83,10 +86,8 @@ export function LightBook({ active, ready, audioAvailable, audioEnabled, fullscr
         </div>
       </div>
     </div>
-    <div className="lightbook-palmrest">
-      <div id="lightbook-trackpad" className="lightbook-trackpad" role="application" aria-label={t("lightbookTrackpad")} aria-disabled={!ready} title={t("lightbookTrackpadHelp")} tabIndex={active ? 0 : -1}>
-        <span className="lightbook-trackpad-hint" aria-hidden="true">{t("lightbookTrackpadHint")}</span>
-      </div>
+    <div id="lightbook-trackpad" hidden={!trackpad} className="lightbook-trackpad" role="application" aria-label={t("lightbookTrackpad")} aria-disabled={!ready} title={t("lightbookTrackpadHelp")} tabIndex={active && trackpad ? 0 : -1}>
+      <span className="lightbook-trackpad-hint" aria-hidden="true">{t("lightbookTrackpad")}</span>
     </div>
   </section>;
 }

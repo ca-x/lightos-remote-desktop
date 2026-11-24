@@ -1210,7 +1210,9 @@ impl Devices {
                 self.pointer.frame();
             }
             InputCommand::Release => self.release(),
-            InputCommand::Text { .. } | InputCommand::Guarded { .. } => unreachable!(),
+            InputCommand::Text { .. }
+            | InputCommand::Guarded { .. }
+            | InputCommand::PendingMove { .. } => unreachable!(),
         }
         Ok(())
     }

@@ -18,7 +18,7 @@ beforeEach(async () => {
   vi.mocked(createClient).mockImplementation(() => {
     expect(document.getElementById("tools-toggle")).not.toBeNull();
     expect(document.getElementById("tool-panel")).not.toBeNull();
-    return { destroy, refreshLanguage, layoutTools, refreshDesktops: async () => {}, setLightBook: vi.fn() };
+    return { destroy, refreshLanguage, layoutTools, refreshDesktops: async () => {}, setLightBook: vi.fn(), setScreenControl() {}, toggleLandscape() {}, switchLightBookPanel() {}, layoutMobile() {} };
   });
 });
 

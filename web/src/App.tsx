@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button, Dialog, DialogBackdrop, DialogDescription, DialogPanel, DialogTitle, Field, Input, Label, Tab, TabGroup, TabList, TabPanel, TabPanels } from "@headlessui/react";
-import { Activity, Bot, Check, ChevronRight, Clipboard, Expand, House, Info, Keyboard, Menu, Monitor, Palette, Settings2, Shrink, SlidersHorizontal, Volume2, VolumeX, RotateCw, X } from "lucide-react";
+import { Activity, Bot, Check, ChevronRight, Clipboard, Command, Expand, House, Info, Keyboard, List, Menu, Monitor, Palette, Settings2, Shrink, SlidersHorizontal, Volume2, VolumeX, Smartphone, X } from "lucide-react";
 import logo from "./assets/logo.webp?inline";
 import * as Menubar from "@radix-ui/react-menubar";
 import { useTranslation } from "react-i18next";
@@ -8,6 +8,7 @@ import { createClient } from "./client";
 import { RdpSettings } from "./RdpSettings";
 import { McpSettings } from "./McpSettings";
 import { LightBook } from "./LightBook";
+import { isMobilePlatform } from "./platform";
 import { supportsLightBook } from "./lightbook-input";
 import { useAutoRefresh } from "./use-auto-refresh";
 import { Select } from "./Select";
@@ -15,7 +16,7 @@ import { ScrollArea, Scrollbars, ScrollTextarea } from "./ScrollArea";
 import { MOBILE_ROWS, type MobileShortcut } from "./mobile";
 import type { ControlState, SessionView, ToolbarDirection, ToolbarEdge } from "./types";
 import i18n, { translateClient } from "./i18n";
-import { lightBookKey, lightBookModes, languageKey, languages, readPreference, resolveLanguage, resolveTheme, savePreference, themeKey, themes, type LanguagePreference, type ThemePreference } from "./preferences";
+import { lightBookKey, lightBookModes, languageKey, languages, readPreference, resolveLanguage, resolveTheme, savePreference, screenControlKey, screenControlModes, themeKey, themes, type LanguagePreference, type ScreenControlMode, type ThemePreference } from "./preferences";
 
 const initialControls: ControlState = {
   ready: false, wanted: true, audioAvailable: false, audioEnabled: false,
@@ -90,9 +91,16 @@ function Workspace() {
   const [language, setLanguage] = useState<LanguagePreference>(() => readPreference(languageKey, languages, "system"));
   const [theme, setTheme] = useState<ThemePreference>(() => readPreference(themeKey, themes, "system"));
   const [lightBookPreference, setLightBookPreference] = useState(() => readPreference(lightBookKey, lightBookModes, "off"));
-  const [lightBookAvailable, setLightBookAvailable] = useState(supportsLightBook);
+  const mobile = isMobilePlatform();
+  const lightBookAvailable = supportsLightBook();
+  const [landscape, setLandscape] = useState(false);
+  const [landscapeShortcuts, setLandscapeShortcuts] = useState(false);
+  const [trackpadPanel, setTrackpadPanel] = useState(false);
+  const [screenControl, setScreenControl] = useState(() => readPreference(screenControlKey, screenControlModes, "trackpad"));
   const lightBookActive = lightBookAvailable && lightBookPreference === "on";
-  const lightBookState = useRef(lightBookActive);
+  const showDeck = !landscape && lightBookActive;
+  const showShortcuts = landscape ? landscapeShortcuts : !lightBookActive;
+  const inputState = useRef({ showDeck, screenControl });
   const lifecycle = useRef<ReturnType<typeof createClient> | null>(null);
   const popover = useRef({ open, close });
   useAutoRefresh(true, () => lifecycle.current?.refreshDesktops() ?? Promise.resolve());
@@ -104,7 +112,14 @@ function Workspace() {
     const initialization = requestAnimationFrame(() => {
       client = createClient({
         translate: translateClient,
-        lightBook: lightBookState.current,
+        lightBook: inputState.current.showDeck,
+        screenControl: inputState.current.screenControl,
+        onLandscape(active) {
+          setLandscape(active);
+          setLandscapeShortcuts(false);
+          setTrackpadPanel(false);
+          setMenu("");
+        },
         onControls: setControls,
         onOwnership(state) {
           setOwnership(state);
@@ -133,23 +148,22 @@ function Workspace() {
     return () => { cancelAnimationFrame(initialization); lifecycle.current = null; client?.destroy(); };
   }, []);
 
-  useEffect(() => {
-    const pointer = window.matchMedia("(pointer: coarse)");
-    const update = () => setLightBookAvailable(supportsLightBook());
-    pointer.addEventListener("change", update);
-    window.addEventListener("resize", update);
-    return () => { pointer.removeEventListener("change", update); window.removeEventListener("resize", update); };
-  }, []);
   useLayoutEffect(() => {
-    lightBookState.current = lightBookActive;
-    lifecycle.current?.setLightBook(lightBookActive);
-  }, [lightBookActive]);
+    inputState.current = { showDeck, screenControl };
+    lifecycle.current?.setLightBook(showDeck);
+    lifecycle.current?.setScreenControl(screenControl);
+  }, [showDeck, screenControl]);
+  useLayoutEffect(() => {
+    lifecycle.current?.layoutMobile();
+    lifecycle.current?.layoutTools();
+  }, [landscape, showDeck, showShortcuts]);
 
   useEffect(() => {
     const apply = () => {
       void i18n.changeLanguage(resolveLanguage(language, navigator.languages ?? [navigator.language]));
       document.documentElement.lang = i18n.language === "zh" ? "zh-CN" : "en";
-      document.title = `LightOS · ${i18n.t("title")}`;
+      const desktopName = document.querySelector<HTMLMetaElement>('meta[name="lightos-desktop-name"]')?.content.trim();
+      document.title = desktopName || `LightOS · ${i18n.t("title")}`;
       lifecycle.current?.refreshLanguage();
     };
     apply();
@@ -169,6 +183,7 @@ function Workspace() {
     const sync = (event: StorageEvent) => {
       if (event.key === languageKey || event.key === null) setLanguage(readPreference(languageKey, languages, "system"));
       if (event.key === themeKey || event.key === null) setTheme(readPreference(themeKey, themes, "system"));
+      if (event.key === screenControlKey || event.key === null) setScreenControl(readPreference(screenControlKey, screenControlModes, "trackpad"));
       if (event.key === lightBookKey || event.key === null) setLightBookPreference(readPreference(lightBookKey, lightBookModes, "off"));
     };
     window.addEventListener("storage", sync);
@@ -178,6 +193,11 @@ function Workspace() {
   useLayoutEffect(() => { lifecycle.current?.layoutTools(); }, [open, controls, language]);
   useEffect(() => { if (!open) setMenu(""); }, [open]);
   useEffect(() => { if (open) void lifecycle.current?.refreshDesktops(); }, [open, menu]);
+  const toggleLandscape = () => lifecycle.current?.toggleLandscape();
+  const toggleTrackpadPanel = () => {
+    lifecycle.current?.switchLightBookPanel();
+    setTrackpadPanel(!trackpadPanel);
+  };
   const invoke = (id: string) => document.getElementById(id)?.click();
   const choose = (id: string, value: string) => {
     const node = document.getElementById(id) as HTMLSelectElement;
@@ -228,21 +248,26 @@ function Workspace() {
     <div id="desktop-authorization" className="desktop-recovery desktop-authorization" role="status" aria-live="polite" hidden={!controls.authorizationPending || controls.ready || !controls.wanted}>
       <strong>{t("authorizationWaiting")}</strong><p>{t("authorizationWaitingHint")}</p>
     </div>
+    <div className="mobile-chrome">
     <textarea id="mobile-input" className="mobile-input" tabIndex={-1} aria-label={t("mobileInput")}
       autoCapitalize="off" autoCorrect="off" autoComplete="off" spellCheck={false} inputMode="text" enterKeyHint="enter" />
     <button id="mobile-fullscreen-exit" className="mobile-fullscreen-exit" type="button" hidden aria-label={t("exitFullscreen")} title={t("exitFullscreen")}><Shrink size={22} aria-hidden="true"/></button>
-    <button id="mobile-fullscreen-rotate" className="mobile-fullscreen-exit mobile-fullscreen-rotate" type="button" hidden aria-label={t("rotateScreen")} title={t("rotateScreen")}><RotateCw size={22} aria-hidden="true"/></button>
-    <nav id="mobile-shortcuts" className="mobile-shortcuts" aria-label={t("mobileShortcuts")}>
-      <div className="mobile-shortcut-row lightbook-regular" role="toolbar" aria-label={t("mobileRow1")}>
+    <button id="mobile-fullscreen-rotate" className="mobile-fullscreen-exit mobile-fullscreen-rotate" type="button" hidden aria-label={t("enterLandscape")} title={t("enterLandscape")}><Smartphone className="landscape-icon" size={22} aria-hidden="true"/></button>
+    <p id="mobile-rotation-hint" className="mobile-rotation-hint" role="status" hidden>{t("rotateForSystemKeyboard")}</p>
+    <nav id="mobile-shortcuts" className="mobile-shortcuts" aria-label={t("mobileShortcuts")} data-panels={showDeck || showShortcuts}>
+      <div className="mobile-regular" hidden={!showShortcuts}>
+      <div className="mobile-shortcut-row" role="toolbar" aria-label={t("mobileRow1")}>
         <button id="mobile-keyboard" className="mobile-key mobile-keyboard" type="button" disabled={!controls.ready} aria-label={t("showKeyboard")} title={t("showKeyboard")} aria-pressed="false"><Keyboard size={18} aria-hidden="true" /></button>
         <ScrollArea axis="x" className="mobile-key-scroll-frame" contentClassName="mobile-key-scroll">{MOBILE_ROWS[0].map(shortcut)}</ScrollArea>
       </div>
-      <div className="mobile-shortcut-row lightbook-regular" role="toolbar" aria-label={t("mobileRow2")}>
-        <button id="mobile-menu" className="mobile-key" type="button" data-mobile-action="menu" aria-label={t("mobileMenu")} title={t("mobileMenu")}><Menu size={18} aria-hidden="true" /></button>
-        <a id="mobile-home" className="mobile-key mobile-home" href={homeHref} aria-label={homeLabel} title={homeLabel}><House size={18} aria-hidden="true" /></a>
+      <div className="mobile-shortcut-row" role="toolbar" aria-label={t("mobileRow2")}>
+        <button id="mobile-menu" className="mobile-key" type="button" hidden={landscape} data-mobile-action="menu" aria-label={t("mobileMenu")} title={t("mobileMenu")}><Menu size={18} aria-hidden="true" /></button>
+        <a id="mobile-home" className="mobile-key mobile-home" hidden={landscape} href={homeHref} aria-label={homeLabel} title={homeLabel}><House size={18} aria-hidden="true" /></a>
+        {!landscape && <button className="mobile-key" type="button" onClick={toggleLandscape} aria-label={t("enterLandscape")} title={t("enterLandscape")}><Smartphone className="landscape-icon" size={18} aria-hidden="true"/></button>}
         <ScrollArea axis="x" className="mobile-key-scroll-frame" contentClassName="mobile-key-scroll">{MOBILE_ROWS[1].map(shortcut)}</ScrollArea>
       </div>
-      <LightBook active={lightBookActive} ready={controls.ready} audioAvailable={controls.audioAvailable} audioEnabled={controls.audioEnabled} fullscreen={view.fullscreen} homeHref={homeHref} homeLabel={homeLabel} />
+      </div>
+      <LightBook active={showDeck} trackpad={trackpadPanel} onToggleTrackpad={toggleTrackpadPanel} ready={controls.ready} audioAvailable={controls.audioAvailable} audioEnabled={controls.audioEnabled} fullscreen={view.fullscreen} homeHref={homeHref} homeLabel={homeLabel} />
     </nav>
     <aside id="tools" className={open ? "is-open" : ""} data-edge={edge} aria-label={t("title")}>
       <div className="tool-shell">
@@ -254,7 +279,7 @@ function Workspace() {
         <span className={`toolbar-status connection-dot${controls.ready ? " online" : ""}`} role="img" aria-label={status.state || t("connecting")} />
         <div className="toolbar-actions" role="toolbar" aria-label={t("toolbar")} aria-orientation="horizontal" onKeyDownCapture={(event) => {
           if (!(event.target instanceof Element) || event.target.closest('[role="menubar"]') || !event.target.closest(".toolbar-action") || event.altKey || event.ctrlKey || event.metaKey) return;
-          const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>(".toolbar-action:not(:disabled)"));
+          const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>(".toolbar-action:not(:disabled):not([hidden])"));
           const current = buttons.indexOf(event.target.closest<HTMLButtonElement>(".toolbar-action")!);
           const delta = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
           if (!delta && event.key !== "Home" && event.key !== "End") return;
@@ -298,12 +323,12 @@ function Workspace() {
               </Submenu>}
               <Menubar.Separator className="session-menu-separator" /><Menubar.Item className="session-menu-item" onSelect={() => showSettings(0)}>{t("moreDisplaySettings")}<SlidersHorizontal className="menu-trailing" size={15} aria-hidden="true" /></Menubar.Item>
             </ToolMenu>
-            <ToolMenu edge={edge} id="keyboard-toggle" label={t("keyboardMenu")} icon={<Keyboard size={18} aria-hidden="true" />}>
-              <Menubar.Item className="session-menu-item" disabled={!controls.ready} onSelect={() => invoke("keyboard-capture")}>{t(view.keyboardCaptured ? "releaseCapture" : "capture")}</Menubar.Item>
+            <ToolMenu edge={edge} id="keyboard-toggle" label={t("keyboardMenu")} icon={mobile ? <Command size={18} aria-hidden="true" /> : <Keyboard size={18} aria-hidden="true" />}>
+              {!mobile && <Menubar.Item className="session-menu-item" disabled={!controls.ready} onSelect={() => invoke("keyboard-capture")}>{t(view.keyboardCaptured ? "releaseCapture" : "capture")}</Menubar.Item>}
               <Menubar.Item className="session-menu-item" disabled={!controls.ready} onSelect={() => invoke("switch-input-method")}>{t("switchRemoteInput")}<span className="menu-trailing">Ctrl+Space</span></Menubar.Item>
               <Menubar.Separator className="session-menu-separator" />
               <Menubar.Item className="session-menu-item" disabled={!controls.ready} onSelect={() => showUtility("keyboard")}>{t("sendChord")}<span className="menu-trailing">…</span></Menubar.Item>
-              <Menubar.Item className="session-menu-item" onSelect={() => showUtility("keyboard")}>{t("keyboardHelpTitle")}</Menubar.Item>
+              {!mobile && <Menubar.Item className="session-menu-item" onSelect={() => showUtility("keyboard")}>{t("keyboardHelpTitle")}</Menubar.Item>}
             </ToolMenu>
             <ToolMenu edge={edge} id="clipboard-toggle" label={t("clipboardMenu")} icon={<Clipboard size={18} aria-hidden="true" />}>
               <Menubar.Item className="session-menu-item" disabled={!controls.ready} onSelect={() => invoke("paste-local")}>{t("pasteLocal")}</Menubar.Item>
@@ -311,16 +336,19 @@ function Workspace() {
               <Menubar.Separator className="session-menu-separator" />
               <Menubar.Item className="session-menu-item" onSelect={() => showUtility("clipboard")}>{t("input")}<span className="menu-trailing">…</span></Menubar.Item>
             </ToolMenu>
-            <ToolMenu edge={edge} id="info-menu" label={t("connectionInfo")} icon={<Activity size={18} aria-hidden="true" />}>
+            {!landscape && <ToolMenu edge={edge} id="info-menu" label={t("connectionInfo")} icon={<Activity size={18} aria-hidden="true" />}>
               <Menubar.Label className="session-menu-label connection-state"><span className={controls.ready ? "connection-dot online" : "connection-dot"} aria-hidden="true" /><span aria-live="polite">{status.state}</span></Menubar.Label>
               <div className="session-menu-status"><p>{status.performance}</p><p>{status["video-details"]}</p><p role="status">{status["desktop-status"]}</p><p role="status" aria-live="polite">{status.message}</p></div>
               <Menubar.Separator className="session-menu-separator" /><Menubar.Item className="session-menu-item" onSelect={() => showSettings(4)}>{t("about")}</Menubar.Item>
-            </ToolMenu>
+            </ToolMenu>}
           </Menubar.Root>
           <Button id="audio" className="icon-button toolbar-action" title={t(controls.audioEnabled ? "audioOff" : "audioOn")} aria-label={t(controls.audioEnabled ? "audioOff" : "audioOn")} aria-pressed={controls.audioEnabled} disabled={!controls.ready || !controls.audioAvailable}>{controls.audioEnabled ? <Volume2 size={19} aria-hidden="true" /> : <VolumeX size={19} aria-hidden="true" />}</Button>
+          <Button id="landscape-keyboard" className="icon-button toolbar-action" hidden={!landscape} title={t("showKeyboard")} aria-label={t("showKeyboard")} aria-pressed={false} disabled={!controls.ready}><Keyboard size={19} aria-hidden="true"/></Button>
+          {landscape && <Button className="icon-button toolbar-action" title={t("mobileShortcuts")} aria-label={t("mobileShortcuts")} aria-pressed={landscapeShortcuts} onClick={() => setLandscapeShortcuts(!landscapeShortcuts)}><List size={19} aria-hidden="true"/></Button>}
           <div className="toolbar-end">
             <Button id="settings-toggle" className="icon-button toolbar-action" title={t("settings")} aria-label={t("settings")} onClick={() => showSettings()}><Settings2 size={19} aria-hidden="true" /></Button>
-            <Button id="fullscreen" className="icon-button toolbar-action" title={t(view.fullscreen ? "exitFullscreen" : "fullscreen")} aria-label={t(view.fullscreen ? "exitFullscreen" : "fullscreen")} aria-pressed={view.fullscreen}>{view.fullscreen ? <Shrink size={19} aria-hidden="true" /> : <Expand size={19} aria-hidden="true" />}</Button>
+            <Button id="fullscreen" hidden={landscape} className="icon-button toolbar-action" title={t(view.fullscreen ? "exitFullscreen" : "fullscreen")} aria-label={t(view.fullscreen ? "exitFullscreen" : "fullscreen")} aria-pressed={view.fullscreen}>{view.fullscreen ? <Shrink size={19} aria-hidden="true" /> : <Expand size={19} aria-hidden="true" />}</Button>
+            {landscape && <Button className="icon-button toolbar-action" title={t("restorePortrait")} aria-label={t("restorePortrait")} onClick={toggleLandscape}><Smartphone size={19} aria-hidden="true"/></Button>}
           </div>
         </div>
       </div>
@@ -328,6 +356,7 @@ function Workspace() {
       </div>
       </div>
     </aside>
+    </div>
     <div hidden aria-hidden="true">
       <Button id="mode-fit" /><Button id="mode-actual" /><Button id="switch-input-method" />
       <p id="state" /><p id="performance" /><p id="video-details" /><p id="message" />
@@ -351,8 +380,8 @@ function Workspace() {
         <header className="settings-heading"><DialogTitle>{t(utility === "keyboard" ? "keyboard" : "clipboard")}</DialogTitle><Button className="icon-button" aria-label={t("closeSettings")} onClick={() => setUtility(null)}><X size={20} aria-hidden="true" /></Button></header>
         <div className="scroll-area settings-scroll-area"><div ref={utilityScroll} className="settings-content scroll-viewport" tabIndex={0}>
           <section id="keyboard-section" hidden={utility !== "keyboard"} className="settings-section">
-            <Button id="keyboard-capture" onClick={() => setUtility(null)} type="button" aria-pressed="false" disabled={!controls.ready} />
-            <p id="keyboard-state" /><p>{t("keyboardHelp")}</p>
+            <Button id="keyboard-capture" hidden={mobile} onClick={() => setUtility(null)} type="button" aria-pressed="false" disabled={!controls.ready} />
+            <p id="keyboard-state" hidden={mobile} />{!mobile && <p>{t("keyboardHelp")}</p>}
             <fieldset id="shortcut-modifiers"><legend>{t("chord")}</legend><label><input id="shortcut-ctrl" type="checkbox" /> Ctrl</label><label><input id="shortcut-alt" type="checkbox" /> Alt</label><label><input id="shortcut-shift" type="checkbox" /> Shift</label><label><input id="shortcut-super" type="checkbox" /> Super</label></fieldset>
             <Field><Label htmlFor="shortcut-key-trigger">{t("mainKey")}</Label><Select id="shortcut-key" aria-label={t("mainKey")} /></Field>
             <Button id="send-shortcut" type="button" disabled={!controls.ready}>{t("sendChord")}</Button>
@@ -400,6 +429,17 @@ function Workspace() {
             <Label className="lightbook-setting-label" htmlFor="lightbook-toggle"><span>{t("fullKeyboardMode")}</span><input id="lightbook-toggle" type="checkbox" role="switch" className="lightbook-switch" checked={lightBookActive} disabled={!lightBookAvailable} aria-describedby="lightbook-setting-help" onChange={(event) => { const value=event.target.checked ? "on" : "off"; savePreference(lightBookKey,value);setLightBookPreference(value); }}/></Label>
             <p id="lightbook-setting-help">{t(lightBookAvailable ? "lightbookDescription" : "lightbookUnavailable")}</p>
           </Field>
+          {mobile && <Field className="preference-field">
+            <Label htmlFor="screen-control-trigger">{t("screenControlMode")}</Label>
+            <Select id="screen-control" aria-label={t("screenControlMode")} value={screenControl} onChange={(event) => {
+              const value = event.target.value as ScreenControlMode;
+              savePreference(screenControlKey, value);
+              setScreenControl(value);
+            }}>
+              <option value="trackpad">{t("trackpadMode")}</option>
+              <option value="touchscreen">{t("touchscreenMode")}</option>
+            </Select>
+          </Field>}
         </section>
 
               </TabPanel>
@@ -410,7 +450,7 @@ function Workspace() {
                   <div className="about-brand"><img src={logo} width="48" height="48" alt="" /><div><h3>LightOS Remote Desktop</h3><p>{t("aboutDescription")}</p></div></div>
                   <dl className="about-details"><div><dt>{t("version")}</dt><dd id="software-version">{view.version || (version && version !== "__LIGHTOS_VERSION__" ? `v${version}` : t("developmentBuild"))}</dd></div><div><dt>{t("license")}</dt><dd>PolyForm Noncommercial License 1.0.0</dd></div></dl>
                   <div className="about-links"><a href="https://github.com/ca-x/lightos-remote-desktop" target="_blank" rel="noreferrer">{t("projectRepository")}</a><a href="https://github.com/ca-x/lightos-remote-desktop/releases" target="_blank" rel="noreferrer">{t("releaseNotes")}</a><a href="https://github.com/ca-x/lightos-remote-desktop/issues" target="_blank" rel="noreferrer">{t("reportIssue")}</a><a href="https://github.com/ca-x/lightos-remote-desktop/blob/main/LICENSE" target="_blank" rel="noreferrer">{t("license")}</a></div>
-                  <p className="mobile-help">{t("touchHelp")}</p>
+                  <p className="mobile-help">{t(screenControl === "trackpad" ? "screenTrackpadHelp" : "touchHelp")}</p>
                 </section>
               </TabPanel>
             </TabPanels><Scrollbars target={settingsScroll} axis="y" /></div>

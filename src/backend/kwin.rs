@@ -577,7 +577,9 @@ fn run(
                             release(&device, &mut keys, &mut buttons);
                         }
                     }
-                    InputCommand::Guarded { .. } => unreachable!(),
+                    InputCommand::Guarded { .. } | InputCommand::PendingMove { .. } => {
+                        unreachable!()
+                    }
                 }
                 if let Some(guard) = guard {
                     guard.text_done.notify_one();

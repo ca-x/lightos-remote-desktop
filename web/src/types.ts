@@ -1,3 +1,5 @@
+import type { ScreenControlMode } from "./preferences";
+
 export interface DesktopChoice {
   mode: string;
   label: string;
@@ -46,6 +48,8 @@ export interface SessionView {
 
 export interface ClientOptions {
   lightBook?: boolean;
+  screenControl?: ScreenControlMode;
+  onLandscape?: (active: boolean) => void;
   onStatus?: (id: "state" | "performance" | "video-details" | "message" | "desktop-status", text: string) => void;
   onSessionView?: (view: SessionView) => void;
   onToolbarDock?: (edge: ToolbarEdge) => void;

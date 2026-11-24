@@ -1472,13 +1472,8 @@ fn process_input(
     shared: &Shared,
     command: InputCommand,
 ) -> Result<()> {
-    let (command, guard) = match command {
-        InputCommand::Guarded { command, guard } if guard.active() => (*command, Some(guard)),
-        InputCommand::Guarded { guard, .. } => {
-            guard.text_done.notify_one();
-            return Ok(());
-        }
-        command => (command, None),
+    let Some((command, guard)) = command.into_active() else {
+        return Ok(());
     };
     if shared.stopped.load(Ordering::Acquire) {
         return Ok(());
@@ -1604,7 +1599,7 @@ fn process_input(
             send_input(process, WireInput::Key { code, pressed })?
         }
         InputCommand::Scroll { x, y } => send_input(process, WireInput::Scroll { x, y })?,
-        InputCommand::Guarded { .. } => unreachable!(),
+        InputCommand::Guarded { .. } | InputCommand::PendingMove { .. } => unreachable!(),
     }
     Ok(())
 }

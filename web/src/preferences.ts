@@ -40,3 +40,7 @@ export const encoderBackends = ["auto", "vaapi", "nvenc", "qsv", "amf", "videoto
 
 export const lightBookKey = "lightos-desktop-lightbook";
 export const lightBookModes = ["off", "on"] as const;
+
+export const screenControlKey = "lightos-desktop-screen-control";
+export const screenControlModes = ["trackpad", "touchscreen"] as const;
+export type ScreenControlMode = typeof screenControlModes[number];

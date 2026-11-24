@@ -5,11 +5,9 @@
 use anyhow::{Result, bail, ensure};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-#[cfg(all(test, target_os = "linux"))]
-use std::sync::Mutex;
 use std::{
     sync::{
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
         mpsc as sync_mpsc,
     },
@@ -406,12 +404,42 @@ impl InputGuard {
     }
 }
 
+/// Absolute moves can replace earlier moves until the input worker takes them.
+#[derive(Debug, Clone)]
+pub struct PendingPointerMove(Arc<Mutex<Option<(f64, f64)>>>);
+
+impl PendingPointerMove {
+    pub(crate) fn new(x: f64, y: f64) -> Self {
+        Self(Arc::new(Mutex::new(Some((x, y)))))
+    }
+
+    pub(crate) fn replace(&self, x: f64, y: f64) -> bool {
+        let mut point = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if point.is_none() {
+            return false;
+        }
+        *point = Some((x, y));
+        true
+    }
+
+    fn take(&self) -> Option<(f64, f64)> {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InputCommand {
     Move {
         x: f64,
         y: f64,
+    },
+    #[serde(skip)]
+    PendingMove {
+        position: PendingPointerMove,
     },
     Button {
         button: u32,
@@ -453,6 +481,9 @@ impl InputCommand {
                     guard.text_done.notify_one();
                     None
                 }
+            }
+            Self::PendingMove { position } => {
+                position.take().map(|(x, y)| (Self::Move { x, y }, None))
             }
             command => Some((command, None)),
         }
@@ -500,7 +531,7 @@ impl InputCommand {
                 );
             }
             Self::Guarded { command, .. } => command.validate()?,
-            Self::Release | Self::ReleaseSync { .. } => {}
+            Self::PendingMove { .. } | Self::Release | Self::ReleaseSync { .. } => {}
         }
         Ok(())
     }

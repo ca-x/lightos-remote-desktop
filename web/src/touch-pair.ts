@@ -1,4 +1,4 @@
-export interface TouchPairSample { x: number; y: number; distance: number }
+export interface TouchPairSample { x: number; y: number; distance: number; angle?: number }
 
 /** Atomic two-finger samples, including when a browser cancels Pointer Events
  * after handing a multi-touch gesture to its native recognizer. */
@@ -14,7 +14,7 @@ export function createTouchPair(target: HTMLElement, options: {
   const sample = (touches: TouchList): TouchPairSample | null => {
     if (touches.length !== 2) return null;
     const [a, b] = Array.from(touches);
-    return { x: (a.clientX+b.clientX)/2, y: (a.clientY+b.clientY)/2, distance: Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY) };
+    return { x: (a.clientX+b.clientX)/2, y: (a.clientY+b.clientY)/2, distance: Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY), angle: Math.atan2(b.clientY-a.clientY, b.clientX-a.clientX) };
   };
   function flush() {
     if (frame !== null) cancelAnimationFrame(frame);

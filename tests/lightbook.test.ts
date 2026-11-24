@@ -5,8 +5,7 @@ let input: NonNullable<ReturnType<typeof createLightBookInput>>;
 let keys: [string,boolean][], buttons: [number,boolean][], moves: {x:number;y:number}[], scrolls: number[][];
 let active: boolean, ready: boolean;
 let releases: number;
-let zoomed: boolean;
-let pans: number[][];
+let zooms: number[];
 let pad: HTMLElement;
 function pointer(target:Element,type:string,id:number,x=0,y=0){
  const e=new Event(type,{bubbles:true,cancelable:true});Object.assign(e,{pointerId:id,button:0,clientX:x,clientY:y});target.dispatchEvent(e);
@@ -15,9 +14,9 @@ const key=(name:string)=>document.querySelector(`[data-lightbook-key="${name}"]`
 beforeEach(()=>{
  vi.useFakeTimers();
  document.body.innerHTML=`<nav><div id="lightbook-keys"><button data-lightbook-key="MetaLeft" aria-pressed="false">Super</button><button data-lightbook-key="ShiftLeft">Shift</button><button data-lightbook-key="CapsLock" aria-pressed="false">Caps</button><button data-lightbook-key="KeyA">A</button><button data-lightbook-key="Space">Space</button><button data-lightbook-key="ArrowLeft">←</button></div><div id="lightbook-trackpad"></div></nav>`;
- keys=[];buttons=[];moves=[];scrolls=[];releases=0;zoomed=false;pans=[];active=ready=true;pad=document.querySelector('#lightbook-trackpad')!;
+ keys=[];buttons=[];moves=[];scrolls=[];releases=0;zooms=[];active=ready=true;pad=document.querySelector('#lightbook-trackpad')!;
  input=createLightBookInput({root:document.querySelector('nav')!,active:()=>active,ready:()=>ready,
-  key:(code,pressed)=>{keys.push([code,pressed]);return true;},button:(b,p)=>{buttons.push([b,p]);return true;},move:p=>moves.push(p),position:()=>({x:.5,y:.5}),dimensions:()=>({width:400,height:200}),scroll:(x,y)=>scrolls.push([x,y]),zoom:()=>{},zoomActive:()=>zoomed,pan:(x,y)=>pans.push([x,y]),release:()=>{releases++;},})!;
+  key:(code,pressed)=>{keys.push([code,pressed]);return true;},button:(b,p)=>{buttons.push([b,p]);return true;},move:p=>moves.push(p),position:()=>({x:.5,y:.5}),dimensions:()=>({width:400,height:200}),scroll:(x,y)=>scrolls.push([x,y]),zoom:(steps)=>zooms.push(steps),release:()=>{releases++;},})!;
 });
 afterEach(()=>{input.dispose();vi.useRealTimers();vi.unstubAllGlobals();});
 it('gates by mobile touch capability, retaining tablets with desktop browser identity',()=>{
@@ -84,24 +83,21 @@ it('suppresses native touch selection on the trackpad without losing tap-hold dr
 });
 
 
-it('pans a magnified picture from the trackpad without scrolling remote content or clicking',()=>{
- zoomed=true;
+it('scrolls remote content from the trackpad on both axes without clicking',()=>{
  pointer(pad,'pointerdown',1,50,100);pointer(pad,'pointerdown',2,150,100);
  pointer(pad,'pointermove',1,70,115);pointer(pad,'pointermove',2,170,115);
  pointer(pad,'pointerup',1,70,115);pointer(pad,'pointerup',2,170,115);
- expect(pans.reduce((sum,p)=>sum+p[0],0)).toBe(20);expect(pans.reduce((sum,p)=>sum+p[1],0)).toBe(15);
- expect(scrolls).toEqual([]);expect(buttons).toEqual([]);
+ expect(scrolls).toEqual([[-20,-15]]);expect(zooms).toEqual([]);expect(buttons).toEqual([]);
 });
 
 
-it('keeps native multi-touch pan after pointer cancellation and ends without a phantom click',()=>{
- zoomed=true;
+it('forwards a trackpad pinch after pointer cancellation without scrolling or clicking',()=>{
  const touch=(type:string,points:number[][])=>{const e=new Event(type,{bubbles:true,cancelable:true});Object.assign(e,{targetTouches:points.map(([identifier,clientX,clientY])=>({identifier,clientX,clientY}))});pad.dispatchEvent(e);};
  pointer(pad,'pointerdown',1,50,100);pointer(pad,'pointerdown',2,150,100);
  touch('touchstart',[[11,50,100],[22,150,100]]);
  pointer(pad,'pointercancel',1);pointer(pad,'pointercancel',2);
- touch('touchmove',[[11,70,115],[22,170,115]]);touch('touchend',[[22,170,115]]);touch('touchend',[]);
- expect(pans).toEqual([[20,15]]);expect(scrolls).toEqual([]);expect(buttons).toEqual([]);expect(input.touching()).toBe(false);
+ touch('touchmove',[[11,25,100],[22,175,100]]);touch('touchend',[[22,175,100]]);touch('touchend',[]);
+ expect(zooms).toEqual([3]);expect(scrolls).toEqual([]);expect(buttons).toEqual([]);expect(input.touching()).toBe(false);
 });
 
 it('native two-finger taps right-click once and cancellation drops queued gestures',()=>{

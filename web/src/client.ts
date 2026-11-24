@@ -1,9 +1,9 @@
 import { createSessionPreview } from "./preview";
 import { pictureNormalizedPoint, pictureScrollDelta } from "./picture-geometry";
-import { createScreenRotation } from "./screen-rotation";
-import { createLightBookInput, supportsLightBook } from "./lightbook-input";
+import { createScreenRotation, mobileOrientationControl } from "./screen-rotation";
+import { createLightBookInput, createTrackpadInput } from "./lightbook-input";
 import { createPictureZoom } from "./picture-zoom";
-import { encoderBackendKey, encoderBackends, readPreference, savePreference, videoCodecKey, videoCodecs, streamStrategyKey, streamStrategies } from "./preferences";
+import { encoderBackendKey, encoderBackends, readPreference, savePreference, videoCodecKey, videoCodecs, streamStrategyKey, streamStrategies, type ScreenControlMode } from "./preferences";
 import { supportedVideoConfig } from "./video-codec";
 import { createDesktopDecoder, type DesktopDecoder } from "./video-decoder";
 import { createNativeInput } from "./native-input";
@@ -13,7 +13,7 @@ import { createCursorLayer } from "./cursor";
 import { createClipboard } from "./clipboard";
 import { captureResolution, encodingBounds, CAPTURE_SCALES, LEGACY_SCALES } from "./resolution";
 import { decodeDesktopTiles, parseDesktopUpdate } from "./desktop-updates";
-import { isAndroidPlatform } from "./platform";
+import { isAndroidPlatform, trackpadClickFeedback } from "./platform";
 import audioWorkerUrl from "./audio-worker.js?url";
 import audioWorkletUrl from "./audio-worklet.js?url";
 
@@ -118,6 +118,8 @@ export function createClient(options: ClientOptions = {}) {
   let resumeWanted = false;
   let moveFrame: number | null = null;
   let pendingMove: Pick<PointerEvent, "clientX" | "clientY"> | null = null;
+  let trackpadMoveFrame: number | null = null;
+  let pendingTrackpadMove: { x: number; y: number } | null = null;
   let backendPreference = readPreference(encoderBackendKey, encoderBackends, "auto");
   let backendSelection = false;
   let videoRequestIds = false;
@@ -146,6 +148,8 @@ export function createClient(options: ClientOptions = {}) {
   let desktopFullscreen = false;
   let fullscreenFallback = false;
   let pictureRotated = false;
+  let mobileLandscape = false;
+  let screenControl = options.screenControl ?? "trackpad";
   let videoDecoder: DesktopDecoder | null = null;
   let videoWindow = 3;
   let videoToken = 0;
@@ -167,6 +171,7 @@ export function createClient(options: ClientOptions = {}) {
   let keyboardRequest = false;
   let keyboardToken = 0;
   let desktopMode = "virtual";
+  let remoteMac = false;
   let desktopConfirmed = false;
   let selectedOutput: string | null = null;
   let desktopChoices: DesktopChoice[] = [];
@@ -381,7 +386,7 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   function layoutTools(point: {x: number; y: number} | null = toolDrag?.moved ? toolDrag : null) {
-    const bounds = mobile?.bounds();
+    const bounds = mobile?.toolbarBounds();
     const width = bounds?.width || window.innerWidth || 1280;
     const height = bounds ? bounds.height - bounds.bar : window.innerHeight || 720;
     const originX = bounds?.left ?? 0;
@@ -445,23 +450,53 @@ export function createClient(options: ClientOptions = {}) {
     return { left: rect.left, top: rect.top, right: rect.left + (viewport.clientWidth || rect.width), bottom: rect.top + (viewport.clientHeight || rect.height) };
   }
   const cursor = createCursorLayer(canvas, element("remote-cursor"), () => latestRtt ?? 0, pictureBounds, () => pictureRotated);
+  const screenTrackpadEnabled = () => !!mobile?.isTouch() && screenControl === "trackpad";
   const pictureZoom = createPictureZoom({ canvas, viewport, bounds: pictureBounds,
     enabled: () => ready && !desktopPaused && (desktopMode === "physical" || mobile?.isTouch() === true),
-    touching: () => mobile?.touching() ?? false, changed: () => { cursor.layout(); scheduleVideoScale(); } });
+    touching: () => !!(mobile?.touching() || screenTrackpad.touching() || lightBook?.touching()), changed: () => { cursor.layout(); scheduleVideoScale(); } });
+  const landscapeViewport = () => {
+    const orientation = window.screen?.orientation?.type;
+    if (orientation && mobile?.keyboardActive()) return orientation.startsWith("landscape");
+    return window.innerWidth > window.innerHeight;
+  };
+  function syncLandscape() {
+    const rotated = mobileLandscape && !landscapeViewport();
+    if (pictureRotated === rotated) return;
+    if (rotated) mobile?.hideKeyboard();
+    release();
+    mobile?.cancelTouches();
+    pictureRotated = rotated;
+    pictureZoom.setRotated(rotated);
+    lastAutoResolution = null;
+    mobile?.refreshLayout();
+  }
   const screenRotation = createScreenRotation({
-    active: () => !!mobile?.isFullscreen() && !destroyed,
-    landscape: () => (window.visualViewport?.width ?? window.innerWidth) > (window.visualViewport?.height ?? window.innerHeight),
-    orientation: () => window.screen?.orientation,
-    pending: (value) => { element("mobile-fullscreen-rotate").disabled = value; },
+    active: () => !!mobile?.isTouch() && !destroyed,
+    landscape: landscapeViewport,
+    orientation: () => mobileOrientationControl(window),
+    pending: () => {},
     release,
-    rotated(value) {
-      if (pictureRotated === value) return;
-      pictureRotated = value; pictureZoom.setRotated(value);
-      lastAutoResolution = null; mobile?.refreshLayout(); scheduleAutoResize();
-    },
+    rotated: syncLandscape,
   });
-  listen(window, "orientationchange", () => screenRotation.deviceChanged());
-  if (window.screen?.orientation) listen(window.screen.orientation, "change", () => screenRotation.deviceChanged());
+  function toggleLandscape() {
+    if (!mobile?.isTouch() || destroyed) return;
+    release();
+    mobile.reset();
+    mobileLandscape = !mobileLandscape;
+    mobile.landscapeChanged();
+    if (!mobileLandscape) screenRotation.reset();
+    syncLandscape();
+    if (mobileLandscape !== landscapeViewport()) {
+      screenRotation.toggle();
+    }
+    viewport.classList.toggle("fit", mobileLandscape || isDesktopFullscreen() || windowMode === "fit");
+    setToolsOpen(false);
+    options.onLandscape?.(mobileLandscape);
+    mobile.refreshLayout();
+  }
+  listen(window, "resize", syncLandscape);
+  listen(window, "orientationchange", syncLandscape);
+  if (window.screen?.orientation) listen(window.screen.orientation, "change", syncLandscape);
   const frameCursorModes = new Map<number, boolean>();
   const rttSamples: number[] = [];
   const renderSamples: number[] = [];
@@ -659,9 +694,11 @@ export function createClient(options: ClientOptions = {}) {
     clipboardKeyEvent = null;
     pendingHardwareKey = null;
     lightBook?.reset();
+    screenTrackpad?.reset();
     if (moveFrame !== null) cancelAnimationFrame(moveFrame);
     moveFrame = null;
     pendingMove = null;
+    clearTrackpadMove();
     send({ type: "release" });
     keys.clear(); deferredMeta.clear(); localMeta=false;
     buttons.clear();
@@ -727,6 +764,8 @@ export function createClient(options: ClientOptions = {}) {
     resizeScales = LEGACY_SCALES;
     lastAutoResolution = null;
     lightBook?.reset();
+    screenTrackpad?.reset();
+    clearTrackpadMove();
     mobile?.reset();
     discoveryRequest += 1;
     discoveryController?.abort(); discoveryController = null;
@@ -1019,6 +1058,7 @@ export function createClient(options: ClientOptions = {}) {
         setText("software-version", `v${value.version}`);
       }
       desktopMode = value.desktop === "physical" ? "physical" : "virtual";
+      remoteMac = value.desktop_backend === "macos";
       desktopConfirmed = true;
       updateCanvasDensity();
       selectedOutput = desktopMode === "physical" && typeof value.output === "string" ? value.output : null;
@@ -1077,6 +1117,8 @@ export function createClient(options: ClientOptions = {}) {
       desktopPaused = !value.available;
       if (desktopPaused) {
         lightBook?.reset();
+        screenTrackpad.reset();
+        clearTrackpadMove();
         cursor.reset(); frameCursorModes.clear(); frameSourceSizes.clear();
         clipboard.reset();
         closeVideo();
@@ -1655,6 +1697,7 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   function move(event: Pick<PointerEvent, "clientX" | "clientY">) {
+    clearTrackpadMove();
     cursor.move(event.clientX, event.clientY, mobile?.bounds() ? "touch" : "mouse");
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
@@ -1680,17 +1723,20 @@ export function createClient(options: ClientOptions = {}) {
     if (event.button !== 0 || toolDrag) return;
     suppressToolClick = false;
     const bounds = toolHandle.getBoundingClientRect();
-    toolDrag = { id: event.pointerId, startX: event.clientX, startY: event.clientY,
-      offsetX: event.clientX - bounds.left, offsetY: event.clientY - bounds.top,
-      x: bounds.left, y: bounds.top, moved: false };
+    const start = mobile?.toolbarPoint(event.clientX, event.clientY) ?? { x: event.clientX, y: event.clientY };
+    const topLeft = pictureRotated ? mobile!.toolbarPoint(bounds.right, bounds.top) : { x: bounds.left, y: bounds.top };
+    toolDrag = { id: event.pointerId, startX: start.x, startY: start.y,
+      offsetX: start.x - topLeft.x, offsetY: start.y - topLeft.y,
+      x: topLeft.x, y: topLeft.y, moved: false };
     toolHandle.setPointerCapture(event.pointerId);
   });
   listen(toolHandle, "pointermove", (event) => {
     if (!toolDrag || toolDrag.id !== event.pointerId) return;
     if (event.buttons === 0) { finishToolDrag(event); return; }
-    if (!toolDrag.moved && Math.hypot(event.clientX - toolDrag.startX, event.clientY - toolDrag.startY) < 6) return;
-    toolDrag.x = event.clientX - toolDrag.offsetX;
-    toolDrag.y = event.clientY - toolDrag.offsetY;
+    const point = mobile?.toolbarPoint(event.clientX, event.clientY) ?? { x: event.clientX, y: event.clientY };
+    if (!toolDrag.moved && Math.hypot(point.x - toolDrag.startX, point.y - toolDrag.startY) < 6) return;
+    toolDrag.x = point.x - toolDrag.offsetX;
+    toolDrag.y = point.y - toolDrag.offsetY;
     if (!toolDrag.moved) {
       toolDrag.moved = true;
       tools.setAttribute("data-dragging", "true");
@@ -1705,7 +1751,7 @@ export function createClient(options: ClientOptions = {}) {
     tools.removeAttribute("data-dragging");
     suppressToolClick = drag.moved;
     if (drag.moved && event.type !== "pointercancel") {
-      const bounds = mobile?.bounds();
+      const bounds = mobile?.toolbarBounds();
       const width = bounds?.width || window.innerWidth || 1280;
       const height = bounds ? bounds.height - bounds.bar : window.innerHeight || 720;
       const handleWidth = toolHandle.offsetWidth || 40, handleHeight = toolHandle.offsetHeight || 40;
@@ -1744,7 +1790,7 @@ export function createClient(options: ClientOptions = {}) {
   });
 
   listen(canvas, "pointerdown", (event) => {
-    if (mobile?.handlePointer(event, "down")) return;
+    if ((event.pointerType === "touch" && screenTrackpadEnabled()) || mobile?.handlePointer(event, "down")) return;
     if (!ready || event.button < 0 || event.button > 2) return;
     pointerInsideDesktop = true;
     keyboardCaptureWanted = true;
@@ -1761,13 +1807,13 @@ export function createClient(options: ClientOptions = {}) {
     if (!buttons.has(event.button) && send({ type: "button", button: event.button, pressed: true })) buttons.add(event.button);
   });
   listen(canvas, "pointermove", (event) => {
-    if (mobile?.handlePointer(event, "move")) return;
+    if ((event.pointerType === "touch" && screenTrackpadEnabled()) || mobile?.handlePointer(event, "move")) return;
     if (!ready) return;
     pendingMove = { clientX: event.clientX, clientY: event.clientY };
     if (moveFrame === null) moveFrame = requestAnimationFrame(flushMove);
   });
   listen(canvas, "pointerup", (event) => {
-    if (mobile?.handlePointer(event, "up")) return;
+    if ((event.pointerType === "touch" && screenTrackpadEnabled()) || mobile?.handlePointer(event, "up")) return;
     flushMove();
     if (buttons.delete(event.button)) send({ type: "button", button: event.button, pressed: false });
     if (!buttons.size) {
@@ -1775,7 +1821,10 @@ export function createClient(options: ClientOptions = {}) {
       if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
     }
   });
-  listen(canvas, "pointercancel", (event) => { if (!mobile?.handlePointer(event, "cancel")) release(); });
+  listen(canvas, "pointercancel", (event) => {
+    if (event.pointerType === "touch" && screenTrackpadEnabled()) return;
+    if (!mobile?.handlePointer(event, "cancel")) release();
+  });
   listen(canvas, "lostpointercapture", (event) => {
     if (event.pointerType === "touch") { mobile?.lostPointer(event.pointerId); return; }
     if (capturedPointers.has(event.pointerId)) release();
@@ -1988,7 +2037,7 @@ export function createClient(options: ClientOptions = {}) {
           cancelTimer(autoResizeTimer);
           autoResizeTimer = null;
         }
-        viewport.classList.toggle("fit", windowMode === "fit");
+        viewport.classList.toggle("fit", mobileLandscape || windowMode === "fit");
       }
       canvas.focus({ preventScroll: true });
       if (mode === "fullscreen") await captureKeyboard();
@@ -2070,9 +2119,9 @@ export function createClient(options: ClientOptions = {}) {
       element("auto-resolution").checked = fullscreenAutoResolution;
       fullscreenAutoResolution = null;
     }
-    if (!fullscreen) { screenRotation.reset(); release(); unlockKeyboard(); }
+    if (!fullscreen) { if (!mobileLandscape) screenRotation.reset(); release(); unlockKeyboard(); }
     updateDisplayMode();
-    viewport.classList.toggle("fit", fullscreen ? true : windowMode === "fit");
+    viewport.classList.toggle("fit", mobileLandscape || fullscreen || windowMode === "fit");
     scheduleAutoResize();
     if (entering) {
       keyboardCaptureWanted = true;
@@ -2179,11 +2228,13 @@ export function createClient(options: ClientOptions = {}) {
   function destroy() {
     preview.destroy();
     if (destroyed) return;
+    mobileLandscape = false;
     screenRotation.dispose();
     disconnect();
     destroyed = true;
     discoveryController?.abort();
     lightBook?.dispose();
+    screenTrackpad.dispose();
     mobile?.dispose();
     pictureZoom.dispose();
     cursor.dispose(); nativeInput.destroy();
@@ -2207,22 +2258,98 @@ export function createClient(options: ClientOptions = {}) {
   listen(window, "pagehide", (event) => {
     preview.flush();
     resumeWanted = wanted;
-    if (event.persisted) disconnect();
-    else destroy();
+    if (event.persisted) {
+      screenRotation.reset();
+      disconnect();
+    } else destroy();
   });
   listen(window, "pageshow", (event) => {
-    if (event.persisted && resumeWanted) { wanted = true; updateControls(); connect(); }
+    if (!event.persisted || !resumeWanted) return;
+    if (mobileLandscape && !landscapeViewport()) screenRotation.toggle();
+    wanted = true; updateControls(); connect();
   });
   function setLightBook(enabled: boolean) {
-    const next = enabled && supportsLightBook();
+    const next = enabled && !!mobile?.isTouch();
     if (next === lightBookEnabled) return;
     release(); mobile?.reset(); pictureZoom.reset();
     lightBookEnabled = next;
     viewport.classList.toggle("lightbook-mode", next);
     mobile?.refreshLayout();
   }
+  function clearTrackpadMove() {
+    if (trackpadMoveFrame !== null) cancelAnimationFrame(trackpadMoveFrame);
+    trackpadMoveFrame = null;
+    pendingTrackpadMove = null;
+  }
+  function flushTrackpadMove() {
+    const point = pendingTrackpadMove;
+    clearTrackpadMove();
+    if (point) send({ type: "move", ...point });
+  }
+
+  function withTemporaryKeys(codes: number[], action: () => void) {
+    const pressed: number[] = [];
+    try {
+      for (const code of codes) {
+        if (keys.has(code)) continue;
+        if (!send({ type: "key", code, pressed: true })) return;
+        keys.add(code);
+        pressed.push(code);
+      }
+      action();
+    } finally {
+      for (const code of pressed.reverse()) {
+        if (keys.delete(code)) send({ type: "key", code, pressed: false });
+      }
+    }
+  }
+
+  function zoomRemoteContent(steps: number) {
+    flushTrackpadMove();
+    if (remoteMac) {
+      const zoomingIn = steps > 0;
+      const modifiers = [keys.has(KEY_CODES.MetaRight) ? KEY_CODES.MetaRight : KEY_CODES.MetaLeft];
+      if (zoomingIn) modifiers.push(keys.has(KEY_CODES.ShiftRight) ? KEY_CODES.ShiftRight : KEY_CODES.ShiftLeft);
+      const code = zoomingIn ? KEY_CODES.Equal : KEY_CODES.Minus;
+      if (keys.has(code)) return;
+      withTemporaryKeys(modifiers, () => {
+        for (let count = Math.abs(steps); count > 0; count--) {
+          if (!send({ type: "key", code, pressed: true }) || !send({ type: "key", code, pressed: false })) break;
+        }
+      });
+      return;
+    }
+    const control = keys.has(KEY_CODES.ControlRight) ? KEY_CODES.ControlRight : KEY_CODES.ControlLeft;
+    withTemporaryKeys([control], () => { send({ type: "scroll", x: 0, y: -steps * 100 }); });
+  }
+
+  const trackpadOptions = {
+    ready: () => ready && !desktopPaused,
+    button(button: number, pressed: boolean) {
+      if (!ready || desktopPaused) return false;
+      flushTrackpadMove();
+      if (pressed) { if (buttons.has(button)) return true; if (send({type:"button",button,pressed:true})) { buttons.add(button); return true; } }
+      else if (buttons.delete(button)) return send({type:"button",button,pressed:false});
+      return false;
+    },
+    engage: () => setToolsOpen(false),
+    rotated: () => pictureRotated,
+    position: () => cursor.position(), dimensions: () => canvas.getBoundingClientRect(),
+    move(point: { x: number; y: number }) {
+      pictureZoom.reveal(point);
+      cursor.moveNormalized(point.x, point.y);
+      pendingTrackpadMove = point;
+      if (trackpadMoveFrame === null) trackpadMoveFrame = requestAnimationFrame(flushTrackpadMove);
+    },
+    scroll(x: number, y: number) {
+      flushTrackpadMove();
+      const delta = pictureScrollDelta(x, y, pictureRotated);
+      send({ type: "scroll", x: Math.max(-1000, Math.min(1000, delta.x)), y: Math.max(-1000, Math.min(1000, delta.y)) });
+    },
+    clickFeedback: trackpadClickFeedback,
+  };
   lightBook = createLightBookInput({
-    root: element("mobile-shortcuts"), active: () => lightBookEnabled, ready: () => ready && !desktopPaused,
+    ...trackpadOptions, root: element("mobile-shortcuts"), active: () => lightBookEnabled, zoom: zoomRemoteContent, release,
     key(code, pressed) {
       if (!Object.hasOwn(KEY_CODES, code) || !ready || desktopPaused) return false;
       const value = KEY_CODES[code];
@@ -2236,35 +2363,20 @@ export function createClient(options: ClientOptions = {}) {
       else if (keys.delete(value)) return send({type:"key",code:value,pressed:false});
       return false;
     },
-    button(button, pressed) {
-      if (!ready || desktopPaused) return false;
-      if (pressed) { if (buttons.has(button)) return true; if (send({type:"button",button,pressed:true})) { buttons.add(button); return true; } }
-      else if (buttons.delete(button)) return send({type:"button",button,pressed:false});
-      return false;
-    },
-    engage: () => setToolsOpen(false), release,
-    position: () => cursor.position(), dimensions: () => canvas.getBoundingClientRect(),
-    move(point) { pictureZoom.reveal(point); cursor.moveNormalized(point.x,point.y); send({type:"move",...point}); },
-    scroll: (x,y) => send({type:"scroll",x:Math.max(-1000,Math.min(1000,x)),y:Math.max(-1000,Math.min(1000,y))}),
-    zoomActive: pictureZoom.active,
-    pan(x,y) {
-      const bounds=pictureBounds();
-      const anchor={x:(bounds.left+bounds.right)/2,y:(bounds.top+bounds.bottom)/2};
-      pictureZoom.gesture(anchor,{x:anchor.x+x,y:anchor.y+y},1);
-    },
-    zoom(ratio) {
-      const point = cursor.position(), rect = canvas.getBoundingClientRect();
-      const anchor = {x:rect.left+point.x*rect.width,y:rect.top+point.y*rect.height};
-      pictureZoom.gesture(anchor,anchor,ratio);
-    },
+  });
+  const screenTrackpad = createTrackpadInput(canvas, {
+    ...trackpadOptions, active: screenTrackpadEnabled, touchOnly: true, picture: pictureZoom,
+    actionStarted: () => { if (lightBookEnabled) lightBook?.usedModifiers(); },
+    actionEnded: () => { if (lightBookEnabled) lightBook?.consumeLatches(); },
   });
   mobile = createMobileControls({
     canvas, viewport, input: element("mobile-input"), bar: element("mobile-shortcuts"), toggle: element("mobile-keyboard"),
     fullscreenExit: element("mobile-fullscreen-exit"), exitFullscreen: () => { void displayMode(windowMode); },
-    fullscreenRotate: element("mobile-fullscreen-rotate"), rotateScreen: screenRotation.toggle,
+    fullscreenRotate: element("mobile-fullscreen-rotate"), rotateScreen: toggleLandscape,
     toggleFullscreen: () => { void displayMode(isDesktopFullscreen() ? windowMode : "fullscreen"); },
     toggleAudio: () => { void toggleAudio(); }, audioAvailable: () => audioAvailable, rotated: () => pictureRotated,
     ready: () => ready && !desktopPaused, lightBook: () => lightBookEnabled, zoom: pictureZoom, send, text: typeText, move, tools: (open) => setToolsOpen(open), translate,
+    landscape: () => mobileLandscape, directTouch: () => !screenTrackpadEnabled(),
     isToolsOpen: () => options.isToolsOpen?.() ?? !element("tool-panel").hidden,
     hardwareKey: (event) => hardwareKey(event, true), composition: release,
     hardwareInput: (event) => {
@@ -2290,12 +2402,24 @@ export function createClient(options: ClientOptions = {}) {
   updateControls();
   if (drawing) connect();
   else { disconnect(); message("Canvas rendering is unavailable in this browser."); }
-  return { destroy, setLightBook, refreshDesktops, refreshLanguage() {
-    for (const [id, text] of texts) {
-      element(id).textContent = translate(text);
-      if (id === "state" || id === "performance" || id === "video-details" || id === "message" || id === "desktop-status") options.onStatus?.(id, translate(text));
-    }
-    if (desktopChoices.length) populateDesktops({ desktops: desktopChoices, outputs: desktopOutputs, reason: discoveryReason });
-    updateControls(); updateDisplayMode(); layoutTools();
-  }, layoutTools };
+  return {
+    destroy, setLightBook, toggleLandscape, refreshDesktops,
+    switchLightBookPanel() { release(); mobile?.hideKeyboard(); },
+    setScreenControl(value: ScreenControlMode) {
+      if (screenControl === value) return;
+      release();
+      mobile?.cancelTouches();
+      screenControl = value;
+    },
+    layoutMobile() { mobile?.update(); mobile?.refreshLayout(); },
+    refreshLanguage() {
+      for (const [id, text] of texts) {
+        element(id).textContent = translate(text);
+        if (id === "state" || id === "performance" || id === "video-details" || id === "message" || id === "desktop-status") options.onStatus?.(id, translate(text));
+      }
+      if (desktopChoices.length) populateDesktops({ desktops: desktopChoices, outputs: desktopOutputs, reason: discoveryReason });
+      updateControls(); updateDisplayMode(); layoutTools();
+    },
+    layoutTools,
+  };
 }

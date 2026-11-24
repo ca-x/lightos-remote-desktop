@@ -54,6 +54,8 @@ interface MobileOptions {
   toggleAudio?: () => void;
   audioAvailable?: () => boolean;
   rotated?: () => boolean;
+  landscape?: () => boolean;
+  directTouch?: () => boolean;
   exitFullscreen?: () => void;
   ready: () => boolean;
   lightBook?: () => boolean;
@@ -93,6 +95,8 @@ for (const [code, plain, shifted] of [
 export function createMobileControls(options: MobileOptions) {
   const { canvas, viewport, input, bar, toggle } = options;
   const floating = viewport.querySelector?.<HTMLButtonElement>("#tools-toggle");
+  const landscapeKeyboard = viewport.querySelector?.<HTMLButtonElement>("#landscape-keyboard");
+  const rotationHint = viewport.querySelector?.<HTMLElement>("#mobile-rotation-hint");
   const lifecycle = new AbortController();
   const coarse = window.matchMedia?.("(any-pointer: coarse)");
   let touch = isMobilePlatform();
@@ -110,6 +114,7 @@ export function createMobileControls(options: MobileOptions) {
   const keyButtons = Array.from(bar.querySelectorAll?.<HTMLButtonElement>("[data-mobile-key]") ?? []);
   const buttons = Array.from(bar.querySelectorAll?.<HTMLButtonElement>("button") ?? []);
   const keyboardButtons = [toggle, ...Array.from(bar.querySelectorAll?.<HTMLButtonElement>('[data-mobile-action="keyboard"]') ?? [])];
+  if (landscapeKeyboard) keyboardButtons.push(landscapeKeyboard);
   const activeTouches = new Map<number, { x: number; y: number; startX: number; startY: number }>();
   let holdTimer: ReturnType<typeof setTimeout> | null = null;
   let dragging = false;
@@ -138,7 +143,7 @@ export function createMobileControls(options: MobileOptions) {
     if (options.fullscreenRotate) options.fullscreenRotate.hidden = true;
   }
   function revealFullscreenExit() {
-    if (!touch || !fullscreen || disposed || !options.fullscreenExit) return;
+    if (!touch || !fullscreen || options.landscape?.() || disposed || !options.fullscreenExit) return;
     hideFullscreenExit();
     options.fullscreenExit.hidden = false;
     if (options.fullscreenRotate) options.fullscreenRotate.hidden = false;
@@ -159,18 +164,20 @@ export function createMobileControls(options: MobileOptions) {
   }
 
   function update() {
-    bar.hidden = !touch || (fullscreen && !focused() && options.ready());
+    const landscape = touch && !!options.landscape?.();
+    bar.hidden = !touch || (landscape ? bar.dataset?.panels !== "true" : fullscreen && !focused() && options.ready());
+    viewport.classList.toggle("mobile-landscape", landscape);
     viewport.classList.toggle("touch-desktop", touch);
     viewport.classList.toggle("mobile-fullscreen", touch && fullscreen);
     viewport.classList.toggle("software-keyboard-open", focused() || closingTimer !== null);
-    // Retain Headless UI's programmatic focus anchor for its popover while
-    // removing the invisible floating entry from navigation and accessibility.
+    // Portrait uses the dock as the entry point for the floating tools.
     if (floating) {
-      floating.tabIndex = touch ? -1 : 0;
-      floating.setAttribute("aria-hidden", String(touch));
+      floating.tabIndex = touch && !landscape ? -1 : 0;
+      floating.setAttribute("aria-hidden", String(touch && !landscape));
     }
     for (const button of buttons) {
       const action = button.dataset.mobileAction;
+      if (!button.dataset.mobileKey && !button.dataset.mobileText && !action && button !== toggle) continue;
       button.disabled = !["menu", "fullscreen"].includes(action ?? "") && (!options.ready() || (action === "audio" && !options.audioAvailable?.()));
     }
     input.disabled = !options.ready();
@@ -193,6 +200,12 @@ export function createMobileControls(options: MobileOptions) {
       top: visual?.offsetTop ?? 0,
       left: visual?.offsetLeft ?? 0,
     };
+  }
+
+  function barHeight() {
+    if (bar.hidden) return 0;
+    const rect = bar.getBoundingClientRect();
+    return options.landscape?.() && options.rotated?.() ? rect.width : rect.height;
   }
 
   function layout() {
@@ -219,12 +232,16 @@ export function createMobileControls(options: MobileOptions) {
     viewport.classList.toggle("software-keyboard-open", focused() || closingTimer !== null);
     const keyboardVisible = inset > 80 || ((focused() || closingTimer !== null) && bounds.height < keyboardReference - 80);
     viewport.classList.toggle("software-keyboard-visible", keyboardVisible);
-    viewport.style.setProperty("--mobile-bar-height", `${bar.hidden ? 0 : bar.getBoundingClientRect().height}px`);
+    viewport.style.setProperty("--mobile-bar-height", `${barHeight()}px`);
     options.layout();
   }
 
   function contentBounds() {
     const bounds = geometry();
+    if (options.landscape?.() && options.rotated?.()) {
+      const barWidth = barHeight();
+      return { top: bounds.top, left: bounds.left + barWidth, width: Math.max(0, bounds.width - barWidth), height: bounds.height, bar: 0 };
+    }
     const style = window.getComputedStyle(viewport);
     const top = fullscreen ? 0 : parseFloat(style.paddingTop) || 0;
     const left = fullscreen ? 0 : parseFloat(style.paddingLeft) || 0;
@@ -232,8 +249,21 @@ export function createMobileControls(options: MobileOptions) {
     return {
       top: bounds.top + top, left: bounds.left + left,
       width: Math.max(0, bounds.width - left - right), height: Math.max(0, bounds.height - top),
-      bar: bar.hidden ? 0 : bar.getBoundingClientRect().height,
+      bar: barHeight(),
     };
+  }
+
+  function toolbarBounds() {
+    if (!touch) return null;
+    if (!options.landscape?.() || !options.rotated?.()) return contentBounds();
+    const bounds = geometry();
+    return { top: 0, left: 0, width: bounds.height, height: bounds.width, bar: barHeight() };
+  }
+
+  function toolbarPoint(x: number, y: number) {
+    if (!options.landscape?.() || !options.rotated?.()) return { x, y };
+    const bounds = geometry();
+    return { x: y - bounds.top, y: bounds.left + bounds.width - x };
   }
 
   function requestLayout() {
@@ -251,6 +281,11 @@ export function createMobileControls(options: MobileOptions) {
 
   function showKeyboard() {
     if (!options.ready()) return;
+    if (options.landscape?.() && options.rotated?.()) {
+      if (rotationHint) rotationHint.hidden = false;
+      return;
+    }
+    if (rotationHint) rotationHint.hidden = true;
     touch = isMobilePlatform();
     update();
     options.tools(false);
@@ -259,6 +294,11 @@ export function createMobileControls(options: MobileOptions) {
     input.focus({ preventScroll: true });
     update();
     requestLayout();
+  }
+
+  function toggleKeyboard() {
+    if (focused()) hideKeyboard();
+    else showKeyboard();
   }
 
   function key(code: string, modifiers: string[] = []) {
@@ -291,7 +331,7 @@ export function createMobileControls(options: MobileOptions) {
     if (button.dataset.mobileAction === "fullscreen") { hideKeyboard(); options.toggleFullscreen?.(); return; }
     if (!options.ready()) return;
     if (button.dataset.mobileAction === "audio") { options.toggleAudio?.(); return; }
-    if (button === toggle || button.dataset.mobileAction === "keyboard") { if (focused()) hideKeyboard(); else showKeyboard(); return; }
+    if (button === toggle || button.dataset.mobileAction === "keyboard") { toggleKeyboard(); return; }
     const code = button.dataset.mobileKey;
     if (code && MODIFIERS.has(code)) {
       if (sticky.has(code)) sticky.delete(code); else sticky.add(code);
@@ -312,10 +352,12 @@ export function createMobileControls(options: MobileOptions) {
 
   listen(options.fullscreenRotate, "pointerdown", (event: PointerEvent) => event.preventDefault());
   listen(options.fullscreenRotate, "click", () => { options.rotateScreen?.(); revealFullscreenExit(); });
+  listen(landscapeKeyboard, "pointerdown", (event: PointerEvent) => event.preventDefault());
+  listen(landscapeKeyboard, "click", toggleKeyboard);
 
   listen(bar, "pointerdown", (event: PointerEvent) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
-    if (!button || button.disabled) return;
+    if (!button || button.disabled || (button !== toggle && !button.matches("[data-mobile-key], [data-mobile-text], [data-mobile-action]"))) return;
     event.preventDefault(); // Keep the IME input focused while a key is pressed.
     suppressClick = null;
     shortcutPointer = { id: event.pointerId, button, x: event.clientX, y: event.clientY, moved: false, repeated: false };
@@ -457,7 +499,7 @@ export function createMobileControls(options: MobileOptions) {
   }
 
   const nativePair = createTouchPair(canvas, {
-    enabled: options.ready,
+    enabled: () => options.ready() && (options.directTouch?.() ?? true),
     start(sample) {
       cancelHold();
       if (gestureFrame !== null) cancelAnimationFrame(gestureFrame);
@@ -472,7 +514,7 @@ export function createMobileControls(options: MobileOptions) {
   });
 
   function handlePointer(event: PointerEvent, phase: "down" | "move" | "up" | "cancel") {
-    if (event.pointerType !== "touch") return false;
+    if (event.pointerType !== "touch" || options.directTouch?.() === false) return false;
     event.preventDefault();
     if (!options.ready()) { cancelTouches(); return true; }
     touch = isMobilePlatform();
@@ -583,7 +625,11 @@ export function createMobileControls(options: MobileOptions) {
   update();
   requestLayout();
   return {
-    handlePointer, reset, update, setFullscreen, hideKeyboard,
+    handlePointer, reset, update, setFullscreen, hideKeyboard, cancelTouches, toolbarBounds, toolbarPoint,
+    landscapeChanged() {
+      if (rotationHint) rotationHint.hidden = true;
+      hideFullscreenExit(); update(); requestLayout();
+    },
     isFullscreen: () => touch && fullscreen,
     isTouch: () => touch,
     refreshLayout: () => { if (frame !== null) cancelAnimationFrame(frame); frame = null; layout(); },
@@ -607,6 +653,7 @@ export function createMobileControls(options: MobileOptions) {
       if (frame !== null) cancelAnimationFrame(frame);
       viewport.classList.toggle("touch-desktop", false);
       viewport.classList.toggle("mobile-fullscreen", false);
+      viewport.classList.toggle("mobile-landscape", false);
       viewport.classList.toggle("software-keyboard-open", false);
       viewport.classList.toggle("software-keyboard-visible", false);
     },

@@ -86,6 +86,10 @@ footer { font-size: 10px; color: var(--muted); padding-top: 12px; }
 @media (pointer: coarse) { #tools { --tool-handle-size: 44px; --tool-action-size: 44px; --tool-height: 48px; } }
 
 .mobile-input { position: fixed; top: calc(var(--dock-top, 0px) + var(--lzc-safe-area-inset-top) + 8px); left: calc(var(--dock-left, 0px) + var(--lzc-safe-area-inset-left) + 8px); width: 16px; height: 16px; min-height: 16px; max-height: 16px; padding: 0; margin: 0; border: 0; opacity: .01; color: transparent; background: transparent; caret-color: transparent; pointer-events: none; font: 16px/16px monospace; resize: none; }
+.mobile-chrome { display: contents; }
+.landscape-icon { transform: rotate(90deg); }
+.mobile-rotation-hint { display: none; }
+.mobile-landscape.picture-rotated .mobile-rotation-hint { position: absolute; display: block; z-index: 14; max-width: calc(100% - 96px); top: max(12px, var(--lzc-safe-area-inset-top)); left: 50%; translate: -50% 0; margin: 0; padding: 8px 12px; border-radius: 9px; background: #24272be6; color: #fff; }
 .mobile-shortcuts, .mobile-help { display: none; }
 /* The dock owns its space at the viewport edge. The picture fits independently
    inside the remaining safe area, so letterboxing never moves the controls. */
@@ -95,9 +99,13 @@ footer { font-size: 10px; color: var(--muted); padding-top: 12px; }
 .touch-desktop #desktop { touch-action: none; -webkit-touch-callout: none; }
 .touch-desktop .mobile-help { display: block; }
 .touch-desktop #tools-toggle { opacity: 0; pointer-events: none; }
-.touch-desktop #tools.is-open #tools-toggle { opacity: 1; pointer-events: auto; }
-.touch-desktop .mobile-shortcuts { position: fixed; left: var(--dock-left, 0px); bottom: var(--keyboard-inset, 0px); width: var(--dock-width, 100vw); z-index: 12; display: flex; flex-direction: column; gap: 4px; padding: 8px max(5px, var(--lzc-safe-area-inset-right)) calc(8px + var(--lzc-safe-area-inset-bottom)) max(5px, var(--lzc-safe-area-inset-left)); background: var(--surface); color: var(--text); border-top: 1px solid var(--border); }
-.touch-desktop.software-keyboard-visible .mobile-shortcuts { padding-bottom: 8px; }
+.touch-desktop #tools.is-open #tools-toggle, .mobile-landscape #tools #tools-toggle { opacity: 1; pointer-events: auto; }
+.touch-desktop .mobile-shortcuts { position: fixed; left: var(--dock-left, 0px); bottom: var(--keyboard-inset, 0px); width: var(--dock-width, 100vw); z-index: 12; display: flex; flex-direction: column; gap: 0; background: var(--surface); color: var(--text); }
+.mobile-regular { display: flex; flex-direction: column; gap: 4px; padding: 8px max(5px, var(--lzc-safe-area-inset-right)) calc(8px + var(--lzc-safe-area-inset-bottom)) max(5px, var(--lzc-safe-area-inset-left)); background: var(--surface); color: var(--text); border-top: 1px solid var(--border); }
+.touch-desktop.software-keyboard-visible .mobile-regular,
+.mobile-regular:has(+ .lightbook-deck:not([hidden])) { padding-bottom: 8px; }
+.mobile-landscape .mobile-regular { padding-top: 4px; padding-bottom: max(4px, var(--lzc-safe-area-inset-bottom)); }
+.mobile-landscape .mobile-regular:has(+ .lightbook-deck:not([hidden])) { padding-bottom: 4px; }
 .mobile-shortcut-row { display: flex; gap: 6px; min-width: 0; }
 .mobile-key-scroll { display: flex; gap: 6px; width: max-content; min-width: 100%; touch-action: pan-x; }
 .mobile-key-scroll::-webkit-scrollbar { display: none; }
@@ -109,7 +117,7 @@ footer { font-size: 10px; color: var(--muted); padding-top: 12px; }
 .mobile-key[aria-pressed="true"] { background: var(--selected); color: var(--accent); border-color: var(--accent); }
 .mobile-fullscreen-exit { display: none; position: fixed; z-index: 13; top: calc(var(--mobile-top, 0px) + max(8px, var(--lzc-safe-area-inset-top))); left: calc(var(--mobile-left, 0px) + var(--mobile-width, 100vw) - max(8px, var(--lzc-safe-area-inset-right)) - 44px); width: 44px; height: 40px; min-height: 40px; padding: 0; border: 0; border-radius: 10px; background: #24272bd9; color: #fff; touch-action: manipulation; }
 .mobile-fullscreen-rotate { margin-top: 48px; }
-.mobile-fullscreen .mobile-fullscreen-exit { display: inline-flex; }
+.mobile-fullscreen:not(.mobile-landscape) .mobile-fullscreen-exit { display: inline-flex; }
 #viewport.touch-desktop.mobile-fullscreen { padding: 0; --desktop-area-width: var(--mobile-width, 100vw); --desktop-area-height: calc(var(--mobile-height, 100dvh) - var(--mobile-bar-height, 0px)); }
 #viewport.touch-desktop.mobile-fullscreen.fit:not(.physical-desktop) #desktop { width: var(--desktop-area-width); height: var(--desktop-area-height); max-width: none; max-height: none; object-fit: fill; }
 .touch-desktop input, .touch-desktop textarea, .touch-desktop select { font-size: 16px; }
@@ -332,33 +340,34 @@ button { transition: background-color 125ms ease, color 125ms ease, opacity 125m
 .lightbook-switch:checked { background: var(--accent); border-color: var(--accent); }
 .lightbook-switch:checked::after { transform: translateX(16px); }
 .lightbook-switch:disabled { cursor: default; opacity: .4; }
-#viewport.touch-desktop.lightbook-mode { --lightbook-bottom-safe: var(--lzc-safe-area-inset-bottom); --lightbook-panel-height: calc((var(--mobile-height, 100dvh) - var(--lzc-safe-area-inset-top) - var(--lightbook-bottom-safe)) / 2 + var(--lightbook-bottom-safe)); }
+#viewport.touch-desktop.lightbook-mode { --lightbook-bottom-safe: var(--lzc-safe-area-inset-bottom); }
 #viewport.touch-desktop.lightbook-mode.software-keyboard-visible { --lightbook-bottom-safe: 0px; }
-/* Derive the row-height ceiling from a one-unit key, including the gaps in
-   the 60-track grid. A 0.95 ratio also leaves room for subpixel rounding.
-   The keyboard track shrinks with this ceiling, so the pad takes the rest. */
-.touch-desktop.lightbook-mode .mobile-shortcuts { height: var(--lightbook-panel-height); padding: 0; gap: 0; border: 0; background: #000; color: #eee; color-scheme: dark; }
-.lightbook-mode .lightbook-regular { display: none; }
+/* Size the dock by key width and cap it at half the usable height on short screens. */
 .lightbook-deck {
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
   --surface: #000; --control: #303032; --field: #1c1c1e; --text: #eee; --border: transparent; --accent: #eee; --selected: #d6d6d8;
-  --lightbook-gap: clamp(2px, .6vw, 4px); --lightbook-inset: clamp(3px, .8vw, 6px); --lightbook-controls-height: 28px;
+  --lightbook-gap: clamp(2px, .6vw, 4px); --lightbook-inset: clamp(3px, .8vw, 6px); --lightbook-controls-height: 34px;
   --lightbook-left: max(var(--lightbook-inset), var(--lzc-safe-area-inset-left)); --lightbook-right: max(var(--lightbook-inset), var(--lzc-safe-area-inset-right));
+  --lightbook-bottom: max(var(--lightbook-inset), var(--lightbook-bottom-safe, 0px));
   --lightbook-width: calc(var(--mobile-width, 100vw) - var(--lightbook-left) - var(--lightbook-right));
   --lightbook-key-width: calc((var(--lightbook-width) - 14 * var(--lightbook-gap)) / 15);
-  --lightbook-body-height: calc(var(--lightbook-panel-height) - var(--lightbook-inset) - max(var(--lightbook-inset), var(--lightbook-bottom-safe, 0px)) - var(--lightbook-controls-height) - 2 * var(--lightbook-gap));
-  --lightbook-key-height: max(0px, min(calc(var(--lightbook-key-width) * .95), calc((var(--lightbook-body-height) * .7 - 5 * var(--lightbook-gap)) / 6)));
+  --lightbook-target-key-height: clamp(32px, calc(var(--lightbook-width) * .096), 48px);
+  --lightbook-panel-padding: calc(var(--lightbook-inset) + var(--lightbook-bottom) + var(--lightbook-controls-height) + 6 * var(--lightbook-gap));
+  --lightbook-panel-limit: calc((var(--mobile-height, 100dvh) - var(--lzc-safe-area-inset-top) + var(--lightbook-bottom-safe, 0px)) / 2);
+  /* The function row, four typing rows and arrow row add up to 6.3fr. */
+  --lightbook-panel-height: min(var(--lightbook-panel-limit), calc(var(--lightbook-panel-padding) + 6.3 * var(--lightbook-target-key-height)));
+  --lightbook-key-height: max(0px, calc((var(--lightbook-panel-height) - var(--lightbook-panel-padding)) / 6.3));
   --lightbook-key-padding: min(2px, calc(var(--lightbook-key-height) * .16)); --lightbook-legend-ratio: 2;
-  --lightbook-primary-size: min(16px, calc(var(--lightbook-key-width) * .5), calc((var(--lightbook-key-height) - 2 * var(--lightbook-key-padding)) / var(--lightbook-legend-ratio)));
-  display: grid; grid-template-rows: var(--lightbook-controls-height) minmax(0, calc(var(--lightbook-key-height) * 6 + 5 * var(--lightbook-gap))) minmax(0, 1fr);
-  gap: var(--lightbook-gap); height: 100%; min-height: 0; padding: var(--lightbook-inset) var(--lightbook-right) max(var(--lightbook-inset), var(--lightbook-bottom-safe, 0px)) var(--lightbook-left); color: #eee; background: #000; color-scheme: dark;
+  --lightbook-primary-size: min(16px, calc(var(--lightbook-key-width) * .55), calc((var(--lightbook-key-height) - 2 * var(--lightbook-key-padding)) / var(--lightbook-legend-ratio)));
+  display: grid; grid-template-rows: var(--lightbook-controls-height) minmax(0, 1fr);
+  gap: var(--lightbook-gap); height: var(--lightbook-panel-height); min-height: 0; padding: var(--lightbook-inset) var(--lightbook-right) var(--lightbook-bottom) var(--lightbook-left); color: #eee; background: #000; color-scheme: dark;
 }
 .lightbook-controls { display: flex; align-items: stretch; justify-content: space-between; min-height: 0; border: 0; }
 .lightbook-brand { align-self: center; padding-left: 4px; color: #aaa; font-size: 10px; font-weight: 500; letter-spacing: .08em; }
 .lightbook-controls > div { display: flex; align-items: stretch; gap: var(--lightbook-gap); }
 .lightbook-controls .lightbook-tool { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 100%; min-height: 0; padding: 0; border: 0; border-radius: 6px; background: #303032; color: #eee; box-shadow: none; touch-action: manipulation; transition: none; }
 .lightbook-controls .lightbook-tool[aria-pressed=true], .lightbook-controls .lightbook-tool:active:not(:disabled) { transform: none; background: #d6d6d8; color: #111; }
-.lightbook-keys { position: relative; z-index: 1; display: grid; grid-template-rows: repeat(6, minmax(0, 1fr)); gap: var(--lightbook-gap); min-height: 0; min-width: 0; padding: 0; border: 0; background: transparent; touch-action: none; }
+.lightbook-keys { position: relative; z-index: 1; display: grid; grid-template-rows: minmax(0, .8fr) repeat(4, minmax(0, 1fr)) minmax(0, 1.5fr); gap: var(--lightbook-gap); min-height: 0; min-width: 0; padding: 0; border: 0; background: transparent; touch-action: none; }
 .lightbook-key-row { display: grid; grid-template-columns: repeat(60, minmax(0, 1fr)); gap: var(--lightbook-gap); min-width: 0; min-height: 0; }
 .lightbook-deck .lightbook-key { --lightbook-actual-key-width: calc(var(--lightbook-key-width) * var(--lightbook-key-units) + (var(--lightbook-key-units) - 1) * var(--lightbook-gap)); position: relative; display: flex; align-items: center; justify-content: center; min-width: 0; min-height: 0; width: 100%; height: 100%; gap: 0; padding: 0; border: 0; border-radius: min(6px, calc(var(--lightbook-key-height) * .22)); background: #444446; color: #f5f5f7; box-shadow: none; font: 400 min(var(--lightbook-primary-size), calc((var(--lightbook-actual-key-width) - 2 * var(--lightbook-key-padding)) / var(--lightbook-label-limit)))/1 system-ui, sans-serif; touch-action: none; white-space: nowrap; transition: none; }
 .lightbook-deck .lightbook-key-wide, .lightbook-function-row .lightbook-key { background: #303032; }
@@ -375,25 +384,24 @@ button { transition: background-color 125ms ease, color 125ms ease, opacity 125m
 .lightbook-key:disabled .lightbook-legend small { color: inherit; }
 .lightbook-caps-led { position: absolute; width: 3px; height: 3px; left: 4px; top: 4px; border-radius: 50%; background: #777; }
 .lightbook-key[aria-pressed=true] .lightbook-caps-led { background: #111; }
-.lightbook-arrows { display: grid; grid-template: repeat(2, minmax(0, 1fr)) / repeat(3, minmax(0, 1fr)); gap: var(--lightbook-gap); height: calc(200% + var(--lightbook-gap)); min-height: 0; align-self: start; pointer-events: none; }
+.lightbook-arrows { display: grid; grid-template: repeat(2, minmax(0, 1fr)) / repeat(3, minmax(0, 1fr)); gap: var(--lightbook-gap); height: 100%; min-height: 0; align-self: start; pointer-events: none; }
 .lightbook-arrow-up { grid-area: 1 / 2; }
 .lightbook-arrow-left { grid-area: 2 / 1; }
 .lightbook-arrow-down { grid-area: 2 / 2; }
 .lightbook-arrow-right { grid-area: 2 / 3; }
 .lightbook-arrows > div { min-width: 0; min-height: 0; }
 .lightbook-arrows .lightbook-key { pointer-events: auto; }
-.lightbook-palmrest { display: flex; min-height: 0; }
-.lightbook-trackpad { position: relative; display: grid; place-items: center; width: 100%; min-height: 0; border: 0; background: transparent; box-shadow: none; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.lightbook-trackpad { position: relative; display: grid; place-items: center; width: 100%; min-height: 0; border: 1px solid #353537; border-radius: 8px; background: #171718; box-shadow: none; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .lightbook-trackpad-hint { color: #777; font-size: 12px; line-height: 1; letter-spacing: .08em; pointer-events: none; }
 .lightbook-trackpad.is-dragging .lightbook-trackpad-hint, .lightbook-trackpad:focus-visible .lightbook-trackpad-hint { color: #bbb; }
 .lightbook-deck :focus-visible { outline: none; box-shadow: none; background: #66666a; color: #fff; }
-.lightbook-deck .lightbook-trackpad:focus-visible { background: transparent; }
+.lightbook-deck .lightbook-trackpad:focus-visible { border-color: #aaa; background: #171718; }
 .lightbook-mode.software-keyboard-visible .mobile-shortcuts { height: auto; }
 .lightbook-mode.software-keyboard-visible .lightbook-deck { height: auto; grid-template-rows: var(--lightbook-controls-height); gap: 0; }
-.lightbook-mode.software-keyboard-visible .lightbook-keys, .lightbook-mode.software-keyboard-visible .lightbook-palmrest { display: none; }
+.lightbook-mode.software-keyboard-visible .lightbook-keys, .lightbook-mode.software-keyboard-visible .lightbook-trackpad { display: none; }
 .lightbook-mode.mobile-fullscreen.software-keyboard-open .mobile-shortcuts { height: auto; }
 .lightbook-mode.mobile-fullscreen.software-keyboard-open .lightbook-deck { height: auto; grid-template-rows: var(--lightbook-controls-height); gap: 0; }
-.lightbook-mode.mobile-fullscreen.software-keyboard-open .lightbook-keys, .lightbook-mode.mobile-fullscreen.software-keyboard-open .lightbook-palmrest { display: none; }
+.lightbook-mode.mobile-fullscreen.software-keyboard-open .lightbook-keys, .lightbook-mode.mobile-fullscreen.software-keyboard-open .lightbook-trackpad { display: none; }
 .lightbook-mode .mobile-input { color-scheme: dark; }
 @media (hover: hover) and (pointer: fine) { .lightbook-key:hover:not(:disabled):not(.is-pressed), .lightbook-controls .lightbook-tool:hover:not([aria-pressed=true]) { background: #56565a; } }
 @media (max-height: 500px) {
@@ -402,11 +410,30 @@ button { transition: background-color 125ms ease, color 125ms ease, opacity 125m
 }
 @media (max-width: 340px) { .lightbook-deck { --lightbook-legend-ratio: 1.15; } .lightbook-legend small { display: none; } }
 
-/* Swap only the picture's layout axes. Fullscreen controls keep their screen position. */
-#viewport.touch-desktop.mobile-fullscreen.picture-rotated.fit #desktop {
+/* In a portrait-locked webview the landscape dock occupies the physical left edge. */
+#viewport.touch-desktop.mobile-landscape.picture-rotated {
+  --desktop-area-width: max(0px, calc(var(--mobile-width) - var(--mobile-bar-height)));
+  --desktop-area-height: var(--mobile-height, 100dvh);
+  left: calc(var(--mobile-left, 0px) + var(--mobile-bar-height));
+  width: var(--desktop-area-width); height: var(--desktop-area-height); padding: 0; overflow: visible;
+}
+.mobile-landscape.picture-rotated .mobile-chrome {
+  --dock-left: 0px; --dock-top: 0px; --dock-width: var(--mobile-height);
+  --keyboard-inset: 0px;
+  --lzc-safe-area-inset-left: var(--lzc-safe-area-top, env(safe-area-inset-top, 0px));
+  --lzc-safe-area-inset-right: var(--lzc-safe-area-bottom, env(safe-area-inset-bottom, 0px));
+  --lzc-safe-area-inset-bottom: var(--lzc-safe-area-left, env(safe-area-inset-left, 0px));
+  --lzc-safe-area-inset-top: var(--lzc-safe-area-right, env(safe-area-inset-right, 0px));
+  position: fixed; display: block; pointer-events: none;
+  top: var(--mobile-top, 0px); left: calc(var(--mobile-left, 0px) + var(--mobile-width));
+  width: var(--mobile-height); height: var(--mobile-width);
+  transform-origin: top left; transform: rotate(90deg);
+}
+.mobile-landscape.picture-rotated .mobile-shortcuts { pointer-events: auto; }
+#viewport.touch-desktop.mobile-landscape.picture-rotated.fit #desktop {
   width: min(var(--desktop-area-height), calc(var(--desktop-area-width) * var(--desktop-aspect, 1.777778)));
   height: auto; max-width: none; max-height: var(--desktop-area-width); flex-shrink: 0;
 }
-#viewport.touch-desktop.mobile-fullscreen.picture-rotated.fit:not(.physical-desktop) #desktop {
+#viewport.touch-desktop.mobile-landscape.mobile-fullscreen.picture-rotated.fit:not(.physical-desktop) #desktop {
   width: var(--desktop-area-height); height: var(--desktop-area-width); max-height: none;
 }

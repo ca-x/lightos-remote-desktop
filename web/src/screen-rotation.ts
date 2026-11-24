@@ -3,7 +3,53 @@ interface OrientationControl {
   unlock?: () => void;
 }
 
-/** Prefer native orientation; embedded browsers can rotate just the desktop. */
+type OrientationHost = Window & {
+  android?: { SetScreenOrientation?: (orientation: number) => void };
+  android_window?: { SetScreenOrientation?: (orientation: number) => void };
+  webkit?: { messageHandlers?: { SetScreenOrientation?: { postMessage: (message: { params: number[] }) => unknown } } };
+  LzcClientBridge?: {
+    has?: (method: string) => boolean;
+    call?: (method: string, args: number[]) => Promise<unknown>;
+  };
+};
+
+export function mobileOrientationControl(host: OrientationHost): OrientationControl | undefined {
+  const browser = host.screen?.orientation as OrientationControl | undefined;
+  const android = host.android_window ?? host.android;
+  const bridge = host.LzcClientBridge;
+  const legacyIOS = host.webkit?.messageHandlers?.SetScreenOrientation;
+  const method = "SetScreenOrientation";
+  const native = typeof android?.SetScreenOrientation === "function"
+    ? (value: number) => android.SetScreenOrientation!(value)
+    : typeof bridge?.call === "function" && (bridge.has?.(method) ?? true)
+      ? (value: number) => bridge.call!(method, [value])
+      : legacyIOS
+        ? (value: number) => legacyIOS.postMessage({ params: [value] })
+        : undefined;
+  if (!native) return browser;
+  let owner: "native" | "browser" | undefined;
+  return {
+    async lock(orientation) {
+      try {
+        owner = "native";
+        const result: unknown = await native(orientation === "landscape" ? 2 : 3);
+        if (result === false) throw new Error("Native rotation denied");
+      } catch (error) {
+        owner = undefined;
+        if (!browser?.lock) throw error;
+        owner = "browser";
+        await browser.lock(orientation);
+      }
+    },
+    unlock() {
+      if (owner === "native") void Promise.resolve(native(1)).catch(() => {});
+      else if (owner === "browser") browser?.unlock?.();
+      owner = undefined;
+    },
+  };
+}
+
+/** Keep the landscape view usable while the host changes orientation. */
 export function createScreenRotation(options: {
   active: () => boolean;
   landscape: () => boolean;

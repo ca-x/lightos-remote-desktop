@@ -878,7 +878,9 @@ impl Held {
                 }
             }
             InputCommand::Release | InputCommand::ReleaseSync { .. } => self.release(enigo)?,
-            InputCommand::Guarded { .. } => bail!("nested input authorization"),
+            InputCommand::Guarded { .. } | InputCommand::PendingMove { .. } => {
+                bail!("unresolved input command")
+            }
         }
         Ok(())
     }

@@ -1,14 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -133,29 +130,7 @@ func (s *server) desktop(w http.ResponseWriter, r *http.Request) {
 					response.Header.Set("Location", "/desktop/"+id+"/"+strings.TrimPrefix(resolved.Path, basePath))
 				}
 			}
-			if response.StatusCode != http.StatusOK || !strings.Contains(response.Header.Get("Content-Type"), "text/html") {
-				return nil
-			}
-			body, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
-			response.Body.Close()
-			if err != nil {
-				return err
-			}
-			marker := bytes.Index(bytes.ToLower(body), []byte("</head>"))
-			if marker >= 0 {
-				script := []byte(`<script src="/session-preview.js"></script>`)
-				expanded := make([]byte, 0, len(body)+len(script))
-				expanded = append(expanded, body[:marker]...)
-				expanded = append(expanded, script...)
-				expanded = append(expanded, body[marker:]...)
-				body = expanded
-			}
-			response.Body = io.NopCloser(bytes.NewReader(body))
-			response.ContentLength = int64(len(body))
-			response.Header.Set("Content-Length", strconv.Itoa(len(body)))
-			response.Header.Del("Content-Encoding")
-			response.Header.Del("ETag")
-			return nil
+			return decorateDesktopPage(response, record.registration.Name, true)
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) { writeFailure(w, 502, "desktop_unavailable") },
 	}

@@ -810,7 +810,9 @@ async fn apply_input(
                 guard.text_done.notify_one();
             }
         }
-        InputCommand::Guarded { .. } => unreachable!("guard was removed by into_active"),
+        InputCommand::Guarded { .. } | InputCommand::PendingMove { .. } => {
+            unreachable!("guard was removed by into_active")
+        }
     }
     Ok(())
 }
