@@ -1,5 +1,7 @@
 //! Interactive Windows desktop host. The SCM process never constructs this provider.
 
+#[path = "windows_cursor.rs"]
+mod windows_cursor;
 #[path = "windows_service.rs"]
 mod windows_service;
 pub use windows_service::{install_service, run_service, wait_for_stop_event};
@@ -230,6 +232,15 @@ impl PermissionProvider for WindowsPlatform {
 }
 
 impl NativePlatform for WindowsPlatform {
+    fn supports_cursor(&self) -> bool {
+        true
+    }
+
+    fn cursor_frame(&self, output: &DisplayOutput) -> Result<Option<crate::backend::CursorFrame>> {
+        let _dpi = PhysicalPixelContext::enter()?;
+        windows_cursor::capture(output).map(Some)
+    }
+
     fn move_pointer(&self, _: &mut Enigo, x: i32, y: i32) -> Result<()> {
         let left = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
         let top = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
