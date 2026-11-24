@@ -7,7 +7,14 @@
   const copy = zh ? {
     title: "懒猫远程", subtitle: "懒猫微服网络保障您的隐私和数据安全。", devices: "在线设备", empty: "暂无在线设备",
     help: "在电脑上登录懒猫微服客户端，即可在这里管理。", loading: "正在获取设备…", connect: "连接桌面", consent: "需本机授权",
-    failed: "操作失败，请确认设备在线后重试。", login_required: "登录已失效，请重新登录后刷新。", unavailable: "部分桌面来源暂不可用，其他设备仍可使用。",
+    failed: "操作未完成，请刷新设备状态后重试。", login_required: "登录已失效，请重新登录后刷新。", unavailable: "部分桌面来源暂不可用，其他设备仍可使用。",
+    device_unavailable: "暂时无法确认设备可用，请刷新设备列表后重试。",
+    device_authorization_failed: "微服暂时无法获取设备控制授权，请稍后重试。",
+    control_unavailable: "此设备客户端网络状态异常",
+    control_rejected: "设备控制通道未接受这次操作，请刷新设备状态后重试。",
+    invalid_control_response: "无法确认设备返回的操作结果，请先刷新设备状态。",
+    invalid_control_origin: "当前页面无法发起设备操作，请重新打开懒猫远程管理页。",
+    control_timeout: "等待操作结果超时，请刷新设备状态，确认操作是否已开始。",
     count: n => `${n} 台设备`, noPreview: "暂无预览", start: "开启", stop: "关闭", working: "处理中…", currentDevice: "当前设备",
     screen: "屏幕录制", input: "键盘与鼠标", granted: "已授权", denied: "未授权", needs_user_action: "待确认", unknown: "待检查",
     updating: "正在更新", disabled: "已关闭", running: "运行中", starting: "启动中", permission_required: "待授权", error: "启动失败", offline: "离线",
@@ -25,7 +32,14 @@
   } : {
     title: "Lazycat Remote", subtitle: "The Lazycat network protects your privacy and data security.", devices: "Online devices", empty: "No online devices",
     help: "Sign in to the Lazycat client on your computer to manage it here.", loading: "Loading devices…", connect: "Connect", consent: "Local consent required",
-    failed: "Operation failed. Check that the device is online and try again.", login_required: "Your session expired. Sign in again.", unavailable: "Some desktop sources are unavailable. Other devices remain available.",
+    failed: "The operation could not be completed. Refresh the device status and try again.", login_required: "Your session expired. Sign in again.", unavailable: "Some desktop sources are unavailable. Other devices remain available.",
+    device_unavailable: "Device availability could not be confirmed. Refresh the device list and try again.",
+    device_authorization_failed: "The microserver could not get permission to control this device. Try again shortly.",
+    control_unavailable: "This device's client is experiencing network issues.",
+    control_rejected: "The device control channel did not accept the request. Refresh the device status and try again.",
+    invalid_control_response: "The device's response could not be confirmed. Refresh the device status first.",
+    invalid_control_origin: "This page cannot send device commands. Reopen the Lazycat Remote management page.",
+    control_timeout: "The operation timed out. Refresh the device status to check whether it started.",
     count: n => `${n} devices`, noPreview: "No preview", start: "Enable", stop: "Disable", working: "Working…", currentDevice: "Current device",
     screen: "Screen", input: "Input", granted: "Granted", denied: "Not granted", needs_user_action: "Needs approval", unknown: "Not checked",
     updating: "Updating", disabled: "Disabled", running: "Running", starting: "Starting", permission_required: "Needs permission", error: "Failed", offline: "Offline",
@@ -41,6 +55,11 @@
     authorizeAt: name => `Allow screen and input access in the system dialog on “${name}”. The result will appear here.`, authorizationSuccess: "Permissions approved. You can now connect to the desktop.", authorizationPending: "Waiting for approval on the controlled computer…", authorizationIncomplete: "Approval is not complete. Respond to the system dialog on the controlled computer or request again.", authorizationNotSaved: "The system did not retain this approval. Confirmation is still needed when connecting.", retryAuthorization: "Request again", authorizationUpdate: "Update this device's desktop runtime before requesting permissions here.", authorizationNotStarted: "The request has not started. Try again shortly.",
     permissionHelp: { session_unavailable: "The logged-in graphical desktop could not be located. Sign in to that desktop, launch the client there and check again.", portal_unavailable: "Desktop sharing services are unavailable. Check that xdg-desktop-portal and the backend for this desktop are installed and running.", portal_session_mismatch: "The system desktop service is temporarily unavailable. Checks retry automatically; you can also select Check again.", portal_input_unavailable: "The sharing service does not support keyboard and mouse control. A remote-control-capable desktop backend is required.", portal_capture_unavailable: "The sharing service does not support monitor capture. Check or update the desktop backend.", portal_cursor_unavailable: "The sharing service lacks the required cursor support. Check or update the desktop backend.", portal_timeout: "The sharing service did not respond in time. Check again and verify that the service is running in the selected graphical session.", capture_unavailable: "No usable screen and input interface was found. Review the diagnostic details and check the graphical session and desktop sharing services." },
   };
+  const controlFailures = new Set([
+    "update_confirmation_required", "client_update_required", "device_unavailable",
+    "device_authorization_failed", "control_unavailable", "control_rejected",
+    "invalid_control_response", "invalid_control_origin",
+  ]);
   document.documentElement.lang = zh ? "zh-CN" : "en";
   document.title = copy.title;
   document.querySelectorAll("[data-text]").forEach(node => { node.textContent = copy[node.dataset.text]; });
@@ -307,10 +326,11 @@
     if (card) { card.actionError = ""; updateCard(card, card.target); }
     try {
       const response = await fetch(`/api/hosts/${encodeURIComponent(id)}/${action}`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}", signal: AbortSignal.timeout(16000) });
-      if (response.redirected || response.status === 401 || response.status === 403) throw Error("login_required");
+      if (response.redirected || response.status === 401) throw Error("login_required");
       if (!response.ok) {
-        const failure = await response.json().catch(() => ({}));
-        throw Error(["update_confirmation_required", "client_update_required"].includes(failure.error) ? failure.error : "failed");
+        const failure = await response.json().catch(() => null);
+        if (controlFailures.has(failure?.error)) throw Error(failure.error);
+        throw Error(response.status === 403 ? "login_required" : "failed");
       }
       warning.hidden = true;
       const reply = await response.json();
@@ -331,7 +351,7 @@
         if (await confirmUpdate()) await act(id, "update-confirmed");
         return;
       }
-      const message = copy[error.message] || copy.failed;
+      const message = error.name === "TimeoutError" ? copy.control_timeout : copy[error.message] || copy.failed;
       if (card?.isConnected && error.message !== "login_required") card.actionError = message;
       else { warning.textContent = message; warning.hidden = false; }
       if (action === "permissions" && permissionDevice === id) document.getElementById("permission-feedback").textContent = message;

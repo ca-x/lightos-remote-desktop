@@ -1,7 +1,7 @@
 package: cloud.lazycat.lightos.remote-desktop
-version: 0.1.0-test.327
+version: 0.1.0
 name: 懒猫远程
-description: 管理、开启和连接自己的远程设备
+description: 通过微服网络安全的远程访问您的设备
 min_os_version: v1.5.2
 admin_only: false
 permissions:
