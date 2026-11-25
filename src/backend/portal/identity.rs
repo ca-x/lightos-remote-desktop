@@ -10,6 +10,12 @@
 //! both interfaces therefore proves the same route on both frontend versions.
 //! See upstream desktop-portal/xdp-portal-config.c and older src/xdp-impl.c.
 //!
+//! Upstream additionally drops a descriptor whose `UseIn` list does not name the
+//! frontend's `XDG_CURRENT_DESKTOP`, so that provider can never be selected in
+//! this session and is not a competing route. Distributions that install both
+//! xdg-desktop-portal-kde and xdg-desktop-portal-gnome (Ubuntu, Debian) would
+//! otherwise report two providers in a session where the frontend sees one.
+//!
 //! Scope still needs independent proof: the implementation's exact Wayland
 //! environment AND the selected listening socket must match the compositor
 //! services. Socket activation can retain its creator PID while the compositor
@@ -181,7 +187,8 @@ pub(super) async fn validate_target_identity(
     exact_environment(target, &frontend_environment, "frontend")?;
     let frontend_executable = fs::read_link(format!("/proc/{}/exe", frontend.pid))?;
     let directories = descriptor_directories(&frontend_environment, &frontend_executable)?;
-    let (provider, snapshot) = installed_provider(&directories, started)?;
+    let desktops = desktop_names(&frontend_environment)?;
+    let (provider, snapshot) = installed_provider(&directories, &desktops, started)?;
 
     let implementation = peer(&bus, provider.bus_name(), uid).await?;
     let environment = process_environment(&implementation)?;
@@ -502,6 +509,30 @@ fn descriptor_directories(environment: &[u8], executable: &Path) -> Result<Vec<P
 struct Descriptor {
     name: String,
     interfaces: BTreeSet<String>,
+    /// Lowercased `UseIn` entries; empty means "any desktop", as upstream reads
+    /// a missing list.
+    use_in: BTreeSet<String>,
+}
+/// Desktop names the Portal frontend matches `UseIn` against: upstream splits
+/// `XDG_CURRENT_DESKTOP` on ':' and compares case-insensitively.
+fn desktop_names(environment: &[u8]) -> Result<BTreeSet<String>> {
+    let Some(value) = environment_value(environment, b"XDG_CURRENT_DESKTOP=")? else {
+        return Ok(BTreeSet::new());
+    };
+    value
+        .split(|byte| *byte == b':')
+        .filter(|name| !name.is_empty())
+        .map(|name| {
+            std::str::from_utf8(name)
+                .map(str::to_ascii_lowercase)
+                .context("XDG_CURRENT_DESKTOP is not UTF-8")
+        })
+        .collect()
+}
+/// A descriptor with no `UseIn` is a wildcard. With no identifiable desktop the
+/// previous conservative inventory is kept instead of admitting nothing.
+fn eligible(descriptor: &Descriptor, desktops: &BTreeSet<String>) -> bool {
+    descriptor.use_in.is_empty() || desktops.is_empty() || !descriptor.use_in.is_disjoint(desktops)
 }
 fn parse_descriptor(bytes: Vec<u8>) -> Result<Descriptor> {
     let text = String::from_utf8(bytes).context("Portal descriptor is not UTF-8")?;
@@ -518,6 +549,12 @@ fn parse_descriptor(bytes: Vec<u8>) -> Result<Descriptor> {
         .context("Portal descriptor has no DBusName")?;
     zbus::names::WellKnownName::try_from(name.as_str())
         .context("invalid Portal descriptor bus name")?;
+    let use_in = ini.get("portal", "UseIn").unwrap_or_default();
+    let use_in = use_in
+        .split(';')
+        .filter(|name| !name.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect();
     let list = ini
         .get("portal", "Interfaces")
         .context("Portal descriptor has no Interfaces")?;
@@ -536,12 +573,30 @@ fn parse_descriptor(bytes: Vec<u8>) -> Result<Descriptor> {
         );
         interfaces.insert(interface.to_owned());
     }
-    Ok(Descriptor { name, interfaces })
+    Ok(Descriptor {
+        name,
+        interfaces,
+        use_in,
+    })
 }
 
-fn unique_provider(descriptors: &[Descriptor]) -> Result<Provider> {
+fn unique_provider(descriptors: &[Descriptor], desktops: &BTreeSet<String>) -> Result<Provider> {
+    let admitted = descriptors
+        .iter()
+        .filter(|descriptor| eligible(descriptor, desktops))
+        .collect::<Vec<_>>();
+    ensure!(
+        !admitted.is_empty(),
+        "Portal has no provider for the active desktop ({}); {} installed descriptors do not list it in UseIn",
+        if desktops.is_empty() {
+            "<unknown>".to_owned()
+        } else {
+            desktops.iter().cloned().collect::<Vec<_>>().join(":")
+        },
+        descriptors.len()
+    );
     let names = |interface: &str| {
-        descriptors
+        admitted
             .iter()
             .filter(|descriptor| descriptor.interfaces.contains(interface))
             .map(|descriptor| descriptor.name.as_str())
@@ -702,6 +757,7 @@ impl Snapshot {
 
 fn installed_provider(
     directories: &[PathBuf],
+    desktops: &BTreeSet<String>,
     started: SystemTime,
 ) -> Result<(Provider, Snapshot)> {
     ensure!(
@@ -747,7 +803,7 @@ fn installed_provider(
             );
         }
     }
-    let provider = unique_provider(&descriptors)?;
+    let provider = unique_provider(&descriptors, desktops)?;
     snapshot.verify()?;
     Ok((provider, snapshot))
 }
@@ -786,14 +842,23 @@ mod tests {
     use std::fs::{File, FileTimes};
 
     fn descriptor(name: &str, interfaces: &[&str]) -> Descriptor {
+        descriptor_for(name, interfaces, None)
+    }
+    fn descriptor_for(name: &str, interfaces: &[&str], use_in: Option<&str>) -> Descriptor {
+        let use_in = use_in
+            .map(|list| format!("UseIn={list};\n"))
+            .unwrap_or_default();
         parse_descriptor(
             format!(
-                "# fixture\n[portal]\nDBusName={name}\nInterfaces={};\nUseIn=irrelevant;\n",
+                "# fixture\n[portal]\nDBusName={name}\nInterfaces={};\n{use_in}",
                 interfaces.join(";")
             )
             .into_bytes(),
         )
         .unwrap()
+    }
+    fn desktops(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|name| name.to_ascii_lowercase()).collect()
     }
     fn target() -> SessionTarget {
         SessionTarget {
@@ -814,7 +879,10 @@ mod tests {
                     &["org.freedesktop.impl.portal.FileChooser"],
                 ),
             ];
-            assert_eq!(unique_provider(&descriptors).unwrap(), provider);
+            assert_eq!(
+                unique_provider(&descriptors, &desktops(&[])).unwrap(),
+                provider
+            );
             exact_environment(&target(), MATCHING, "implementation").unwrap();
             for service in provider.compositor_services() {
                 verify_compositor_peer(service, 2345, 1000, 2345, 1000).unwrap();
@@ -853,7 +921,7 @@ mod tests {
         let gnome = descriptor(Provider::Gnome.bus_name(), &[REMOTE_DESKTOP, SCREEN_CAST]);
         let kde = descriptor(Provider::Kde.bus_name(), &[REMOTE_DESKTOP, SCREEN_CAST]);
         assert!(
-            unique_provider(&[gnome, kde])
+            unique_provider(&[gnome, kde], &desktops(&[]))
                 .unwrap_err()
                 .to_string()
                 .contains("2 input and 2 capture")
@@ -863,14 +931,14 @@ mod tests {
             descriptor(Provider::Kde.bus_name(), &[SCREEN_CAST]),
         ];
         assert!(
-            unique_provider(&split)
+            unique_provider(&split, &desktops(&[]))
                 .unwrap_err()
                 .to_string()
                 .contains("different implementations")
         );
         let custom = descriptor("com.example.CustomPortal", &[REMOTE_DESKTOP, SCREEN_CAST]);
         assert!(
-            unique_provider(&[custom])
+            unique_provider(&[custom], &desktops(&[]))
                 .unwrap_err()
                 .to_string()
                 .contains("no verified compositor identity adapter")
@@ -884,10 +952,92 @@ mod tests {
             descriptor("com.example.CustomPortal", &[SCREEN_CAST]),
         ];
         assert!(
-            unique_provider(&descriptors)
+            unique_provider(&descriptors, &desktops(&[]))
                 .unwrap_err()
                 .to_string()
                 .contains("1 input and 2 capture")
+        );
+    }
+
+    #[test]
+    fn use_in_excludes_the_provider_this_frontend_cannot_select() {
+        // Ubuntu/Debian install both backends; each one names its own desktop.
+        let kde = descriptor_for(
+            Provider::Kde.bus_name(),
+            &[REMOTE_DESKTOP, SCREEN_CAST],
+            Some("KDE"),
+        );
+        let gnome = descriptor_for(
+            Provider::Gnome.bus_name(),
+            &[REMOTE_DESKTOP, SCREEN_CAST],
+            Some("gnome"),
+        );
+        let descriptors = [kde, gnome];
+        assert_eq!(
+            unique_provider(&descriptors, &desktops(&["KDE"])).unwrap(),
+            Provider::Kde
+        );
+        // Distributions such as Ubuntu add their own name to the front of the list.
+        assert_eq!(
+            unique_provider(
+                &descriptors,
+                &desktop_names(b"XDG_CURRENT_DESKTOP=ubuntu:GNOME\0").unwrap()
+            )
+            .unwrap(),
+            Provider::Gnome
+        );
+        // A session that matches both UseIn lists keeps the ambiguity refusal.
+        assert!(
+            unique_provider(&descriptors, &desktops(&["KDE", "GNOME"]))
+                .unwrap_err()
+                .to_string()
+                .contains("2 input and 2 capture providers")
+        );
+        // Without UseIn the descriptor stays a wildcard, as upstream reads it.
+        let wildcard = descriptor(Provider::Gnome.bus_name(), &[REMOTE_DESKTOP, SCREEN_CAST]);
+        assert_eq!(
+            unique_provider(&[wildcard], &desktops(&["KDE"])).unwrap(),
+            Provider::Gnome
+        );
+    }
+
+    #[test]
+    fn unlisted_desktop_reports_no_provider_instead_of_a_foreign_count() {
+        let descriptors = [
+            descriptor_for(
+                Provider::Kde.bus_name(),
+                &[REMOTE_DESKTOP, SCREEN_CAST],
+                Some("KDE"),
+            ),
+            descriptor_for(
+                Provider::Gnome.bus_name(),
+                &[REMOTE_DESKTOP, SCREEN_CAST],
+                Some("GNOME"),
+            ),
+        ];
+        let error = unique_provider(&descriptors, &desktops(&["sway"]))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no provider for the active desktop (sway)"));
+        assert!(error.contains("2 installed descriptors"));
+    }
+
+    #[test]
+    fn desktop_names_split_colon_lists_case_insensitively() {
+        assert_eq!(
+            desktop_names(b"XDG_CURRENT_DESKTOP=KDE:GNOME\0").unwrap(),
+            desktops(&["kde", "gnome"])
+        );
+        assert_eq!(
+            desktop_names(b"XDG_CURRENT_DESKTOP=\0").unwrap(),
+            desktops(&[])
+        );
+        assert_eq!(desktop_names(b"HOME=/home/test\0").unwrap(), desktops(&[]));
+        assert!(
+            desktop_names(b"XDG_CURRENT_DESKTOP=KDE\0XDG_CURRENT_DESKTOP=GNOME\0")
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous XDG_CURRENT_DESKTOP")
         );
     }
 
@@ -982,7 +1132,8 @@ mod tests {
         write_provider(&high, Provider::Gnome.bus_name());
         write_provider(&low, Provider::Gnome.bus_name());
         let started = SystemTime::now() + Duration::from_secs(2);
-        let (provider, snapshot) = installed_provider(&[high, low], started).unwrap();
+        let (provider, snapshot) =
+            installed_provider(&[high, low], &desktops(&[]), started).unwrap();
         assert_eq!(provider, Provider::Gnome);
         snapshot.verify().unwrap();
     }
@@ -1007,7 +1158,7 @@ mod tests {
         )
         .unwrap();
         let started = SystemTime::now() + Duration::from_secs(2);
-        let error = installed_provider(&[user, system], started)
+        let error = installed_provider(&[user, system], &desktops(&[]), started)
             .unwrap_err()
             .to_string();
         assert!(error.contains("2 input and 2 capture providers"));
@@ -1027,7 +1178,7 @@ mod tests {
             .set_times(FileTimes::new().set_modified(future))
             .unwrap();
         assert!(
-            installed_provider(&[root.path().to_owned()], started)
+            installed_provider(&[root.path().to_owned()], &desktops(&[]), started)
                 .unwrap_err()
                 .to_string()
                 .contains("changed after frontend startup")
@@ -1042,8 +1193,9 @@ mod tests {
             .unwrap()
             .set_times(FileTimes::new().set_modified(future))
             .unwrap();
+        // A directory mtime change alone must also be refused.
         assert!(
-            installed_provider(&[root.path().to_owned()], started)
+            installed_provider(&[root.path().to_owned()], &desktops(&[]), started)
                 .unwrap_err()
                 .to_string()
                 .contains("changed after frontend startup")
@@ -1055,7 +1207,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         write_provider(root.path(), Provider::Kde.bus_name());
         let started = SystemTime::now() + Duration::from_secs(2);
-        let (_, snapshot) = installed_provider(&[root.path().to_owned()], started).unwrap();
+        let (_, snapshot) =
+            installed_provider(&[root.path().to_owned()], &desktops(&[]), started).unwrap();
         fs::write(root.path().join("new.portal"), "new provider").unwrap();
         assert!(
             snapshot
