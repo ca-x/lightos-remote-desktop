@@ -89,7 +89,7 @@ fn physical_report(config: &Config, request: bool) -> Result<PermissionReport> {
                 permissions,
                 "system",
                 "permission_required",
-                vec!["screen", "input"],
+                vec!["screen", "input", super::macos::input_permission().setting()],
             ),
             Err(error) => PermissionReport::unavailable(error.to_string(), "session_unavailable"),
         })

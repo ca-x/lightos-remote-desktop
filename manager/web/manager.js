@@ -70,9 +70,26 @@
   let permissionMode = "diagnostics", authorizationSubmission = null, authorizationNotice = "";
   const linuxDevice = item => item.kind === "device" && item.platform === "linux";
   const macDevice = item => item?.kind === "device" && ["darwin", "macos"].includes(item.platform);
-  const macPermissionsHelp = zh
-    ? "在被控 Mac 的「隐私与安全性」中为懒猫远程允许屏幕录制和辅助功能。两项都要开启。"
-    : "On the controlled Mac, allow both Screen Recording and Accessibility for Lazycat Remote in Privacy & Security.";
+  function macPermissionsHelp(permissions) {
+    const settings = permissions.settings || [], missing = [];
+    if (permissions.screen !== "granted") {
+      missing.push(zh ? "录屏与系统录音（或屏幕录制）" : "Screen & System Audio Recording (or Screen Recording)");
+    }
+    if (permissions.input !== "granted") {
+      if (settings.includes("system_app_protection_override")) {
+        missing.push(zh ? "系统与 App 保护覆盖" : "System & App Protection Override");
+      } else if (settings.includes("device_control_data_access")) {
+        missing.push(zh ? "设备控制和数据访问" : "Device Control and Data Access");
+      } else if (settings.includes("accessibility")) {
+        missing.push(zh ? "辅助功能（或无障碍）" : "Accessibility");
+      } else {
+        missing.push(zh ? "键鼠控制（辅助功能或设备控制和数据访问）" : "keyboard and mouse control (Accessibility or Device Control and Data Access)");
+      }
+    }
+    return zh
+      ? `在被控 Mac 的「隐私与安全性」中，为懒猫远程允许${missing.map(name => `「${name}」`).join("和")}。`
+      : `On the controlled Mac, allow ${missing.join(" and ")} for Lazycat Remote in Privacy & Security.`;
+  }
   const connectionConsent = item => linuxDevice(item) && (item.permissions?.backend === "portal" || item.permissions?.request_mode === "on_connection" || item.requires_consent === true) && ![item.permissions?.screen, item.permissions?.input].every(value => value === "granted");
   function permissionHelp(item) {
     if (!linuxDevice(item) || !item.installed) return "";
@@ -87,7 +104,8 @@
     if (permissionMode === "authorization") {
       const p = item.permissions || {}, granted = p.screen === "granted" && p.input === "granted";
       document.getElementById("permission-title").textContent = copy.permissions;
-      document.getElementById("permission-summary").textContent = granted ? copy.authorizationSuccess : copy.authorizeAt(item.name);
+      document.getElementById("permission-summary").textContent = granted ? copy.authorizationSuccess
+        : macDevice(item) ? macPermissionsHelp(p) : copy.authorizeAt(item.name);
       document.getElementById("permission-feedback").textContent = granted ? "" : authorizationNotice || (p.requesting || authorizationSubmission?.id === item.id ? copy.authorizationPending : p.reason_code === "authorization_not_saved" ? copy.authorizationNotSaved : copy.authorizationIncomplete);
       const failed = p.reason_code === "authorization_failed" || p.reason_code === "authorization_not_saved" || p.can_start === false;
       document.getElementById("permission-diagnostic").textContent = failed ? p.reason || "" : "";
@@ -128,7 +146,9 @@
         if (permissionDevice !== id || authorizationSubmission !== submission) break;
         if (!reply) { authorizationNotice = copy.failed;break; }
         const p = reply.state?.permissions;
-        if (!p || p.requesting || p.screen === "granted" && p.input === "granted") break;
+        // The macOS controller acknowledges the request immediately, while
+        // the runtime handles consent and the read-only polling reports it.
+        if (macDevice(item) || !p || p.requesting || p.screen === "granted" && p.input === "granted") break;
         if (attempt === 9) authorizationNotice = copy.authorizationNotStarted;
         else await new Promise(resolve => setTimeout(resolve, 400));
       }
@@ -298,7 +318,7 @@
     if (macHint) p.request.setAttribute("aria-describedby", p.error.id);
     else p.request.removeAttribute("aria-describedby");
     const message = [...new Set([card.actionError || "", runtimeMessage, clientUpdateRequired ? copy.client_update_required : "",
-      macHint ? macPermissionsHelp : "",
+      macHint ? macPermissionsHelp(permissions) : "",
       unavailable ? permissions.reason || permissionHelp(item) : ""].filter(Boolean))].join("\n");
     if (p.error.textContent !== message) p.error.textContent = message;
     p.error.hidden = !message;

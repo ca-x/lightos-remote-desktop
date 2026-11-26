@@ -7,10 +7,11 @@ pub use macos_service::install_service;
 
 use std::{
     collections::VecDeque,
-    ffi::{c_char, c_void},
+    ffi::{CStr, c_char, c_void},
     io,
+    process::{Command, Stdio},
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -33,6 +34,74 @@ pub fn provider() -> Arc<dyn NativePlatform> {
 
 struct MacosPlatform;
 
+#[derive(Clone, Copy)]
+pub(super) enum InputPermission {
+    Accessibility,
+    DeviceControl,
+    PostEvent,
+}
+
+impl InputPermission {
+    pub(super) fn setting(self) -> &'static str {
+        match self {
+            Self::Accessibility => "accessibility",
+            Self::DeviceControl => "device_control_data_access",
+            Self::PostEvent => "system_app_protection_override",
+        }
+    }
+
+    fn granted(self) -> bool {
+        match self {
+            Self::PostEvent => unsafe { CGPreflightPostEventAccess() },
+            Self::Accessibility | Self::DeviceControl => unsafe { AXIsProcessTrusted() },
+        }
+    }
+}
+
+pub(super) fn input_permission() -> InputPermission {
+    static PERMISSION: OnceLock<InputPermission> = OnceLock::new();
+    *PERMISSION.get_or_init(|| {
+        let version = os_release(c"kern.osproductversion").unwrap_or_default();
+        let mut parts = version.split('.');
+        let major = parts.next().and_then(|part| part.parse::<u32>().ok());
+        let minor = parts.next().and_then(|part| part.parse::<u32>().ok());
+        match (major, minor) {
+            // The first 27.3 beta still had the combined permission.
+            (Some(27), Some(3)) if os_release(c"kern.osversion").as_deref() == Some("26C5035r") => {
+                InputPermission::DeviceControl
+            }
+            (Some(27), Some(3..)) | (Some(28..), _) => InputPermission::PostEvent,
+            (Some(27), _) => InputPermission::DeviceControl,
+            _ => InputPermission::Accessibility,
+        }
+    })
+}
+
+fn os_release(name: &CStr) -> Option<String> {
+    let mut buffer = [0u8; 64];
+    let mut len = buffer.len();
+    let status = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            buffer.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    Some(CStr::from_bytes_until_nul(&buffer).ok()?.to_str().ok()?.to_owned())
+}
+
+pub(super) fn open_input(settings: &enigo::Settings) -> Result<enigo::Enigo> {
+    Ok(match input_permission() {
+        InputPermission::PostEvent => enigo::Enigo::new_with_post_event_permission(settings)?,
+        InputPermission::Accessibility | InputPermission::DeviceControl => enigo::Enigo::new(settings)?,
+    })
+}
+
 /// Explicit consent entry point for desktop integrations. Capability probes and
 /// the doctor command continue to call the read-only PermissionProvider method.
 pub fn permissions(request: bool) -> Result<Permissions> {
@@ -50,9 +119,11 @@ pub fn permissions(request: bool) -> Result<Permissions> {
             GuiSession::current()?.active,
             "permission requests require an unlocked GUI session"
         );
-        // The accessibility prompt is asynchronous. Request it before the
-        // screen prompt so a system dialog cannot delay dispatching the other.
-        if !matches!(before.input, PermissionState::Granted) {
+        let post_event = matches!(input_permission(), InputPermission::PostEvent);
+        let missing_input = !matches!(before.input, PermissionState::Granted);
+        let input_pending = post_event && missing_input && !unsafe { CGRequestPostEventAccess() };
+        // Dispatch the asynchronous legacy Accessibility prompt first.
+        if !post_event && missing_input {
             // Both keys and values are retained with the CoreFoundation callbacks.
             let key = unsafe { kAXTrustedCheckOptionPrompt };
             let value = unsafe { kCFBooleanTrue } as *const c_void;
@@ -75,8 +146,17 @@ pub fn permissions(request: bool) -> Result<Permissions> {
                 CFRelease(options.cast());
             }
         }
-        if !matches!(before.screen, PermissionState::Granted) {
-            unsafe { CGRequestScreenCaptureAccess() };
+        let screen_pending = !matches!(before.screen, PermissionState::Granted)
+            && !unsafe { CGRequestScreenCaptureAccess() };
+        if post_event && (input_pending || screen_pending) {
+            // The split permission pane has no documented deep link.
+            let opened = Command::new("/usr/bin/open")
+                .arg("x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension")
+                .stdout(Stdio::null())
+                .status();
+            if !opened.is_ok_and(|status| status.success()) {
+                tracing::warn!("could not open macOS Privacy & Security settings");
+            }
         }
     }
     platform.permissions()
@@ -85,12 +165,12 @@ pub fn permissions(request: bool) -> Result<Permissions> {
 impl PermissionProvider for MacosPlatform {
     fn permissions(&self) -> Result<Permissions> {
         let screen = unsafe { CGPreflightScreenCaptureAccess() };
-        let input = unsafe { AXIsProcessTrusted() };
+        let input = input_permission().granted();
         Ok(Permissions {
             screen: if screen { PermissionState::Granted } else { PermissionState::NeedsUserAction },
             input: if input { PermissionState::Granted } else { PermissionState::NeedsUserAction },
             reason: (!screen || !input).then(|| {
-                "Grant Screen Recording and Accessibility to LightOS Remote Desktop in System Settings, then restart the host".into()
+                "Allow screen capture and keyboard and mouse control for Lazycat Remote in Privacy & Security".into()
             }),
         })
     }
@@ -486,7 +566,7 @@ fn desktop_allowed_for(session_id: Option<i64>) -> Result<bool> {
     Ok(session.active
         && session_id.is_none_or(|id| session.id == id)
         && unsafe { CGPreflightScreenCaptureAccess() }
-        && unsafe { AXIsProcessTrusted() })
+        && input_permission().granted())
 }
 
 #[derive(Default)]
@@ -922,6 +1002,8 @@ unsafe extern "C" {
     fn CGDisplayModeRelease(mode: *const c_void);
     fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
+    fn CGPreflightPostEventAccess() -> bool;
+    fn CGRequestPostEventAccess() -> bool;
     fn CGSessionCopyCurrentDictionary() -> *const c_void;
 }
 #[link(name = "Security", kind = "framework")]

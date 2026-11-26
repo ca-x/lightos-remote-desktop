@@ -1,6 +1,12 @@
 [workspace]
 members = ["crates/platform-detect", "crates/desktop-config", "crates/display-control", "crates/media-codec", "crates/stream-scheduler", "crates/media-codec-ffmpeg"]
+exclude = ["crates/enigo"]
 resolver = "3"
+
+[patch.crates-io]
+# Enigo 0.6.1 checks Accessibility before constructing a Core Graphics event source.
+# The local patch lets the macOS runtime select the separate PostEvent permission.
+enigo = { path = "crates/enigo" }
 
 [package]
 name = "lightos-remote-desktop"

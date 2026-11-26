@@ -497,11 +497,19 @@ fn probe_native(
 }
 
 pub(super) fn probe_input() -> Result<()> {
-    let _input = Enigo::new(&Settings {
+    open_input()?;
+    Ok(())
+}
+
+fn open_input() -> Result<Enigo> {
+    let settings = Settings {
         open_prompt_to_get_permissions: false,
         ..Default::default()
-    })?;
-    Ok(())
+    };
+    #[cfg(target_os = "macos")]
+    return super::macos::open_input(&settings);
+    #[cfg(target_os = "windows")]
+    Ok(Enigo::new(&settings)?)
 }
 
 fn join_until(worker: JoinHandle<()>, deadline: Instant) {
@@ -622,10 +630,7 @@ fn run_input(
     cancelled: &AtomicBool,
     ready: std::sync::mpsc::SyncSender<Result<()>>,
 ) -> Result<()> {
-    let mut enigo = Enigo::new(&Settings {
-        open_prompt_to_get_permissions: false,
-        ..Default::default()
-    })?;
+    let mut enigo = open_input()?;
     ready
         .send(Ok(()))
         .map_err(|_| anyhow::anyhow!("native startup cancelled"))?;
