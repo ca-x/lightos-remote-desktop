@@ -15,14 +15,21 @@
     invalid_control_response: "无法确认设备返回的操作结果，请先刷新设备状态。",
     invalid_control_origin: "当前页面无法发起设备操作，请重新打开懒猫远程管理页。",
     control_timeout: "等待操作结果超时，请刷新设备状态，确认操作是否已开始。",
+    desktop_control_busy: "设备正在处理远程桌面启停，请稍后重试。",
+    desktop_preference_save_failed: "微服未能保存这次启停设置，请重试。",
     count: n => `${n} 台设备`, noPreview: "暂无预览", start: "开启", stop: "关闭", working: "处理中…", currentDevice: "当前设备",
     screen: "屏幕录制", input: "键盘与鼠标", granted: "已授权", denied: "未授权", needs_user_action: "待确认", unknown: "待检查",
-    updating: "正在更新", disabled: "已关闭", running: "运行中", starting: "启动中", permission_required: "待授权", error: "启动失败", offline: "离线",
+    updating: "正在更新", disabled: "已关闭", running: "运行中", starting: "启动中", locked: "已锁屏", temporarily_unavailable: "暂不可连接", permission_required: "待授权", error: "启动失败", offline: "离线",
     permissions: "请求设备权限", requesting: "等待设备确认", permissionApproved: "权限已批准", permissionUnapproved: "权限未批准", container: "LightOS实例", instanceManagedFallback: "版本和状态由lightos管理", footnote: "桌面仅在开启后运行，系统权限由设备本机确认。",
-    enterDesktop: "点击进入桌面", installToEnter: "安装后进入桌面", authorizeToEnter: "授权后进入桌面", startingDesktop: "桌面启动中…",
+    enterDesktop: "点击进入桌面", enterLocked: "点击进入锁屏界面",
+    lockAccessHelp: "锁屏访问尚未获得授权。可重新请求设备权限，然后在被控 Windows 电脑的本机屏幕上批准管理员确认。",
+    lockAccessPending: "正在请求管理员授权。请查看被控 Windows 电脑的本机屏幕。",
+    lockAccessDeferred: "管理员授权请求暂未确认。请重试，并在被控 Windows 电脑的本机屏幕上查看。",
+    installToEnter: "安装后进入桌面", authorizeToEnter: "授权后进入桌面", startingDesktop: "桌面启动中…",
     stopped: "桌面进程已停止，可重新开启。", runtime: "懒猫远程", not_installed: "未安装", installedUnknown: "已安装（版本未知）", latest: "最新", install: "安装远程桌面", update: "更新远程桌面", instanceManaged: "由 LightOS 管理",
     client_update_required: "请先更新并重启这台设备上的懒猫 PC 客户端，再安装或更新远程桌面。",
     interruptNotice: "更新会中断当前远程桌面连接。确认后将自动关闭服务并更新，完成后恢复服务。", cancel: "取消", confirm: "确认", stopping: "正在关闭远程桌面",
+    stop_pending: "关闭待确认", stopRetrying: "设备尚未确认关闭。设备在线时会自动重试。",
     preparing: "正在准备", downloading: "正在下载", verifying: "正在校验", installing: "正在安装", checking: "正在检查新版本", cleaning: "正在清理旧版本", failedInstall: "安装 / 更新失败，可重试", retryOperation: "重试",
     virtualAvailable: "可连接独立虚拟桌面；物理桌面仍需解锁或授权，不会自动切换。", physicalLocked: "物理桌面已锁定，请在被控电脑解锁后重新连接。",
     usable: "可用", desktopUnavailable: "桌面不可用", details: "查看原因", permissionTitle: "桌面访问检查", diagnosticDetails: "诊断详情", recheck: "刷新状态", rechecking: "正在检查…", checkRequested: "设备状态会根据后台检查结果自动更新。", close: "关闭",
@@ -40,14 +47,21 @@
     invalid_control_response: "The device's response could not be confirmed. Refresh the device status first.",
     invalid_control_origin: "This page cannot send device commands. Reopen the Lazycat Remote management page.",
     control_timeout: "The operation timed out. Refresh the device status to check whether it started.",
+    desktop_control_busy: "This device is applying a remote desktop command. Try again shortly.",
+    desktop_preference_save_failed: "The microserver could not save this remote desktop setting. Try again.",
     count: n => `${n} devices`, noPreview: "No preview", start: "Enable", stop: "Disable", working: "Working…", currentDevice: "Current device",
     screen: "Screen", input: "Input", granted: "Granted", denied: "Not granted", needs_user_action: "Needs approval", unknown: "Not checked",
-    updating: "Updating", disabled: "Disabled", running: "Running", starting: "Starting", permission_required: "Needs permission", error: "Failed", offline: "Offline",
+    updating: "Updating", disabled: "Disabled", running: "Running", starting: "Starting", locked: "Locked", temporarily_unavailable: "Temporarily unavailable", permission_required: "Needs permission", error: "Failed", offline: "Offline",
     permissions: "Request access", requesting: "Waiting for approval", permissionApproved: "Access approved", permissionUnapproved: "Access not approved", container: "LightOS instance", instanceManagedFallback: "Version and status managed by LightOS", footnote: "Desktop capture runs only when enabled. System permissions require approval on the device.",
-    enterDesktop: "Open desktop", installToEnter: "Install to connect", authorizeToEnter: "Approve access to connect", startingDesktop: "Desktop is starting…",
+    enterDesktop: "Open desktop", enterLocked: "Open lock screen",
+    lockAccessHelp: "Lock-screen access has not been approved. Request access again, then approve the administrator prompt on the controlled Windows computer's own screen.",
+    lockAccessPending: "Requesting administrator approval. Check the controlled Windows computer's own screen.",
+    lockAccessDeferred: "The administrator request was not confirmed. Try again and check the controlled Windows computer's own screen.",
+    installToEnter: "Install to connect", authorizeToEnter: "Approve access to connect", startingDesktop: "Desktop is starting…",
     stopped: "The desktop process stopped. Try enabling it again.", runtime: "Lazycat Remote", not_installed: "Not installed", installedUnknown: "Installed (version unknown)", latest: "Latest", install: "Install remote desktop", update: "Update remote desktop", instanceManaged: "Managed by LightOS",
     client_update_required: "Update and restart the Lazycat PC client on this device before installing or updating remote desktop.",
     interruptNotice: "Updating will disconnect the current remote desktop session. Confirm to stop the service and update it. The service will resume when the update finishes.", cancel: "Cancel", confirm: "Confirm", stopping: "Stopping remote desktop",
+    stop_pending: "Disable pending", stopRetrying: "The device has not confirmed shutdown. It will retry automatically while the device is online.",
     preparing: "Preparing", downloading: "Downloading", verifying: "Verifying", installing: "Installing", checking: "Checking the new version", cleaning: "Removing the old version", failedInstall: "Installation / update failed; retry is available", retryOperation: "Retry",
     virtualAvailable: "A separate virtual desktop is available. Physical access still requires unlocking or consent; switching is never automatic.", physicalLocked: "The physical desktop is locked. Unlock the controlled computer before reconnecting.",
     usable: "Available", desktopUnavailable: "Desktop unavailable", details: "View details", permissionTitle: "Desktop access check", diagnosticDetails: "Diagnostic details", recheck: "Refresh status", rechecking: "Checking…", checkRequested: "Device status updates automatically from background checks.", close: "Close",
@@ -58,7 +72,7 @@
   const controlFailures = new Set([
     "update_confirmation_required", "client_update_required", "device_unavailable",
     "device_authorization_failed", "control_unavailable", "control_rejected",
-    "invalid_control_response", "invalid_control_origin",
+    "invalid_control_response", "invalid_control_origin", "desktop_control_busy", "desktop_preference_save_failed",
   ]);
   document.documentElement.lang = zh ? "zh-CN" : "en";
   document.title = copy.title;
@@ -70,9 +84,30 @@
   let permissionMode = "diagnostics", authorizationSubmission = null, authorizationNotice = "";
   const linuxDevice = item => item.kind === "device" && item.platform === "linux";
   const macDevice = item => item?.kind === "device" && ["darwin", "macos"].includes(item.platform);
-  const macPermissionsHelp = zh
-    ? "在被控 Mac 的「隐私与安全性」中为懒猫远程允许屏幕录制和辅助功能。两项都要开启。"
-    : "On the controlled Mac, allow both Screen Recording and Accessibility for Lazycat Remote in Privacy & Security.";
+  function macPermissionsHelp(item) {
+    const permissions = item.permissions || {};
+    const settings = permissions.settings || [], missing = [];
+    if (permissions.screen !== "granted") {
+      missing.push(zh ? "录屏与系统录音（或屏幕录制）" : "Screen & System Audio Recording (or Screen Recording)");
+    }
+    if (permissions.input !== "granted") {
+      if (settings.includes("system_app_protection_override")) {
+        missing.push(zh ? "系统与 App 保护覆盖" : "System & App Protection Override");
+      } else if (settings.includes("device_control_data_access")) {
+        missing.push(zh ? "设备控制和数据访问" : "Device Control and Data Access");
+      } else if (settings.includes("accessibility")) {
+        missing.push(zh ? "辅助功能（或无障碍）" : "Accessibility");
+      } else {
+        missing.push(zh ? "键鼠控制（辅助功能或设备控制和数据访问）" : "keyboard and mouse control (Accessibility or Device Control and Data Access)");
+      }
+    }
+    const appName = item.controller_protocol >= 2
+      ? (zh ? "懒猫微服客户端（LCMD）" : "the Lazycat PC client (LCMD)")
+      : copy.runtime;
+    return zh
+      ? `在被控 Mac 的「隐私与安全性」中，为${appName}允许${missing.map(name => `「${name}」`).join("和")}。`
+      : `On the controlled Mac, allow ${missing.join(" and ")} for ${appName} in Privacy & Security.`;
+  }
   const connectionConsent = item => linuxDevice(item) && (item.permissions?.backend === "portal" || item.permissions?.request_mode === "on_connection" || item.requires_consent === true) && ![item.permissions?.screen, item.permissions?.input].every(value => value === "granted");
   function permissionHelp(item) {
     if (!linuxDevice(item) || !item.installed) return "";
@@ -87,7 +122,8 @@
     if (permissionMode === "authorization") {
       const p = item.permissions || {}, granted = p.screen === "granted" && p.input === "granted";
       document.getElementById("permission-title").textContent = copy.permissions;
-      document.getElementById("permission-summary").textContent = granted ? copy.authorizationSuccess : copy.authorizeAt(item.name);
+      document.getElementById("permission-summary").textContent = granted ? copy.authorizationSuccess
+        : macDevice(item) ? macPermissionsHelp(item) : copy.authorizeAt(item.name);
       document.getElementById("permission-feedback").textContent = granted ? "" : authorizationNotice || (p.requesting || authorizationSubmission?.id === item.id ? copy.authorizationPending : p.reason_code === "authorization_not_saved" ? copy.authorizationNotSaved : copy.authorizationIncomplete);
       const failed = p.reason_code === "authorization_failed" || p.reason_code === "authorization_not_saved" || p.can_start === false;
       document.getElementById("permission-diagnostic").textContent = failed ? p.reason || "" : "";
@@ -128,7 +164,9 @@
         if (permissionDevice !== id || authorizationSubmission !== submission) break;
         if (!reply) { authorizationNotice = copy.failed;break; }
         const p = reply.state?.permissions;
-        if (!p || p.requesting || p.screen === "granted" && p.input === "granted") break;
+        // The macOS controller acknowledges the request immediately, while
+        // the runtime handles consent and the read-only polling reports it.
+        if (macDevice(item) || !p || p.requesting || p.screen === "granted" && p.input === "granted") break;
         if (attempt === 9) authorizationNotice = copy.authorizationNotStarted;
         else await new Promise(resolve => setTimeout(resolve, 400));
       }
@@ -206,16 +244,18 @@
       if (installed && enabled && !(await confirmUpdate())) return;
       void act(id, installed ? enabled ? "update-confirmed" : "update" : "install");
     });
-    toggle.addEventListener("click", () => act(card.target.id, card.target.enabled ? "stop" : "start"));
+    toggle.addEventListener("click", () => act(card.target.id, toggleAction(card.target)));
     request.addEventListener("click", () => linuxDevice(card.target) ? showPermissionDetails(card.target, connectionConsent(card.target)) : act(card.target.id, "permissions"));
     grid.append(card); return card;
   }
+  const toggleAction = item => item.enabled && item.status !== "stop_pending" ? "stop" : "start";
   function updateCard(card, item) {
     card.target = item;
     const p = card.parts, permissions = item.permissions || {}, deployment = item.deployment || { stage: "idle" };
     const active = !["idle", "completed", "failed"].includes(deployment.stage || "idle"), switching = active;
+    const stopping = item.status === "stopping", stopPending = item.status === "stop_pending";
     let pending = pendingActions.get(item.id);
-    if (pending && (Date.now() > pending.until || pending.action === "start" && item.enabled || pending.action === "stop" && !item.enabled || pending.action === "permissions" && permissions.requesting || ["install", "update", "update-confirmed"].includes(pending.action) && deployment.stage !== "idle")) {
+    if (pending && (Date.now() > pending.until || pending.action === "start" && item.enabled && !stopping && !stopPending || pending.action === "stop" && !item.enabled || pending.action === "permissions" && permissions.requesting || ["install", "update", "update-confirmed"].includes(pending.action) && deployment.stage !== "idle")) {
       pendingActions.delete(item.id); pending = undefined;
     }
     const processing = Boolean(pending);
@@ -229,12 +269,18 @@
     p.platform.textContent = item.kind === "instance" ? copy.container : platforms[item.platform] || item.platform || "";
     const mac = macDevice(item);
     const permissionApproved = permissions.screen === "granted" && permissions.input === "granted";
-    p.permissionSummary.textContent = permissionApproved ? copy.permissionApproved : copy.permissionUnapproved;
+    const lockAuthorizationMissing = icon === "windows" && item.installed && permissions.lock_screen_authorized === false;
+    const windowsPermissionHint = lockAuthorizationMissing && item.enabled && !switching && !stopping && !stopPending;
+    const windowsPermissionMessage = windowsPermissionHint ? permissions.requesting ? copy.lockAccessPending : copy.lockAccessHelp : "";
+    if (card.actionError === copy.lockAccessDeferred && (permissions.requesting || permissions.lock_screen_authorized === true)) card.actionError = "";
+    p.permissionSummary.textContent = permissionApproved && !lockAuthorizationMissing ? copy.permissionApproved : copy.permissionUnapproved;
     p.permissionSummary.hidden = item.kind !== "device";
     let state = item.status || (item.ready ? "running" : item.enabled ? "starting" : "disabled");
     if (active) state = "updating";
     else if (pending?.action === "stop") state = "stopping";
     else if (pending?.action === "start" && !item.runtime_error) state = "starting";
+    else if (!stopping && !stopPending && item.enabled && item.online !== false &&
+      (permissions.reason_code === "lock_screen_ready" || !item.ready && permissions.reason_code === "session_locked")) state = "locked";
     p.badge.textContent = copy[state] || copy.disabled; p.badge.dataset.state = state;
     if (unavailable && state === "permission_required") p.badge.textContent = copy.desktopUnavailable;
     if (item.preview) {
@@ -262,21 +308,22 @@
     if (deployment.stage === "downloading" && deployment.total > 0) p.operationValue.textContent += ` · ${(deployment.received / 1048576).toFixed(1)} / ${(deployment.total / 1048576).toFixed(1)} MiB`;
     p.install.hidden = !item.managed || item.installed && !item.update_available && !active && deployment.stage !== "failed";
     p.install.textContent = active ? copy.working : deployment.stage === "failed" ? copy.retryOperation : item.installed ? copy.update : copy.install;
-    p.install.disabled = item.online === false || !item.can_install || active || processing;
+    p.install.disabled = item.online === false || !item.can_install || active || processing || stopping || stopPending;
     const clientUpdateRequired = item.kind === "device" && item.online && !p.install.hidden
       && !item.can_install && !(item.controller_protocol >= 2) && !active && !processing;
     p.install.title = clientUpdateRequired ? copy.client_update_required : item.available_version ? `${copy.latest} ${item.available_version}` : "";
     if (clientUpdateRequired) p.install.setAttribute("aria-describedby", p.error.id);
     else p.install.removeAttribute("aria-describedby");
     p.toggle.hidden = !item.managed || !item.installed;
-    p.toggle.textContent = pending?.action === "start" || pending?.action === "stop" ? copy.working : item.enabled ? copy.stop : copy.start;
-    p.toggle.disabled = item.online === false || processing || switching;
-    p.toggle.ariaLabel = `${item.enabled ? copy.stop : copy.start}: ${item.name}`;
-    p.request.hidden = item.kind !== "device" || permissionApproved;
+    const toggleLabel = copy[toggleAction(item)];
+    p.toggle.textContent = stopping || pending?.action === "start" || pending?.action === "stop" ? copy.working : toggleLabel;
+    p.toggle.disabled = item.online === false || processing || switching || stopping;
+    p.toggle.ariaLabel = `${stopping ? copy.stopping : toggleLabel}: ${item.name}`;
+    p.request.hidden = item.kind !== "device" || permissionApproved && !windowsPermissionHint;
     p.request.textContent = !mac && permissions.requesting ? copy.requesting : copy.permissions;
     p.request.disabled = item.online === false || !item.managed || !item.installed || switching ||
-      (!mac && (processing || permissions.requesting === true));
-    p.request.title = !item.installed ? copy.not_installed : "";
+      stopping || stopPending || (!mac && (processing || permissions.requesting === true));
+    p.request.title = !item.installed ? copy.not_installed : windowsPermissionMessage;
     if (linux && item.managed && item.installed) {
       p.request.hidden = permissionApproved || !(unavailable || deferred || physicalUnavailable);
       p.request.textContent = permissions.requesting ? copy.requesting : deferred ? copy.permissions : copy.details;
@@ -286,19 +333,22 @@
       (!mac || permissionApproved) && !(deferred && permissions.requesting);
     p.connect.setAttribute("aria-disabled", String(!ready)); p.connect.tabIndex = ready ? 0 : -1;
     if (ready) p.connect.href = item.url; else p.connect.removeAttribute("href");
-    p.connectLabel.textContent = item.current_device ? copy.currentDevice : ready ? copy.enterDesktop
+    const enter = state === "locked" && permissions.reason_code === "lock_screen_ready" ? copy.enterLocked : copy.enterDesktop;
+    p.connectLabel.textContent = item.current_device ? copy.currentDevice : ready ? enter
       : item.kind === "device" && !item.installed ? copy.installToEnter
-      : permissions.requesting || deferred || item.status === "permission_required" ? copy.authorizeToEnter : copy.startingDesktop;
-    p.connectLabel.hidden = active || item.enabled === false;
+      : state === "locked" ? copy.physicalLocked
+      : permissions.requesting || deferred || state === "permission_required" ? copy.authorizeToEnter
+      : state === "starting" ? copy.startingDesktop : copy.temporarily_unavailable;
+    p.connectLabel.hidden = active || stopping || stopPending || item.enabled === false;
     p.connect.classList.toggle("show-entry-hint", !p.connectLabel.hidden);
-    p.connect.ariaLabel = item.current_device ? copy.currentDevice : `${copy.enterDesktop}: ${item.name}`;
+    p.connect.ariaLabel = item.current_device ? copy.currentDevice : `${enter}: ${item.name}`;
     const runtimeMessage = deployment.stage === "failed" ? deployment.error || copy.failedInstall
       : item.runtime_error === "desktop_process_stopped" ? copy.stopped : item.runtime_error || "";
     const macHint = mac && item.managed && item.installed && !permissionApproved;
-    if (macHint) p.request.setAttribute("aria-describedby", p.error.id);
+    if (macHint || windowsPermissionHint) p.request.setAttribute("aria-describedby", p.error.id);
     else p.request.removeAttribute("aria-describedby");
-    const message = [...new Set([card.actionError || "", runtimeMessage, clientUpdateRequired ? copy.client_update_required : "",
-      macHint ? macPermissionsHelp : "",
+    const message = [...new Set([card.actionError || "", stopPending ? copy.stopRetrying : "", runtimeMessage, clientUpdateRequired ? copy.client_update_required : "",
+      macHint ? macPermissionsHelp(item) : "", card.actionError === copy.lockAccessDeferred ? "" : windowsPermissionMessage,
       unavailable ? permissions.reason || permissionHelp(item) : ""].filter(Boolean))].join("\n");
     if (p.error.textContent !== message) p.error.textContent = message;
     p.error.hidden = !message;
@@ -334,10 +384,14 @@
       }
       warning.hidden = true;
       const reply = await response.json();
+      if (reply?.permission_request_deferred === true && card) card.actionError = copy.lockAccessDeferred;
       if (action === "permissions" && !repeatable) pendingActions.delete(id);
       const state = reply?.state;
       controlRevision += 1;
-      if (card && state && typeof state.ready === "boolean" && typeof state.enabled === "boolean") {
+      if (action === "stop" && reply?.stop_queued === true) {
+        pendingActions.delete(id);
+        if (card) updateCard(card, { ...card.target, ready: false, status: "stopping" });
+      } else if (card && state && typeof state.ready === "boolean" && typeof state.enabled === "boolean") {
         updateCard(card, { ...card.target, enabled: state.enabled, ready: state.ready,
           status: state.status, permissions: state.permissions || card.target.permissions,
           deployment: state.deployment || card.target.deployment, runtime_error: state.error });
@@ -414,7 +468,7 @@
   }
   function refresh() {
     refreshMacPermissions();
-    const transitioning = [...pendingActions.values()].some(p => p.action === "start" || p.action === "stop") || [...cards.values()].some(card => card.target.status === "starting");
+    const transitioning = [...pendingActions.values()].some(p => p.action === "start" || p.action === "stop") || [...cards.values()].some(card => ["starting", "stopping"].includes(card.target.status));
     const active = [...cards.values()].some(card => !["idle", "completed", "failed"].includes(card.target.deployment?.stage || "idle"));
     const requesting = [...cards.values()].some(card => card.target.permissions?.requesting);
     if (Date.now() - refreshedAt >= (transitioning ? 250 : active || requesting ? 1000 : 4000)) void load();

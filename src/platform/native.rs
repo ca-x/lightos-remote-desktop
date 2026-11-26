@@ -102,15 +102,15 @@ impl HostPlatform for NativeHost {
             "desktop startup cancelled"
         );
         self.platform.permissions()?.require_granted()?;
-        ensure!(
-            self.platform.session_active()?,
-            "desktop is locked or unavailable"
-        );
         let key = self.platform.session_key()?;
+        let surface = self
+            .platform
+            .session_surface(&key)?
+            .context("desktop is locked or unavailable")?;
         let outputs = self.platform.displays()?;
-        let selected = match output.as_deref() {
-            Some(name) => outputs.iter().find(|o| o.name == name),
-            None => outputs.first(),
+        let selected = match (surface, output.as_deref()) {
+            (NativeSurface::Desktop, Some(name)) => outputs.iter().find(|o| o.name == name),
+            _ => outputs.first(),
         }
         .context("selected physical display unavailable")?
         .clone();
@@ -139,6 +139,7 @@ struct Shared {
     stopped: AtomicBool,
     paused: AtomicBool,
     epoch: AtomicU64,
+    lock_screen: AtomicBool,
     frames: watch::Sender<Option<Arc<Frame>>>,
     cursors: watch::Sender<Option<Arc<crate::backend::CursorFrame>>>,
     output: Mutex<DisplayOutput>,
@@ -161,11 +162,13 @@ impl Shared {
         self.frames.send_replace(None);
         self.cursors.send_replace(None);
     }
-    fn publish(&self, mut frame: Frame, epoch: u64) -> bool {
+    fn publish(&self, mut frame: Frame, epoch: u64, surface: NativeSurface) -> bool {
         let _gate = self.publish_gate.lock().unwrap_or_else(|e| e.into_inner());
         if self.stopped.load(Ordering::Acquire) || self.epoch.load(Ordering::Acquire) != epoch {
             return false;
         }
+        self.lock_screen
+            .store(surface == NativeSurface::LockScreen, Ordering::Release);
         self.paused.store(false, Ordering::Release);
         self.frames.send_if_modified(|latest| {
             let changed = latest.as_ref().is_none_or(|previous| {
@@ -183,12 +186,24 @@ impl Shared {
         });
         true
     }
+
+    fn displayed_surface(&self) -> Option<NativeSurface> {
+        if self.paused.load(Ordering::Acquire) {
+            return None;
+        }
+        Some(if self.lock_screen.load(Ordering::Acquire) {
+            NativeSurface::LockScreen
+        } else {
+            NativeSurface::Desktop
+        })
+    }
 }
 const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const STATIC_RECAPTURE_INTERVAL: Duration = Duration::from_secs(2);
 
 pub struct NativeBackend {
     platform: Arc<dyn NativePlatform>,
+    key: String,
     shared: Arc<Shared>,
     input: mpsc::Sender<InputCommand>,
     workers: Mutex<Vec<JoinHandle<()>>>,
@@ -207,6 +222,7 @@ impl NativeBackend {
             stopped: AtomicBool::new(false),
             paused: AtomicBool::new(true),
             epoch: AtomicU64::new(0),
+            lock_screen: AtomicBool::new(false),
             frames,
             cursors,
             output: Mutex::new(output),
@@ -216,6 +232,7 @@ impl NativeBackend {
         let (ready, started) = std::sync::mpsc::sync_channel(2);
         let backend = Self {
             platform: platform.clone(),
+            key: key.clone(),
             shared: shared.clone(),
             input,
             workers: Mutex::new(Vec::new()),
@@ -361,6 +378,28 @@ impl DesktopBackend for NativeBackend {
     fn privacy_epoch(&self) -> u64 {
         self.shared.epoch.load(Ordering::Acquire)
     }
+    fn lock_screen_epoch(&self) -> Option<u64> {
+        let epoch = self.privacy_epoch();
+        (self.shared.displayed_surface() == Some(NativeSurface::LockScreen)
+            && self.privacy_epoch() == epoch)
+            .then_some(epoch)
+    }
+    fn audio_paused(&self) -> bool {
+        self.shared.displayed_surface() != Some(NativeSurface::Desktop)
+    }
+    fn viewer_can_wake_display(&self) -> bool {
+        self.platform.can_prepare_lock_display()
+            && self
+                .platform
+                .session_surface(&self.key)
+                .is_ok_and(|surface| surface == Some(NativeSurface::LockScreen))
+    }
+    fn wake_display_for_viewer(&self) -> Result<()> {
+        if self.viewer_can_wake_display() {
+            self.platform.wake_lock_display()?;
+        }
+        Ok(())
+    }
     fn clipboard_read(&self) -> BoxFuture<'_, Result<String>> {
         Box::pin(async {
             self.clipboard_ready()?;
@@ -446,13 +485,17 @@ fn probe_native(
             let result = (|| -> Result<()> {
                 platform.permissions()?.require_granted()?;
                 platform.probe_input()?;
-                ensure!(platform.session_active()?, "desktop locked or unavailable");
+                let key = platform.session_key()?;
+                let surface = platform
+                    .session_surface(&key)?
+                    .context("desktop locked or unavailable")?;
                 let output = platform
                     .displays()?
                     .into_iter()
                     .next()
                     .context("no physical display")?;
-                let mut capture = platform.capture(&output, fps)?;
+                let output = platform.display_for_surface(&output, surface)?;
+                let mut capture = platform.capture(&output, fps, surface)?;
                 let deadline = Instant::now() + Duration::from_secs(3);
                 while !stop.load(Ordering::Acquire) {
                     if let Some(frame) = capture.next_frame(Duration::from_millis(50))? {
@@ -497,11 +540,19 @@ fn probe_native(
 }
 
 pub(super) fn probe_input() -> Result<()> {
-    let _input = Enigo::new(&Settings {
+    open_input()?;
+    Ok(())
+}
+
+fn open_input() -> Result<Enigo> {
+    let settings = Settings {
         open_prompt_to_get_permissions: false,
         ..Default::default()
-    })?;
-    Ok(())
+    };
+    #[cfg(target_os = "macos")]
+    return super::macos::open_input(&settings);
+    #[cfg(target_os = "windows")]
+    Ok(Enigo::new(&settings)?)
 }
 
 fn join_until(worker: JoinHandle<()>, deadline: Instant) {
@@ -517,9 +568,6 @@ fn join_until(worker: JoinHandle<()>, deadline: Instant) {
     }
 }
 
-fn session_ready(platform: &dyn NativePlatform, key: &str) -> Result<bool> {
-    platform.session_ready(key)
-}
 fn keep_running(shared: &Shared, cancelled: &AtomicBool) -> bool {
     !shared.stopped.load(Ordering::Acquire) && !cancelled.load(Ordering::Acquire)
 }
@@ -535,23 +583,65 @@ fn run_capture(
     let mut capture: Option<Box<dyn NativeCapture>> = None;
     let mut ready = Some(ready);
     let mut capture_epoch = shared.epoch.load(Ordering::Acquire);
-    let mut checked_display = Instant::now();
+    let selected = shared
+        .output
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let mut last_check = None;
+    let mut capture_surface = None;
+    let mut surface_started = Instant::now();
     let mut last_frame = Instant::now();
     while keep_running(shared, cancelled) {
-        if !session_ready(platform, key)? {
+        let Some(surface) = platform.session_surface(key)? else {
             shared.pause();
             capture.take();
+            capture_surface = None;
+            last_check = None;
             std::thread::park_timeout(Duration::from_millis(25));
             continue;
+        };
+        if capture_surface != Some(surface) {
+            shared.pause();
+            capture.take();
+            capture_surface = Some(surface);
+            surface_started = Instant::now();
+            last_check = None;
         }
-        if checked_display.elapsed() >= Duration::from_millis(500) {
+        if surface == NativeSurface::LockScreen
+            && ready.is_some()
+            && platform.can_prepare_lock_display()
+        {
+            if let Some(ready) = ready.take() {
+                let _ = ready.send(Ok(()));
+            }
+        }
+        if surface == NativeSurface::LockScreen && platform.lock_display_asleep() {
+            shared.pause();
+            capture.take();
+            std::thread::park_timeout(Duration::from_millis(100));
+            continue;
+        }
+        let may_retry = surface == NativeSurface::LockScreen
+            || surface_started.elapsed() < Duration::from_secs(4);
+        if last_check.is_none_or(|time: Instant| time.elapsed() >= Duration::from_millis(500)) {
             let old = shared
                 .output
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
-            let current = platform.refresh_display(&old)?;
-            if current.width != old.width
+            let current = match platform.display_for_surface(&selected, surface) {
+                Ok(output) => output,
+                Err(_) if may_retry => {
+                    shared.pause();
+                    capture.take();
+                    std::thread::park_timeout(Duration::from_millis(250));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            if current.name != old.name
+                || current.width != old.width
                 || current.height != old.height
                 || current.x != old.x
                 || current.y != old.y
@@ -561,7 +651,7 @@ fn run_capture(
                 *shared.output.lock().unwrap_or_else(|e| e.into_inner()) = current;
                 capture.take();
             }
-            checked_display = Instant::now();
+            last_check = Some(Instant::now());
         }
         if capture.is_none() || shared.epoch.load(Ordering::Acquire) != capture_epoch {
             let output = shared
@@ -571,26 +661,43 @@ fn run_capture(
                 .clone();
             capture.take();
             capture_epoch = shared.epoch.load(Ordering::Acquire);
-            capture = Some(platform.capture(&output, fps)?);
+            match platform.capture(&output, fps, surface) {
+                Ok(stream) => capture = Some(stream),
+                Err(_) if may_retry || platform.session_surface(key)? != Some(surface) => {
+                    std::thread::park_timeout(Duration::from_millis(250));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
             last_frame = Instant::now();
         }
         let epoch = capture_epoch;
         let next = capture
             .as_mut()
             .context("native capture missing")?
-            .next_frame(Duration::from_millis(10))?;
+            .next_frame(Duration::from_millis(10));
         if !keep_running(shared, cancelled) {
             break;
         }
-        if !session_ready(platform, key)? {
+        if platform.session_surface(key)? != Some(surface) {
             shared.pause();
             capture.take();
             continue;
         }
+        let next = match next {
+            Ok(next) => next,
+            Err(_) if may_retry => {
+                shared.pause();
+                capture.take();
+                std::thread::park_timeout(Duration::from_millis(250));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         if let Some(mut frame) = next {
             validate_frame(&frame)?;
             frame.cursor_embedded = false;
-            if shared.publish(frame, epoch) {
+            if shared.publish(frame, epoch, surface) {
                 last_frame = Instant::now();
                 if let Some(ready) = ready.take() {
                     let _ = ready.send(Ok(()));
@@ -599,6 +706,15 @@ fn run_capture(
         } else if last_frame.elapsed() >= STATIC_RECAPTURE_INTERVAL {
             // Event-driven sources can be quiet or stalled. Reopening requests a
             // genuine fresh frame instead of inferring health from an empty queue.
+            if surface == NativeSurface::LockScreen
+                && shared
+                    .frames
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|frame| frame.captured_at.elapsed() >= Duration::from_secs(5))
+            {
+                shared.pause();
+            }
             capture.take();
         }
     }
@@ -622,30 +738,28 @@ fn run_input(
     cancelled: &AtomicBool,
     ready: std::sync::mpsc::SyncSender<Result<()>>,
 ) -> Result<()> {
-    let mut enigo = Enigo::new(&Settings {
-        open_prompt_to_get_permissions: false,
-        ..Default::default()
-    })?;
+    let mut enigo = open_input()?;
     ready
         .send(Ok(()))
         .map_err(|_| anyhow::anyhow!("native startup cancelled"))?;
     let mut held = Held::default();
-    let mut was_active = false;
+    let mut input_epoch = None;
     let result = (|| -> Result<()> {
         while keep_running(shared, cancelled) {
-            let permitted = session_ready(platform, key)?;
-            if !permitted {
+            let surface = platform.session_surface(key)?;
+            if surface != shared.displayed_surface() {
                 shared.pause();
             }
-            let active = permitted && !shared.paused.load(Ordering::Acquire);
-            if !active || !was_active {
+            let epoch = shared.epoch.load(Ordering::Acquire);
+            let active = surface.is_some() && surface == shared.displayed_surface();
+            if !active || input_epoch != Some(epoch) {
                 held.release(&mut enigo)?;
-                // Do not replay input queued while locked or before first capture.
+                // Drop input from the previous surface before accepting keys again.
                 while let Ok(command) = input.try_recv() {
                     discard_input(command);
                 }
             }
-            was_active = active;
+            input_epoch = active.then_some(epoch);
             if !active {
                 std::thread::park_timeout(Duration::from_millis(10));
                 continue;
@@ -658,13 +772,24 @@ fn run_input(
                 }
                 Err(mpsc::error::TryRecvError::Disconnected) => break,
             };
+            let locked = surface == Some(NativeSurface::LockScreen);
             if let InputCommand::ReleaseSync { done } = command {
                 held.release(&mut enigo)?;
-                let _ = done.send(());
+                if !locked
+                    || platform
+                        .lock_screen_input(&InputCommand::Release)
+                        .is_none_or(|result| result.is_ok())
+                    || platform.session_surface(key)? != surface
+                {
+                    let _ = done.send(());
+                }
                 continue;
             }
             if matches!(command, InputCommand::Release) {
                 held.release(&mut enigo)?;
+                if locked {
+                    let _ = platform.lock_screen_input(&InputCommand::Release);
+                }
                 continue;
             }
             let Some((command, guard)) = command.into_active() else {
@@ -684,17 +809,49 @@ fn run_input(
                 .clone();
             let active = || {
                 keep_running(shared, cancelled)
-                    && !shared.paused.load(Ordering::Acquire)
-                    && guard.as_ref().is_none_or(|g| g.active())
-                    && session_ready(platform, key).unwrap_or(false)
+                    && shared.epoch.load(Ordering::Acquire) == epoch
+                    && shared.displayed_surface() == surface
+                    && guard.as_ref().is_none_or(|g| {
+                        g.active()
+                            && g.lock_screen_epoch.is_none_or(|lock_epoch| {
+                                lock_epoch == epoch && surface == Some(NativeSurface::LockScreen)
+                            })
+                    })
+                    && platform
+                        .session_surface(key)
+                        .is_ok_and(|current| current == surface)
             };
-            let result = held.apply(platform, &mut enigo, &command, &output, active);
+            let result = if !active()
+                || (locked
+                    && matches!(&command, InputCommand::Text { .. })
+                    && !guard
+                        .as_ref()
+                        .is_some_and(|g| g.lock_screen_epoch == Some(epoch)))
+            {
+                Ok(())
+            } else if locked {
+                if let Some(result) = platform.lock_screen_input(&command) {
+                    if let Err(error) = result {
+                        tracing::debug!(%error, "Windows lock-screen input unavailable");
+                    }
+                } else if let InputCommand::Text { text } = &command {
+                    held.release(&mut enigo)?;
+                    for character in text.chars().take_while(|_| active()) {
+                        enigo.text(character.encode_utf8(&mut [0; 4]))?;
+                    }
+                } else {
+                    held.apply(platform, &mut enigo, &command, &output, active)?;
+                }
+                Ok(())
+            } else {
+                held.apply(platform, &mut enigo, &command, &output, active)
+            };
             let still_active = active();
             if let Some(guard) = guard {
                 guard.text_done.notify_one();
             }
             result?;
-            if !still_active {
+            if !still_active && platform.session_surface(key)? != surface {
                 shared.pause();
                 held.release(&mut enigo)?;
             }
@@ -709,7 +866,7 @@ fn run_input(
 }
 
 #[derive(Default)]
-struct Held {
+pub(super) struct Held {
     keys: BTreeSet<u16>,
     buttons: BTreeSet<u32>,
     scroll_x: f64,
@@ -727,7 +884,7 @@ fn keycode(code: u32) -> Result<u16> {
     ensure!(raw != 0xffff, "key has no native mapping");
     Ok(raw)
 }
-fn validate_command(command: &InputCommand) -> Result<()> {
+pub(super) fn validate_command(command: &InputCommand) -> Result<()> {
     command.validate()?;
     match command {
         InputCommand::Key { code, .. } => {
@@ -751,7 +908,7 @@ fn button(code: u32) -> Result<Button> {
     }
 }
 impl Held {
-    fn release(&mut self, enigo: &mut Enigo) -> Result<()> {
+    pub(super) fn release(&mut self, enigo: &mut Enigo) -> Result<()> {
         self.scroll_x = 0.0;
         self.scroll_y = 0.0;
         let mut result = Ok(());
@@ -767,7 +924,7 @@ impl Held {
         }
         result
     }
-    fn apply(
+    pub(super) fn apply(
         &mut self,
         platform: &dyn NativePlatform,
         enigo: &mut Enigo,
@@ -955,7 +1112,12 @@ mod tests {
                 scale: 1.0,
             }])
         }
-        fn capture(&self, _: &DisplayOutput, _: u32) -> Result<Box<dyn NativeCapture>> {
+        fn capture(
+            &self,
+            _: &DisplayOutput,
+            _: u32,
+            _: NativeSurface,
+        ) -> Result<Box<dyn NativeCapture>> {
             self.started.fetch_add(1, Ordering::Relaxed);
             struct Capture(bool);
             impl NativeCapture for Capture {

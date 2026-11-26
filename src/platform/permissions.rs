@@ -18,6 +18,8 @@ pub struct PermissionReport {
     pub settings: Vec<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<crate::backend::BackendKind>,
+    #[cfg(target_os = "windows")]
+    pub lock_screen_authorized: bool,
 }
 impl PermissionReport {
     fn new(
@@ -36,6 +38,8 @@ impl PermissionReport {
             reason_code: code,
             settings,
             backend: None,
+            #[cfg(target_os = "windows")]
+            lock_screen_authorized: false,
         }
     }
     pub(super) fn unavailable(reason: String, code: &'static str) -> Self {
@@ -85,19 +89,35 @@ fn physical_report(config: &Config, request: bool) -> Result<PermissionReport> {
     {
         let _ = config;
         Ok(match super::macos::permissions(request) {
-            Ok(permissions) => PermissionReport::new(
-                permissions,
-                "system",
-                "permission_required",
-                vec!["screen", "input"],
-            ),
+            Ok(permissions) => {
+                let mut report = PermissionReport::new(
+                    permissions,
+                    "system",
+                    "permission_required",
+                    vec![
+                        "screen",
+                        "input",
+                        super::macos::input_permission().setting(),
+                    ],
+                );
+                if super::macos::session_locked() {
+                    report.reason_code = if report.can_start {
+                        "lock_screen_ready"
+                    } else {
+                        "session_locked"
+                    };
+                }
+                report
+            }
             Err(error) => PermissionReport::unavailable(error.to_string(), "session_unavailable"),
         })
     }
     #[cfg(target_os = "windows")]
     {
         let _ = config;
-        super::windows::permission_report(request)
+        let mut report = super::windows::permission_report(request)?;
+        report.lock_screen_authorized = super::windows::lock_screen_authorized();
+        Ok(report)
     }
     #[cfg(target_os = "linux")]
     {
@@ -131,12 +151,15 @@ fn physical_report(config: &Config, request: bool) -> Result<PermissionReport> {
                 return Ok(PermissionReport::unavailable(error.to_string(), code));
             }
         };
-        if let Err(error) = crate::backend::guarded::require_attachable(&target, selected) {
-            let code = error
-                .downcast_ref::<crate::backend::CapabilityError>()
-                .map_or("session_unavailable", |error| error.code);
-            return Ok(PermissionReport::unavailable(format!("{error:#}"), code));
-        }
+        let locked = match crate::backend::guarded::require_attachable(&target, selected) {
+            Ok(locked) => locked,
+            Err(error) => {
+                let code = error
+                    .downcast_ref::<crate::backend::CapabilityError>()
+                    .map_or("session_unavailable", |error| error.code);
+                return Ok(PermissionReport::unavailable(format!("{error:#}"), code));
+            }
+        };
         if selection.requires_consent() {
             let approved = selection.candidates.iter().any(|candidate| {
                 Some(candidate.backend) == selection.selected && candidate.authorized == Some(true)
@@ -199,7 +222,7 @@ fn physical_report(config: &Config, request: bool) -> Result<PermissionReport> {
                 reason: None,
             },
             "none",
-            "ready",
+            if locked { "lock_screen_ready" } else { "ready" },
             vec![],
         );
         report.backend = selection.selected;

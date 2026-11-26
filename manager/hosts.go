@@ -48,6 +48,9 @@ type hostRecord struct {
 	until        time.Time
 	source       *desktopSource
 	sourceURL    string
+	stop         *desktopStop
+	starting     bool
+	readyEpoch   string
 }
 type hostRegistry struct {
 	mu        sync.Mutex
@@ -81,11 +84,20 @@ func (h *hostRegistry) list(owner, currentDevice string) []desktopTarget {
 		state, _ := r.Agent["status"].(string)
 		if !online {
 			state = "offline"
+		} else if record.stop != nil {
+			state = record.stopStatus()
+		} else if r.Desktop.Enabled {
+			reason := permissions["reason_code"]
+			if reason == "lock_screen_ready" || reason == "session_locked" && !r.Desktop.Ready {
+				state = "locked"
+			} else if !r.Desktop.Ready && record.readyEpoch != "" && (state == "" || state == "starting" || state == "running") {
+				state = "temporarily_unavailable"
+			}
 		}
 		target := desktopTarget{agent: r.Agent, Kind: "device", ID: id, Name: r.Name, Platform: r.Platform, URL: "/desktop/" + id + "/", RequiresConsent: r.Desktop.RequiresConsent,
 			DeviceID:      r.DeviceID,
 			CurrentDevice: currentDevice != "" && r.DeviceID == currentDevice,
-			Managed:       r.ControlService != "", Online: online, Enabled: r.Desktop.Enabled, Ready: online && r.Desktop.Ready, Status: state, Permissions: permissions}
+			Managed:       r.ControlService != "", Online: online, Enabled: r.Desktop.Enabled, Ready: online && record.desktopReady(), Status: state, Permissions: permissions}
 		if stamp := previewStamp(id); stamp != "" {
 			target.Preview = "/api/previews/" + id + "?v=" + stamp
 		}
@@ -140,6 +152,7 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 			current.registration.Desktop.Password = ""
 			current.registration.DesktopService = ""
 			current.registration.Secret = ""
+			current.readyEpoch = ""
 			h.hosts[id] = current
 			h.persist()
 		}
@@ -194,7 +207,17 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 	api.Close()
 	registration.DeviceID = device.GetUniqueDeivceId()
 	h.mu.Lock()
-	if previous, ok := h.hosts[id]; ok && previous.until.After(time.Now()) {
+	record := hostRecord{registration: registration, owner: owner(r), until: time.Now().Add(35 * time.Second)}
+	var epoch string
+	if d.Enabled && d.Epoch != "" {
+		sum := sha256.Sum256([]byte(d.Epoch))
+		epoch = hex.EncodeToString(sum[:])
+		if d.Ready {
+			record.readyEpoch = epoch
+		}
+	}
+	previous, exists := h.hosts[id]
+	if exists && previous.until.After(time.Now()) {
 		prior, _ := previous.registration.Agent["controller_protocol"].(float64)
 		incoming, _ := registration.Agent["controller_protocol"].(float64)
 		if prior >= 2 && incoming < 2 {
@@ -203,8 +226,26 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	h.hosts[id] = hostRecord{registration: registration, owner: owner(r), until: time.Now().Add(35 * time.Second)}
+	if exists && record.sameDevice(previous) {
+		record.stop = previous.stop
+		record.starting = previous.starting
+		// A failed health check cannot start a runtime that has already been
+		// ready. A replacement runtime reports a new desktop epoch.
+		if previous.readyEpoch == epoch {
+			record.readyEpoch = epoch
+		}
+		if record.stop != nil {
+			if registration.ControlService != previous.registration.ControlService {
+				record.stop.retryAt = time.Time{}
+			}
+			if registration.ControlService != previous.registration.ControlService || registration.Desktop.Enabled {
+				record.stop.confirmedService = ""
+			}
+		}
+	}
+	h.hosts[id] = record
 	h.persist()
+	h.scheduleDesktopStop(id, record)
 	h.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -222,7 +263,7 @@ func (h *hostRegistry) proxy(w http.ResponseWriter, r *http.Request) {
 	h.mu.Lock()
 	record, ok := h.hosts[id]
 	h.mu.Unlock()
-	if !ok || record.owner != owner(r) || !record.until.After(time.Now()) || !record.registration.Desktop.Ready {
+	if !ok || record.owner != owner(r) || !record.until.After(time.Now()) || !record.desktopReady() {
 		writeFailure(w, 403, "desktop_unavailable")
 		return
 	}

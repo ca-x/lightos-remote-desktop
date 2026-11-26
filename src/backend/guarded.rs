@@ -416,8 +416,8 @@ pub struct GuardedBackend {
     worker: std::sync::Mutex<Option<thread::JoinHandle<()>>>,
 }
 
-/// Verify the login before opening capture or asking for Portal consent.
-pub(crate) fn require_attachable(target: &SessionTarget, backend: BackendKind) -> Result<()> {
+/// Verify the login and report whether attachment would start at the lock screen.
+pub(crate) fn require_attachable(target: &SessionTarget, backend: BackendKind) -> Result<bool> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -439,7 +439,7 @@ pub(crate) fn require_attachable(target: &SessionTarget, backend: BackendKind) -
         )
         .into());
     }
-    Ok(())
+    Ok(locked)
 }
 
 /// Blocking setup. On systems without logind no lock authority is invented;
@@ -510,9 +510,7 @@ fn attach_with_source(
                             let Some(command) = command else { break; };
                             if release_command(&command) {
                                 tokio::time::timeout(Duration::from_millis(500), worker_inner.input().send(unwrapped_release(command))).await.context("input queue timed out")??;
-                            } else if current_access == Access::Desktop
-                                || (current_access == Access::LockScreen && lock_screen_input(&command))
-                            {
+                            } else if allow_input(&command, current_access, worker_generation.load(Ordering::Acquire)) {
                                 let command = match command {
                                     InputCommand::Guarded { command, mut guard } => {
                                         guard.lock_cancellation = Some(input_gate.clone());
@@ -609,13 +607,16 @@ fn attach_with_source(
         }
     }
 }
-fn lock_screen_input(command: &InputCommand) -> bool {
+fn allow_input(command: &InputCommand, access: Access, epoch: u64) -> bool {
     match command {
-        InputCommand::Guarded { command, .. } => lock_screen_input(command),
-        // Text commands may use the desktop clipboard. Send raw keyboard and
-        // pointer events to the OS prompt, which owns password verification.
-        InputCommand::Text { .. } => false,
-        _ => true,
+        InputCommand::Guarded { command, guard } if guard.lock_screen_epoch.is_some() => {
+            access == Access::LockScreen
+                && guard.lock_screen_epoch == Some(epoch)
+                && matches!(command.as_ref(), InputCommand::Text { .. })
+        }
+        InputCommand::Guarded { command, .. } => allow_input(command, access, epoch),
+        InputCommand::Text { .. } => access == Access::Desktop,
+        _ => access != Access::Blocked,
     }
 }
 
@@ -723,6 +724,11 @@ impl DesktopBackend for GuardedBackend {
     }
     fn paused(&self) -> bool {
         *self.access.borrow() == Access::Blocked || self.inner.paused()
+    }
+    fn lock_screen_epoch(&self) -> Option<u64> {
+        let access = self.access.borrow();
+        (*access == Access::LockScreen && !self.inner.paused() && !self.is_stopped())
+            .then(|| self.generation.load(Ordering::Acquire))
     }
     fn audio_paused(&self) -> bool {
         self.clipboard_blocked()

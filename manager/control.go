@@ -10,6 +10,11 @@ import (
 	"time"
 )
 
+type controlFailure struct {
+	status int
+	code   string
+}
+
 func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 	action := r.PathValue("action")
 	if r.Method != http.MethodPost || (action != "start" && action != "stop" && action != "permissions" && action != "permissions-check" && action != "install" && action != "update" && action != "update-confirmed") {
@@ -24,15 +29,36 @@ func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusForbidden, "invalid_control_origin")
 		return
 	}
+	id := r.PathValue("id")
 	h.mu.Lock()
-	record, ok := h.hosts[r.PathValue("id")]
-	h.mu.Unlock()
+	record, ok := h.hosts[id]
 	if !ok || record.owner != owner(r) || record.registration.ControlService == "" || !record.until.After(time.Now()) {
+		h.mu.Unlock()
 		writeFailure(w, http.StatusConflict, "device_unavailable")
 		return
 	}
+	protocol, _ := record.registration.Agent["controller_protocol"].(float64)
+	if protocol >= 2 && action == "stop" {
+		err := h.requestDesktopStop(id, record)
+		h.mu.Unlock()
+		if err != nil {
+			writeFailure(w, http.StatusInternalServerError, "desktop_preference_save_failed")
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true, "stop_queued": true})
+		return
+	}
+	if action == "start" && (protocol >= 2 || record.stop != nil) {
+		failure := h.beginDesktopStart(id, record)
+		if failure != nil {
+			h.mu.Unlock()
+			writeFailure(w, failure.status, failure.code)
+			return
+		}
+		defer h.finishDesktopStart(id, record)
+	}
+	h.mu.Unlock()
 	if action == "install" || action == "update" || action == "update-confirmed" {
-		protocol, _ := record.registration.Agent["controller_protocol"].(float64)
 		if protocol < 2 {
 			writeFailure(w, 409, "client_update_required")
 			return
@@ -40,33 +66,92 @@ func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
-	api, device, err := ownedDevice(ctx, owner(r), record.registration.DeviceID)
-	if err != nil {
-		writeFailure(w, 503, "device_unavailable")
+	reply, failure := forwardHostControl(ctx, record, action)
+	if failure != nil {
+		writeFailure(w, failure.status, failure.code)
 		return
+	}
+	state, _ := reply["state"].(map[string]any)
+	if needsWindowsLockAuthorization(state) && (action == "permissions" || action == "start" && state["enabled"] == true) {
+		requestWindowsLockAuthorization(ctx, record, reply, action == "permissions")
+		state, _ = reply["state"].(map[string]any)
+	}
+	if state != nil {
+		h.mu.Lock()
+		if current, exists := h.hosts[id]; exists && current.owner == record.owner && current.registration.ControlService == record.registration.ControlService {
+			current.registration.Agent = state
+			h.hosts[id] = current
+		}
+		h.mu.Unlock()
+	}
+	writeJSON(w, http.StatusAccepted, reply)
+}
+
+func needsWindowsLockAuthorization(state map[string]any) bool {
+	permissions, _ := state["permissions"].(map[string]any)
+	return state["target"] == "win32-x64" &&
+		permissions["can_start"] == true && permissions["lock_screen_authorized"] == false && permissions["requesting"] != true
+}
+
+func requestWindowsLockAuthorization(ctx context.Context, record hostRecord, reply map[string]any, alreadyRequested bool) {
+	// The PC controller can return an accepted response while its read-only
+	// check is in flight. Retry that case once without repeating a live prompt.
+	firstAttempt := 0
+	if alreadyRequested {
+		firstAttempt = 1
+	}
+	for attempt := firstAttempt; attempt < 2; attempt++ {
+		if attempt != 0 {
+			timer := time.NewTimer(350 * time.Millisecond)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				reply["permission_request_deferred"] = true
+				return
+			}
+		}
+		authorization, failure := forwardHostControl(ctx, record, "permissions")
+		if failure != nil {
+			break
+		}
+		state, ok := authorization["state"].(map[string]any)
+		if !ok {
+			break
+		}
+		reply["state"] = state
+		if !needsWindowsLockAuthorization(state) {
+			return
+		}
+	}
+	reply["permission_request_deferred"] = true
+}
+
+func forwardHostControl(parent context.Context, record hostRecord, action string) (map[string]any, *controlFailure) {
+	ctx, cancel := context.WithTimeout(parent, 12*time.Second)
+	defer cancel()
+	api, device, err := ownedDevice(ctx, record.owner, record.registration.DeviceID)
+	if err != nil {
+		return nil, &controlFailure{503, "device_unavailable"}
 	}
 	defer api.Close()
 	proxy, err := api.NewDeviceProxy(device.GetDeviceApiUrl())
 	if err != nil {
-		writeFailure(w, 503, "device_unavailable")
-		return
+		return nil, &controlFailure{503, "device_unavailable"}
 	}
 	token, err := proxy.GetAuthToken(ctx)
 	proxy.Close()
 	if err != nil {
-		writeFailure(w, 503, "device_authorization_failed")
-		return
+		return nil, &controlFailure{503, "device_authorization_failed"}
 	}
 	target, err := url.Parse(device.GetDeviceApiUrl())
 	if err != nil || target.Scheme != "https" || target.Host == "" || target.User != nil || target.RawQuery != "" || target.Fragment != "" {
-		writeFailure(w, 503, "device_unavailable")
-		return
+		return nil, &controlFailure{503, "device_unavailable"}
 	}
 	target.Path = strings.TrimRight(target.Path, "/") + "/s/" + record.registration.ControlService + "/" + action
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), strings.NewReader("{}"))
 	if err != nil {
-		writeFailure(w, 503, "device_unavailable")
-		return
+		return nil, &controlFailure{503, "device_unavailable"}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("lzc_dapi_auth_token", token.Token)
@@ -74,8 +159,7 @@ func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{Timeout: 12 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	response, err := client.Do(req)
 	if err != nil {
-		writeFailure(w, 502, "control_unavailable")
-		return
+		return nil, &controlFailure{502, "control_unavailable"}
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusConflict {
@@ -83,26 +167,15 @@ func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 			Error string `json:"error"`
 		}
 		if json.NewDecoder(io.LimitReader(response.Body, 8192)).Decode(&failure) == nil && failure.Error == "update_confirmation_required" {
-			writeFailure(w, 409, failure.Error)
-			return
+			return nil, &controlFailure{409, failure.Error}
 		}
 	}
 	if response.StatusCode != http.StatusAccepted && response.StatusCode != http.StatusOK {
-		writeFailure(w, 502, "control_rejected")
-		return
+		return nil, &controlFailure{502, "control_rejected"}
 	}
 	var reply map[string]any
 	if json.NewDecoder(io.LimitReader(response.Body, 8192)).Decode(&reply) != nil {
-		writeFailure(w, 502, "invalid_control_response")
-		return
+		return nil, &controlFailure{502, "invalid_control_response"}
 	}
-	if state, ok := reply["state"].(map[string]any); ok {
-		h.mu.Lock()
-		if current, exists := h.hosts[r.PathValue("id")]; exists && current.owner == owner(r) && current.registration.ControlService == record.registration.ControlService {
-			current.registration.Agent = state
-			h.hosts[r.PathValue("id")] = current
-		}
-		h.mu.Unlock()
-	}
-	writeJSON(w, http.StatusAccepted, reply)
+	return reply, nil
 }

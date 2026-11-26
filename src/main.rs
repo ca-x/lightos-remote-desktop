@@ -42,6 +42,21 @@ enum Action {
     #[cfg(target_os = "windows")]
     #[command(hide = true)]
     ServiceRun,
+    #[cfg(target_os = "windows")]
+    #[command(hide = true)]
+    InstallLockScreenService {
+        owner: String,
+    },
+    #[cfg(target_os = "windows")]
+    #[command(hide = true)]
+    LockScreenService,
+    #[cfg(target_os = "windows")]
+    #[command(hide = true)]
+    LockScreenWorker {
+        session: u32,
+        logon: i64,
+        owner: String,
+    },
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     #[command(hide = true)]
     ServiceHost {
@@ -114,6 +129,27 @@ async fn main() -> Result<()> {
         Action::RollbackService(options) => lightos_remote_desktop::install::service(options, true),
         #[cfg(target_os = "windows")]
         Action::ServiceRun => lightos_remote_desktop::platform::windows::run_service(),
+        #[cfg(target_os = "windows")]
+        Action::InstallLockScreenService { owner } => {
+            lightos_remote_desktop::platform::windows::install_lock_screen_service(&owner)
+        }
+        #[cfg(target_os = "windows")]
+        Action::LockScreenService => {
+            lightos_remote_desktop::platform::windows::run_lock_screen_service()
+        }
+        #[cfg(target_os = "windows")]
+        Action::LockScreenWorker {
+            session,
+            logon,
+            owner,
+        } => {
+            tokio::task::spawn_blocking(move || {
+                lightos_remote_desktop::platform::windows::run_lock_screen_worker(
+                    session, logon, &owner,
+                )
+            })
+            .await?
+        }
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         Action::ServiceHost {
             config_file,

@@ -32,9 +32,9 @@ use windows::{
         Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser},
         System::{
             RemoteDesktop::{
-                ProcessIdToSessionId, WTS_SESSIONSTATE_UNLOCK, WTSActive, WTSFreeMemory,
-                WTSGetActiveConsoleSessionId, WTSINFOEXW, WTSQuerySessionInformationW,
-                WTSSessionInfoEx,
+                ProcessIdToSessionId, WTS_SESSIONSTATE_LOCK, WTS_SESSIONSTATE_UNLOCK, WTSActive,
+                WTSFreeMemory, WTSGetActiveConsoleSessionId, WTSINFOEXW,
+                WTSQuerySessionInformationW, WTSSessionInfoEx,
             },
             StationsAndDesktops::{
                 CloseDesktop, DESKTOP_READOBJECTS, GetUserObjectInformationW, OpenInputDesktop,
@@ -70,7 +70,9 @@ use windows_capture::{
     },
 };
 
-use super::{NativeCapture, NativePlatform, PermissionProvider, PermissionState, Permissions};
+use super::{
+    NativeCapture, NativePlatform, NativeSurface, PermissionProvider, PermissionState, Permissions,
+};
 use crate::{
     audio::{AudioCapture, AudioCaptureFactory, AudioFormat, AudioStream, PcmWriter},
     backend::{BackendKind, Frame},
@@ -84,6 +86,24 @@ pub fn provider() -> Arc<dyn NativePlatform> {
 }
 
 struct WindowsPlatform;
+
+use windows_service::lock_screen;
+pub use windows_service::lock_screen::{
+    install as install_lock_screen_service, run_service as run_lock_screen_service,
+    run_worker as run_lock_screen_worker,
+};
+
+pub(super) fn lock_screen_authorized() -> bool {
+    lock_screen::authorized()
+}
+
+fn locked_console_session() -> bool {
+    current_session_id().is_ok_and(|id| {
+        active_console_session_id() == Some(id)
+            && session_details(id)
+                .is_ok_and(|session| session.active && session.locked && session.logon_time > 0)
+    })
+}
 
 pub(super) fn permission_report(request: bool) -> Result<super::permissions::PermissionReport> {
     use windows::{
@@ -102,6 +122,12 @@ pub(super) fn permission_report(request: bool) -> Result<super::permissions::Per
         }
     }
     let _apartment = Apartment(unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_ok());
+    if request
+        && session_active().unwrap_or(false)
+        && let Err(error) = lock_screen::request_setup()
+    {
+        tracing::warn!(%error, "Windows lock-screen setup was not completed");
+    }
     let platform = WindowsPlatform;
     let permissions = match platform.permissions() {
         Ok(permissions) => permissions,
@@ -113,9 +139,21 @@ pub(super) fn permission_report(request: bool) -> Result<super::permissions::Per
         }
     };
     if !matches!(permissions.input, PermissionState::Granted) {
+        let locked = locked_console_session();
         return Ok(super::permissions::PermissionReport::unavailable(
             permissions.reason.unwrap_or_default(),
-            "session_unavailable",
+            if locked {
+                "session_locked"
+            } else {
+                "session_unavailable"
+            },
+        ));
+    }
+    if locked_console_session() && lock_screen::authorized() {
+        return Ok(super::permissions::PermissionReport::windows(
+            permissions,
+            "none",
+            "lock_screen_ready",
         ));
     }
     if !matches!(permissions.screen, PermissionState::Granted) {
@@ -195,6 +233,13 @@ impl PermissionProvider for WindowsPlatform {
     fn permissions(&self) -> Result<Permissions> {
         process_dpi_ready()?;
         let active = session_active()?;
+        if !active && locked_console_session() && lock_screen::authorized() {
+            return Ok(Permissions {
+                screen: PermissionState::Granted,
+                input: PermissionState::Granted,
+                reason: None,
+            });
+        }
         let supported =
             GraphicsCaptureApi::is_supported().context("query Windows capture support")?;
         let cursor = supported
@@ -281,10 +326,41 @@ impl NativePlatform for WindowsPlatform {
         session_active()
     }
 
+    fn session_surface(&self, key: &str) -> Result<Option<NativeSurface>> {
+        ensure!(
+            self.session_key()? == key,
+            "interactive user session changed"
+        );
+        if locked_console_session() && lock_screen::authorized() {
+            return Ok(Some(NativeSurface::LockScreen));
+        }
+        Ok(
+            (self.session_active()? && self.permissions()?.require_granted().is_ok())
+                .then_some(NativeSurface::Desktop),
+        )
+    }
+
+    fn lock_screen_input(&self, command: &crate::backend::InputCommand) -> Option<Result<()>> {
+        Some(lock_screen::send_input(command))
+    }
+
+    fn can_prepare_lock_display(&self) -> bool {
+        locked_console_session() && lock_screen::authorized()
+    }
+
+    fn wake_lock_display(&self) -> Result<()> {
+        lock_screen::wake_display()
+    }
+
     fn displays(&self) -> Result<Vec<DisplayOutput>> {
         let _dpi = PhysicalPixelContext::enter()?;
         let mut displays = Vec::new();
-        for monitor in Monitor::enumerate().context("enumerate Windows monitors")? {
+        let monitors = if locked_console_session() && lock_screen::authorized() {
+            vec![Monitor::primary().context("enumerate Windows lock-screen monitor")?]
+        } else {
+            Monitor::enumerate().context("enumerate Windows monitors")?
+        };
+        for monitor in monitors {
             let name = monitor.device_name().context("read Windows display name")?;
             let width = monitor.width().context("read Windows display width")?;
             let height = monitor.height().context("read Windows display height")?;
@@ -321,7 +397,30 @@ impl NativePlatform for WindowsPlatform {
         Ok(displays)
     }
 
-    fn capture(&self, output: &DisplayOutput, fps: u32) -> Result<Box<dyn NativeCapture>> {
+    fn display_for_surface(
+        &self,
+        output: &DisplayOutput,
+        surface: NativeSurface,
+    ) -> Result<DisplayOutput> {
+        if surface == NativeSurface::LockScreen {
+            return self
+                .displays()?
+                .into_iter()
+                .next()
+                .context("Windows lock-screen monitor unavailable");
+        }
+        self.refresh_display(output)
+    }
+
+    fn capture(
+        &self,
+        output: &DisplayOutput,
+        fps: u32,
+        surface: NativeSurface,
+    ) -> Result<Box<dyn NativeCapture>> {
+        if surface == NativeSurface::LockScreen {
+            return Ok(Box::new(lock_screen::Capture));
+        }
         let _dpi = PhysicalPixelContext::enter()?;
         ensure!((1..=120).contains(&fps), "capture FPS must be 1..=120");
         ensure!(
@@ -706,6 +805,7 @@ pub(crate) fn active_console_session_id() -> Option<u32> {
 struct SessionDetails {
     active: bool,
     unlocked: bool,
+    locked: bool,
     logon_time: i64,
 }
 
@@ -775,6 +875,7 @@ fn session_details(id: u32) -> Result<SessionDetails> {
         Ok(SessionDetails {
             active: detail.SessionState == WTSActive,
             unlocked: detail.SessionFlags == WTS_SESSIONSTATE_UNLOCK as i32,
+            locked: detail.SessionFlags == WTS_SESSIONSTATE_LOCK as i32,
             logon_time: detail.LogonTime,
         })
     })();

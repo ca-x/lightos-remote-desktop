@@ -82,6 +82,7 @@ export function createClient(options: ClientOptions = {}) {
   let takeoverRequested = false;
   let ready = false;
   let desktopPaused = false;
+  let lockScreenEpoch: number | null = null;
   let cursorSession: string | null = null;
   let cursorEmbedded = true;
   let desktopInitializing = false;
@@ -213,7 +214,7 @@ export function createClient(options: ClientOptions = {}) {
       void nativeInput.refresh().then(() => captureKeyboard());
     } else mobile?.focusDesktop();
   }
-  const clipboard = createClipboard({ send, ready: () => ready && !desktopPaused && !destroyed, session: () => generation,
+  const clipboard = createClipboard({ send, ready: () => ready && !desktopPaused && lockScreenEpoch === null && !destroyed, session: () => generation,
     images: () => imageClipboard, release, text: pasteText, message, signal: listeners.signal, shift: () => localPasteShift });
 
   function desktopLabel() {
@@ -223,6 +224,10 @@ export function createClient(options: ClientOptions = {}) {
   function desktopStatus(text: string) {
     setText("desktop-status", text);
     element("desktop-status").setAttribute("title", translate(text));
+  }
+
+  function lockEpoch(value: unknown) {
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
   }
 
   function outputSummary(output: DesktopOutput) {
@@ -268,7 +273,8 @@ export function createClient(options: ClientOptions = {}) {
     monitors.setAttribute("title", translate(selected ? outputTitle(selected) : "选择一块物理显示器"));
     const connected = ready ? `已连接${desktopLabel()}${selected ? ` · ${outputSummary(selected)}` : selectedOutput ? ` · ${selectedOutput}` : ""}。` : "";
     const reason = value.reason || unavailable.join("；");
-    if (connected || reason) desktopStatus([connected, reason].filter(Boolean).join("；"));
+    if (lockScreenEpoch !== null) desktopStatus("Enter your password on the system lock screen to unlock.");
+    else if (connected || reason) desktopStatus([connected, reason].filter(Boolean).join("；"));
     updateControls();
     layoutTools();
   }
@@ -509,7 +515,7 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   function recordFrame(codec: string, started?: number, id?: number | null) {
-    preview.frame();
+    if (lockScreenEpoch === null) preview.frame();
     if (typeof id === "number") {
       const embedded = frameCursorModes.get(id);
       if (typeof embedded === "boolean") cursor.present(embedded);
@@ -653,7 +659,7 @@ export function createClient(options: ClientOptions = {}) {
     viewport.classList.toggle("physical-desktop", desktopMode === "physical");
     mobile?.update();
     pictureZoom.setCover(!!mobile?.isFullscreen() && desktopMode === "physical");
-    options.onControls?.({ ready: ready && !desktopPaused, authorizationPending, wanted, audioAvailable, audioEnabled: audioEnabled && audioContext?.state === "running", resizeAvailable, desktopMode,
+    options.onControls?.({ ready: ready && !desktopPaused, authorizationPending, wanted, audioAvailable: audioAvailable && lockScreenEpoch === null, audioEnabled: audioEnabled && audioContext?.state === "running", resizeAvailable, desktopMode,
       switchingDesktop, refreshingDesktops, choices: desktopChoices, outputs: desktopOutputs });
     for (const id of controls) element(id).disabled = !ready || desktopPaused;
     for (const id of ["width", "height", "apply-size", "auto-resolution"] as const) element(id).disabled = !ready || desktopPaused || !resizeAvailable;
@@ -664,7 +670,7 @@ export function createClient(options: ClientOptions = {}) {
     element("desktop-source").value = desktopMode;
     element("monitor-controls").hidden = desktopMode !== "physical" || desktopChoices.length === 0;
     element("monitor-source").disabled = !ready || switchingDesktop || desktopOutputs.length === 0;
-    element("audio").disabled = !ready || desktopPaused || !audioAvailable;
+    element("audio").disabled = !ready || desktopPaused || lockScreenEpoch !== null || !audioAvailable;
     const audioLabel = audioContext && (!audioEnabled || audioContext.state === "running") ? "关闭声音" : "开启声音";
     for (const attribute of ["aria-label", "title", "data-tip"]) element("audio").setAttribute(attribute, translate(audioLabel));
     element("audio").setAttribute("aria-pressed", String(audioEnabled && audioContext?.state === "running"));
@@ -673,7 +679,8 @@ export function createClient(options: ClientOptions = {}) {
 
   function send(command: Record<string, unknown>) {
     if (!ready || !socket || socket.readyState !== WebSocket.OPEN) return false;
-    if (desktopPaused && ["move", "button", "key", "chord", "scroll", "text", "clipboard_get", "clipboard_set", "clipboard_paste_text", "clipboard_image_start", "clipboard_image_chunk", "clipboard_image_paste", "resize"].includes(String(command.type))) return false;
+    if (desktopPaused && ["move", "button", "key", "chord", "scroll", "text", "lock_screen_text", "clipboard_get", "clipboard_set", "clipboard_paste_text", "clipboard_image_start", "clipboard_image_chunk", "clipboard_image_paste", "resize"].includes(String(command.type))) return false;
+    if (lockScreenEpoch !== null && String(command.type).startsWith("clipboard_")) return false;
     if (socket.bufferedAmount > 262144) {
       message("Connection is too slow; reconnecting to release input safely.");
       closeSocket(socket, 4001, "Input backpressure");
@@ -760,6 +767,7 @@ export function createClient(options: ClientOptions = {}) {
     clipboardSession=null;clipboardSync=false;
     keyChords = false;
     imageClipboard = false; textClipboard = false; clipboardTextInput = false;
+    lockScreenEpoch = null;
     resizeScaleAvailable = false;
     resizeScales = LEGACY_SCALES;
     lastAutoResolution = null;
@@ -1043,6 +1051,7 @@ export function createClient(options: ClientOptions = {}) {
       desktopInitializing = false;
       authorizationPending = false;
       desktopPaused = false;
+      lockScreenEpoch = lockEpoch(value.lock_screen_epoch);
       keyChords = value.key_chords === true;
       imageClipboard = value.image_clipboard === true;
       textClipboard = value.text_clipboard === true;
@@ -1101,7 +1110,7 @@ export function createClient(options: ClientOptions = {}) {
         cursorSession = value.cursor_session;
         cursor.connect(value.cursor_session);
       }
-      clipboard.connect(clipboardSession,clipboardSync);
+      if (lockScreenEpoch === null) clipboard.connect(clipboardSession,clipboardSync);
       updateControls();
       if (document.activeElement === canvas) focusDesktopInput();
       scheduleAutoResize();
@@ -1115,7 +1124,14 @@ export function createClient(options: ClientOptions = {}) {
       if (ready && (backendChanged || !hadH264) && serverVideoCodecs.includes("h264") && videoPreference !== "jpeg") requestPreferredVideo();
     } else if (value.type === "desktop_state" && typeof value.available === "boolean") {
       desktopPaused = !value.available;
-      if (desktopPaused) {
+      const nextLockScreen = value.available ? lockEpoch(value.lock_screen_epoch) : null;
+      const lockChanged = lockScreenEpoch !== nextLockScreen;
+      lockScreenEpoch = nextLockScreen;
+      if (typeof value.audio === "boolean") {
+        audioAvailable = value.audio;
+        if (!audioAvailable) stopAudio(false);
+      }
+      if (desktopPaused || lockChanged) {
         lightBook?.reset();
         screenTrackpad.reset();
         clearTrackpadMove();
@@ -1126,12 +1142,15 @@ export function createClient(options: ClientOptions = {}) {
         pendingFrameId = null;
         drawing?.clearRect(0, 0, canvas.width, canvas.height);
         keys.clear(); deferredMeta.clear(); localMeta=false; buttons.clear();
-        desktopStatus("Desktop locked or temporarily unavailable.");
-      } else {
+      }
+      if (desktopPaused) desktopStatus("Desktop locked or temporarily unavailable.");
+      else {
         if (cursorSession) cursor.connect(cursorSession);
         else cursor.present(cursorEmbedded);
-        clipboard.connect(clipboardSession,clipboardSync);
-        desktopStatus(`已连接${desktopLabel()}${selectedOutput ? ` · ${selectedOutput}` : ""}。`);
+        if (lockScreenEpoch === null) {
+          clipboard.connect(clipboardSession,clipboardSync);
+          desktopStatus(`已连接${desktopLabel()}${selectedOutput ? ` · ${selectedOutput}` : ""}。`);
+        } else desktopStatus("Enter your password on the system lock screen to unlock.");
       }
       updateControls();
     } else if (value.type === "pong" && pendingPing && value.id === pendingPing.id) {
@@ -1526,6 +1545,7 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   async function toggleAudio() {
+    if (desktopPaused || lockScreenEpoch !== null) return;
     if (audioContext) {
       if (audioEnabled && audioContext.state !== "running") resumeInterruptedAudio();
       else stopAudio();
@@ -1653,12 +1673,20 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   function typeText(text: string) {
-    if (!ready || !text || !validText(text, 16384)) return;
+    if (!ready || lockScreenEpoch !== null || !text || !validText(text, 16384)) return;
     release();
     const sent = clipboardTextInput
       ? clipboard.send({type:"clipboard_paste_text",text,shift:false})
       : send({ type: "text", text });
     if (sent) message("Text sent.");
+  }
+
+  function typeMobileText(text: string) {
+    if (lockScreenEpoch === null) typeText(text);
+    else if (!desktopPaused && text && validText(text, 16384)) {
+      release();
+      send({ type: "lock_screen_text", epoch: lockScreenEpoch, text });
+    }
   }
 
   function pasteText(text: string, shift=localPasteShift) {
@@ -1917,7 +1945,7 @@ export function createClient(options: ClientOptions = {}) {
     if (ready && keyboardFocused() && (mobile?.isTouch() || pointerInsideDesktop) && !(event.code === "KeyV" && (event.ctrlKey || event.metaKey))) syncModifiers(event, false);
   });
   listen(canvas, "compositionstart", (event) => { if (!mobile?.isTouch() || nativeInput.active() || nativeInput.acquiring()) { event.preventDefault();return; } composing = true; release(); });
-  listen(canvas, "compositionend", (event) => { composing = false;if (mobile?.isTouch() && !nativeInput.active() && !nativeInput.acquiring()) typeText(event.data); });
+  listen(canvas, "compositionend", (event) => { composing = false;if (mobile?.isTouch() && !nativeInput.active() && !nativeInput.acquiring()) typeMobileText(event.data); });
   listen(textBox, "compositionstart", () => { composing = true; });
   listen(textBox, "compositionend", () => { composing = false; });
   listen(textBox, "blur", () => { composing = false; });
@@ -2374,8 +2402,8 @@ export function createClient(options: ClientOptions = {}) {
     fullscreenExit: element("mobile-fullscreen-exit"), exitFullscreen: () => { void displayMode(windowMode); },
     fullscreenRotate: element("mobile-fullscreen-rotate"), rotateScreen: toggleLandscape,
     toggleFullscreen: () => { void displayMode(isDesktopFullscreen() ? windowMode : "fullscreen"); },
-    toggleAudio: () => { void toggleAudio(); }, audioAvailable: () => audioAvailable, rotated: () => pictureRotated,
-    ready: () => ready && !desktopPaused, lightBook: () => lightBookEnabled, zoom: pictureZoom, send, text: typeText, move, tools: (open) => setToolsOpen(open), translate,
+    toggleAudio: () => { void toggleAudio(); }, audioAvailable: () => audioAvailable && lockScreenEpoch === null, rotated: () => pictureRotated,
+    ready: () => ready && !desktopPaused, lightBook: () => lightBookEnabled, zoom: pictureZoom, send, text: typeMobileText, move, tools: (open) => setToolsOpen(open), translate,
     landscape: () => mobileLandscape, directTouch: () => !screenTrackpadEnabled(),
     isToolsOpen: () => options.isToolsOpen?.() ?? !element("tool-panel").hidden,
     hardwareKey: (event) => hardwareKey(event, true), composition: release,

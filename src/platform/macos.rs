@@ -1,4 +1,4 @@
-//! Capture the logged-in, unlocked macOS console desktop.
+//! Capture the logged-in macOS console, including the system lock screen.
 #[path = "macos_cursor.rs"]
 mod macos_cursor;
 #[path = "macos_service.rs"]
@@ -7,10 +7,11 @@ pub use macos_service::install_service;
 
 use std::{
     collections::VecDeque,
-    ffi::{c_char, c_void},
+    ffi::{CStr, c_char, c_void},
     io,
+    process::{Command, Stdio},
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -21,7 +22,9 @@ use display_control::DisplayOutput;
 use futures_util::future::BoxFuture;
 use screencapturekit::{cm::SCFrameStatus, prelude::*};
 
-use super::{NativeCapture, NativePlatform, PermissionProvider, PermissionState, Permissions};
+use super::{
+    NativeCapture, NativePlatform, NativeSurface, PermissionProvider, PermissionState, Permissions,
+};
 use crate::{
     audio::{AudioCapture, AudioCaptureFactory, AudioFormat, AudioStream, PcmWriter},
     backend::{BackendKind, Frame},
@@ -32,6 +35,82 @@ pub fn provider() -> Arc<dyn NativePlatform> {
 }
 
 struct MacosPlatform;
+
+#[derive(Clone, Copy)]
+pub(super) enum InputPermission {
+    Accessibility,
+    DeviceControl,
+    PostEvent,
+}
+
+impl InputPermission {
+    pub(super) fn setting(self) -> &'static str {
+        match self {
+            Self::Accessibility => "accessibility",
+            Self::DeviceControl => "device_control_data_access",
+            Self::PostEvent => "system_app_protection_override",
+        }
+    }
+
+    fn granted(self) -> bool {
+        match self {
+            Self::PostEvent => unsafe { CGPreflightPostEventAccess() },
+            Self::Accessibility | Self::DeviceControl => unsafe { AXIsProcessTrusted() },
+        }
+    }
+}
+
+pub(super) fn input_permission() -> InputPermission {
+    static PERMISSION: OnceLock<InputPermission> = OnceLock::new();
+    *PERMISSION.get_or_init(|| {
+        let version = os_release(c"kern.osproductversion").unwrap_or_default();
+        let mut parts = version.split('.');
+        let major = parts.next().and_then(|part| part.parse::<u32>().ok());
+        let minor = parts.next().and_then(|part| part.parse::<u32>().ok());
+        match (major, minor) {
+            // The first 27.3 beta still had the combined permission.
+            (Some(27), Some(3)) if os_release(c"kern.osversion").as_deref() == Some("26C5035r") => {
+                InputPermission::DeviceControl
+            }
+            (Some(27), Some(3..)) | (Some(28..), _) => InputPermission::PostEvent,
+            (Some(27), _) => InputPermission::DeviceControl,
+            _ => InputPermission::Accessibility,
+        }
+    })
+}
+
+fn os_release(name: &CStr) -> Option<String> {
+    let mut buffer = [0u8; 64];
+    let mut len = buffer.len();
+    let status = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            buffer.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    Some(
+        CStr::from_bytes_until_nul(&buffer)
+            .ok()?
+            .to_str()
+            .ok()?
+            .to_owned(),
+    )
+}
+
+pub(super) fn open_input(settings: &enigo::Settings) -> Result<enigo::Enigo> {
+    Ok(match input_permission() {
+        InputPermission::PostEvent => enigo::Enigo::new_with_post_event_permission(settings)?,
+        InputPermission::Accessibility | InputPermission::DeviceControl => {
+            enigo::Enigo::new(settings)?
+        }
+    })
+}
 
 /// Explicit consent entry point for desktop integrations. Capability probes and
 /// the doctor command continue to call the read-only PermissionProvider method.
@@ -50,9 +129,11 @@ pub fn permissions(request: bool) -> Result<Permissions> {
             GuiSession::current()?.active,
             "permission requests require an unlocked GUI session"
         );
-        // The accessibility prompt is asynchronous. Request it before the
-        // screen prompt so a system dialog cannot delay dispatching the other.
-        if !matches!(before.input, PermissionState::Granted) {
+        let post_event = matches!(input_permission(), InputPermission::PostEvent);
+        let missing_input = !matches!(before.input, PermissionState::Granted);
+        let input_pending = post_event && missing_input && !unsafe { CGRequestPostEventAccess() };
+        // Dispatch the asynchronous legacy Accessibility prompt first.
+        if !post_event && missing_input {
             // Both keys and values are retained with the CoreFoundation callbacks.
             let key = unsafe { kAXTrustedCheckOptionPrompt };
             let value = unsafe { kCFBooleanTrue } as *const c_void;
@@ -75,8 +156,25 @@ pub fn permissions(request: bool) -> Result<Permissions> {
                 CFRelease(options.cast());
             }
         }
-        if !matches!(before.screen, PermissionState::Granted) {
-            unsafe { CGRequestScreenCaptureAccess() };
+        let screen_pending = !matches!(before.screen, PermissionState::Granted)
+            && !unsafe { CGRequestScreenCaptureAccess() };
+        if post_event && (input_pending || screen_pending) {
+            // On 27.3 Beta 2, the legacy Accessibility anchor opens System & App
+            // Protection Override. If both grants are pending, start with input.
+            let anchor = if input_pending {
+                "Privacy_Accessibility"
+            } else {
+                "Privacy_ScreenCapture"
+            };
+            let opened = Command::new("/usr/bin/open")
+                .arg(format!(
+                    "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?{anchor}"
+                ))
+                .stdout(Stdio::null())
+                .status();
+            if !opened.is_ok_and(|status| status.success()) {
+                tracing::warn!(anchor, "could not open the macOS permission settings");
+            }
         }
     }
     platform.permissions()
@@ -85,12 +183,12 @@ pub fn permissions(request: bool) -> Result<Permissions> {
 impl PermissionProvider for MacosPlatform {
     fn permissions(&self) -> Result<Permissions> {
         let screen = unsafe { CGPreflightScreenCaptureAccess() };
-        let input = unsafe { AXIsProcessTrusted() };
+        let input = input_permission().granted();
         Ok(Permissions {
             screen: if screen { PermissionState::Granted } else { PermissionState::NeedsUserAction },
             input: if input { PermissionState::Granted } else { PermissionState::NeedsUserAction },
             reason: (!screen || !input).then(|| {
-                "Grant Screen Recording and Accessibility to LightOS Remote Desktop in System Settings, then restart the host".into()
+                "Approve the missing screen or keyboard and mouse permissions in Privacy & Security".into()
             }),
         })
     }
@@ -115,23 +213,70 @@ impl NativePlatform for MacosPlatform {
     fn session_active(&self) -> Result<bool> {
         Ok(GuiSession::current()?.active)
     }
-    fn session_ready(&self, key: &str) -> Result<bool> {
+    fn session_surface(&self, key: &str) -> Result<Option<NativeSurface>> {
         let session = GuiSession::current()?;
         ensure!(
             format!("macos:{}:{}", session.uid, session.id) == key,
             "interactive user session changed"
         );
-        Ok(session.active && self.permissions()?.require_granted().is_ok())
+        Ok(session.surface().filter(|_| {
+            self.permissions()
+                .is_ok_and(|p| p.require_granted().is_ok())
+        }))
     }
 
     fn displays(&self) -> Result<Vec<DisplayOutput>> {
-        ensure!(
-            self.session_active()?,
-            "logged-in console desktop is locked or unavailable"
-        );
+        let surface = GuiSession::current()?
+            .surface()
+            .context("logged-in console desktop is unavailable")?;
         self.permissions()?.require_granted()?;
+        if surface == NativeSurface::LockScreen {
+            return Ok(vec![main_display()?]);
+        }
         let content = SCShareableContent::get().context("query ScreenCaptureKit displays")?;
         content.displays().iter().map(display_output).collect()
+    }
+
+    fn display_for_surface(
+        &self,
+        output: &DisplayOutput,
+        surface: NativeSurface,
+    ) -> Result<DisplayOutput> {
+        if surface == NativeSurface::LockScreen {
+            return main_display();
+        }
+        self.refresh_display(output)
+    }
+
+    fn lock_display_asleep(&self) -> bool {
+        session_locked() && unsafe { CGDisplayIsAsleep(CGMainDisplayID()) } != 0
+    }
+
+    fn wake_lock_display(&self) -> Result<()> {
+        if !self.lock_display_asleep() {
+            return Ok(());
+        }
+        static ASSERTION: Mutex<u32> = Mutex::new(0);
+        let name = unsafe {
+            CFStringCreateWithCString(
+                std::ptr::null(),
+                c"Lazycat Remote Desktop".as_ptr(),
+                0x08000100,
+            )
+        };
+        ensure!(
+            !name.is_null(),
+            "could not name the remote display wake request"
+        );
+        let mut assertion = ASSERTION.lock().unwrap_or_else(|error| error.into_inner());
+        // kIOPMUserActiveRemote requests a timed display wake for a connected viewer.
+        let result = unsafe { IOPMAssertionDeclareUserActivity(name, 1, &mut *assertion) };
+        unsafe { CFRelease(name) };
+        ensure!(
+            result == 0,
+            "macOS could not wake the lock display: {result}"
+        );
+        Ok(())
     }
 
     fn refresh_display(&self, previous: &DisplayOutput) -> Result<DisplayOutput> {
@@ -150,12 +295,17 @@ impl NativePlatform for MacosPlatform {
         display_geometry(id, bounds)
     }
 
-    fn capture(&self, output: &DisplayOutput, fps: u32) -> Result<Box<dyn NativeCapture>> {
+    fn capture(
+        &self,
+        output: &DisplayOutput,
+        fps: u32,
+        surface: NativeSurface,
+    ) -> Result<Box<dyn NativeCapture>> {
         ensure!((1..=120).contains(&fps), "capture FPS must be 1..=120");
         let session = GuiSession::current()?;
         ensure!(
-            session.active,
-            "logged-in console desktop is locked or unavailable"
+            session.surface() == Some(surface),
+            "macOS console changed during capture initialization"
         );
         self.permissions()?.require_granted()?;
         let session_id = session.id;
@@ -182,20 +332,26 @@ impl NativePlatform for MacosPlatform {
             SCStream::new_with_delegate(&filter, &config, CaptureDelegate(events.clone()))?;
         let output_events = events.clone();
         let expected_size = (output.width, output.height);
+        let opened_at = Instant::now();
         stream.add_output_handler(
             move |sample: CMSampleBuffer, kind: SCStreamOutputType| {
                 if kind != SCStreamOutputType::Screen {
                     return;
                 }
-                if !capture_allowed(session_id).unwrap_or(false) {
+                if !capture_allowed(session_id, surface).unwrap_or(false) {
                     output_events.clear_frame();
                     return;
                 }
                 match sample.frame_status() {
                     Some(SCFrameStatus::Complete | SCFrameStatus::Started) => {
-                        if let Err(error) =
-                            copy_frame(&sample, expected_size, session_id, &output_events)
-                        {
+                        if let Err(error) = copy_frame(
+                            &sample,
+                            expected_size,
+                            session_id,
+                            surface,
+                            opened_at,
+                            &output_events,
+                        ) {
                             output_events.fail(format!("ScreenCaptureKit frame: {error:#}"));
                         }
                     }
@@ -215,6 +371,7 @@ impl NativePlatform for MacosPlatform {
             stream,
             events,
             session_id,
+            surface,
         }))
     }
 
@@ -227,6 +384,11 @@ impl NativePlatform for MacosPlatform {
 
 fn display_output(display: &SCDisplay) -> Result<DisplayOutput> {
     display_geometry(display.display_id(), display.frame())
+}
+
+fn main_display() -> Result<DisplayOutput> {
+    let id = unsafe { CGMainDisplayID() };
+    display_geometry(id, unsafe { CGDisplayBounds(id) })
 }
 
 fn display_geometry(id: u32, frame: CGRect) -> Result<DisplayOutput> {
@@ -338,6 +500,8 @@ fn copy_frame(
     sample: &CMSampleBuffer,
     expected_size: (u32, u32),
     session_id: i64,
+    surface: NativeSurface,
+    opened_at: Instant,
     events: &CaptureEvents,
 ) -> Result<()> {
     let buffer = sample
@@ -349,20 +513,23 @@ fn copy_frame(
         (width, height) == expected_size,
         "captured display resolution changed"
     );
-    if !capture_allowed(session_id).unwrap_or(false) {
+    if !capture_allowed(session_id, surface).unwrap_or(false) {
         events.clear_frame();
         return Ok(());
     }
     let mut state = events.state.lock().unwrap_or_else(|e| e.into_inner());
     if state.error.is_none() {
         let mut frame = Frame::new(width, height, Arc::from([]));
-        frame.native = Some(buffer);
         let age = unsafe { media_codec::videotoolbox::lrd_capture_age(sample.as_ptr()) };
-        if age.is_finite() && (0.0..=60.0).contains(&age) {
-            frame.captured_at = Instant::now()
-                .checked_sub(Duration::from_secs_f64(age))
-                .unwrap_or_else(Instant::now);
+        let captured_at = (0.0..=60.0)
+            .contains(&age)
+            .then(|| Instant::now().checked_sub(Duration::from_secs_f64(age)))
+            .flatten();
+        if surface == NativeSurface::LockScreen && captured_at.is_none_or(|time| time < opened_at) {
+            return Ok(());
         }
+        frame.native = Some(buffer);
+        frame.captured_at = captured_at.unwrap_or(frame.captured_at);
         frame.cursor_embedded = false;
         state.frame = Some(frame);
         events.ready.notify_one();
@@ -408,10 +575,11 @@ struct MacCapture {
     stream: SCStream,
     events: Arc<CaptureEvents>,
     session_id: i64,
+    surface: NativeSurface,
 }
 impl NativeCapture for MacCapture {
     fn next_frame(&mut self, timeout: Duration) -> Result<Option<Frame>> {
-        if !capture_allowed(self.session_id).unwrap_or(false) {
+        if !capture_allowed(self.session_id, self.surface).unwrap_or(false) {
             self.events.clear_frame();
             return Ok(None);
         }
@@ -423,7 +591,7 @@ impl NativeCapture for MacCapture {
             }
             if let Some(frame) = state.frame.take() {
                 drop(state);
-                if !capture_allowed(self.session_id).unwrap_or(false) {
+                if !capture_allowed(self.session_id, self.surface).unwrap_or(false) {
                     self.events.clear_frame();
                     return Ok(None);
                 }
@@ -432,7 +600,7 @@ impl NativeCapture for MacCapture {
             let now = Instant::now();
             if now >= deadline {
                 drop(state);
-                if !capture_allowed(self.session_id).unwrap_or(false) {
+                if !capture_allowed(self.session_id, self.surface).unwrap_or(false) {
                     self.events.clear_frame();
                 }
                 return Ok(None);
@@ -470,23 +638,16 @@ impl AudioCaptureFactory for SckAudio {
 }
 
 fn audio_allowed() -> Result<bool> {
-    desktop_allowed()
-}
-
-fn desktop_allowed() -> Result<bool> {
-    desktop_allowed_for(None)
-}
-
-fn capture_allowed(session_id: i64) -> Result<bool> {
-    desktop_allowed_for(Some(session_id))
-}
-
-fn desktop_allowed_for(session_id: Option<i64>) -> Result<bool> {
     let session = GuiSession::current()?;
-    Ok(session.active
-        && session_id.is_none_or(|id| session.id == id)
+    capture_allowed(session.id, NativeSurface::Desktop)
+}
+
+fn capture_allowed(session_id: i64, surface: NativeSurface) -> Result<bool> {
+    let session = GuiSession::current()?;
+    Ok(session.surface() == Some(surface)
+        && session.id == session_id
         && unsafe { CGPreflightScreenCaptureAccess() }
-        && unsafe { AXIsProcessTrusted() })
+        && input_permission().granted())
 }
 
 #[derive(Default)]
@@ -776,8 +937,24 @@ struct GuiSession {
     uid: u32,
     id: i64,
     active: bool,
+    locked: bool,
 }
+
+pub(super) fn session_locked() -> bool {
+    GuiSession::current().is_ok_and(|session| session.locked)
+}
+
 impl GuiSession {
+    fn surface(&self) -> Option<NativeSurface> {
+        if self.active {
+            Some(NativeSurface::Desktop)
+        } else if self.locked {
+            Some(NativeSurface::LockScreen)
+        } else {
+            None
+        }
+    }
+
     fn current() -> Result<Self> {
         let uid = unsafe { libc::geteuid() };
         ensure!(
@@ -820,6 +997,12 @@ impl GuiSession {
             Ok(Self {
                 uid,
                 id: i64::from(id),
+                locked: uid == console_uid
+                    && i64::from(uid) == session_uid
+                    && on_console
+                    && logged_in
+                    && attributes & 0x0010 != 0
+                    && (quartz_lock == Some(true) || console_lock == Some(true)),
                 // sessionHasGraphicAccess from Security/AuthSession.h.
                 active: attributes & 0x0010 != 0
                     && gui_session_active(
@@ -913,6 +1096,8 @@ fn dictionary_bool(dictionary: *const c_void, key: &str) -> Option<bool> {
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGDisplayBounds(display: u32) -> CGRect;
+    fn CGMainDisplayID() -> u32;
+    fn CGDisplayIsAsleep(display: u32) -> u32;
     fn CGDisplayIsActive(display: u32) -> u32;
     fn CGDisplayCopyDisplayMode(display: u32) -> *const c_void;
     fn CGDisplayModeGetWidth(mode: *const c_void) -> usize;
@@ -922,6 +1107,8 @@ unsafe extern "C" {
     fn CGDisplayModeRelease(mode: *const c_void);
     fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
+    fn CGPreflightPostEventAccess() -> bool;
+    fn CGRequestPostEventAccess() -> bool;
     fn CGSessionCopyCurrentDictionary() -> *const c_void;
 }
 #[link(name = "Security", kind = "framework")]
@@ -959,6 +1146,7 @@ unsafe extern "C" {
 }
 #[link(name = "IOKit", kind = "framework")]
 unsafe extern "C" {
+    fn IOPMAssertionDeclareUserActivity(name: *const c_void, user_type: u32, id: *mut u32) -> i32;
     fn IORegistryGetRootEntry(main_port: u32) -> u32;
     fn IORegistryEntryCreateCFProperty(
         entry: u32,
