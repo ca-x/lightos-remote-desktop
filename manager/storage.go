@@ -20,8 +20,10 @@ type savedHost struct {
 	Name     string         `json:"name"`
 	Platform string         `json:"platform"`
 	DeviceID string         `json:"device_id,omitempty"`
+	BoxID    string         `json:"box_id,omitempty"`
 	Managed  *bool          `json:"managed,omitempty"`
 	Agent    map[string]any `json:"agent"`
+	Stop     bool           `json:"stop_requested,omitempty"`
 }
 
 func (h *hostRegistry) restore() {
@@ -38,16 +40,20 @@ func (h *hostRegistry) restore() {
 			continue
 		}
 		// Offline placeholders contain no route, device token or runtime password.
-		registration := hostRegistration{Name: host.Name, Platform: host.Platform, DeviceID: host.DeviceID, ControlService: "offline", Agent: host.Agent}
+		registration := hostRegistration{Name: host.Name, Platform: host.Platform, DeviceID: host.DeviceID, BoxID: host.BoxID, ControlService: "offline", Agent: host.Agent}
 		if host.Managed != nil && !*host.Managed {
 			registration.ControlService = ""
 		}
-		h.hosts[host.ID] = hostRecord{owner: host.Owner, registration: registration}
+		record := hostRecord{owner: host.Owner, registration: registration}
+		if host.Stop && host.BoxID != "" && host.DeviceID != "" {
+			record.stop = &desktopStop{}
+		}
+		h.hosts[host.ID] = record
 	}
 }
 
 // Called with the registry locked. Credentials never enter persistent metadata.
-func (h *hostRegistry) persist() {
+func (h *hostRegistry) persist() error {
 	hosts := make([]savedHost, 0, len(h.hosts))
 	for id, record := range h.hosts {
 		r := record.registration
@@ -55,19 +61,27 @@ func (h *hostRegistry) persist() {
 			continue
 		}
 		managed := r.ControlService != ""
-		hosts = append(hosts, savedHost{ID: id, Owner: record.owner, Name: r.Name, Platform: r.Platform, DeviceID: r.DeviceID, Managed: &managed, Agent: r.Agent})
+		hosts = append(hosts, savedHost{ID: id, Owner: record.owner, Name: r.Name, Platform: r.Platform, DeviceID: r.DeviceID, BoxID: r.BoxID, Managed: &managed, Agent: r.Agent, Stop: record.stop != nil})
 	}
 	// Stable ordering also avoids needless disk writes on heartbeats.
 	sortSavedHosts(hosts)
 	data, err := json.Marshal(hosts)
-	if err != nil || bytes.Equal(data, h.persisted) {
-		return
+	if err != nil {
+		return err
 	}
-	if os.MkdirAll(storageDirectory(), 0700) != nil {
-		return
+	if bytes.Equal(data, h.persisted) {
+		return nil
+	}
+	if err := os.MkdirAll(storageDirectory(), 0700); err != nil {
+		return err
 	}
 	path := filepath.Join(storageDirectory(), "hosts.json")
-	if os.WriteFile(path+".tmp", data, 0600) == nil && os.Rename(path+".tmp", path) == nil {
-		h.persisted = data
+	if err := os.WriteFile(path+".tmp", data, 0600); err != nil {
+		return err
 	}
+	if err := os.Rename(path+".tmp", path); err != nil {
+		return err
+	}
+	h.persisted = data
+	return nil
 }

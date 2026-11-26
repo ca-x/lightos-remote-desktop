@@ -68,7 +68,7 @@ func (h *hostRegistry) preview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A cover can only come from a live authorized desktop session.
-	if !record.until.After(time.Now()) || !record.registration.Desktop.Ready {
+	if !record.until.After(time.Now()) || !record.desktopReady() {
 		writeFailure(w, 409, "desktop_unavailable")
 		return
 	}

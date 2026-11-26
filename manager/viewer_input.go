@@ -17,7 +17,7 @@ func (s *server) viewerInput(w http.ResponseWriter, r *http.Request, targetID st
 	target, allowed := s.hosts.hosts[targetID]
 	viewerID := ""
 	for id, record := range s.hosts.hosts {
-		if record.source == nil && record.owner == uid && record.registration.DeviceID == device && record.until.After(time.Now()) && record.registration.Desktop.Ready {
+		if record.source == nil && record.owner == uid && record.registration.DeviceID == device && record.until.After(time.Now()) && record.desktopReady() {
 			viewerID = id
 			break
 		}
