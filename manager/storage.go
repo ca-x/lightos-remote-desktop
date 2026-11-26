@@ -15,15 +15,16 @@ func storageDirectory() string {
 }
 
 type savedHost struct {
-	ID       string         `json:"id"`
-	Owner    string         `json:"owner"`
-	Name     string         `json:"name"`
-	Platform string         `json:"platform"`
-	DeviceID string         `json:"device_id,omitempty"`
-	BoxID    string         `json:"box_id,omitempty"`
-	Managed  *bool          `json:"managed,omitempty"`
-	Agent    map[string]any `json:"agent"`
-	Stop     bool           `json:"stop_requested,omitempty"`
+	ID         string         `json:"id"`
+	Owner      string         `json:"owner"`
+	Name       string         `json:"name"`
+	Platform   string         `json:"platform"`
+	DeviceID   string         `json:"device_id,omitempty"`
+	BoxID      string         `json:"box_id,omitempty"`
+	Managed    *bool          `json:"managed,omitempty"`
+	Agent      map[string]any `json:"agent"`
+	Stop       bool           `json:"stop_requested,omitempty"`
+	ReadyEpoch string         `json:"ready_epoch,omitempty"`
 }
 
 func (h *hostRegistry) restore() {
@@ -44,7 +45,7 @@ func (h *hostRegistry) restore() {
 		if host.Managed != nil && !*host.Managed {
 			registration.ControlService = ""
 		}
-		record := hostRecord{owner: host.Owner, registration: registration}
+		record := hostRecord{owner: host.Owner, registration: registration, readyEpoch: host.ReadyEpoch}
 		if host.Stop && host.BoxID != "" && host.DeviceID != "" {
 			record.stop = &desktopStop{}
 		}
@@ -61,7 +62,7 @@ func (h *hostRegistry) persist() error {
 			continue
 		}
 		managed := r.ControlService != ""
-		hosts = append(hosts, savedHost{ID: id, Owner: record.owner, Name: r.Name, Platform: r.Platform, DeviceID: r.DeviceID, BoxID: r.BoxID, Managed: &managed, Agent: r.Agent, Stop: record.stop != nil})
+		hosts = append(hosts, savedHost{ID: id, Owner: record.owner, Name: r.Name, Platform: r.Platform, DeviceID: r.DeviceID, BoxID: r.BoxID, Managed: &managed, Agent: r.Agent, Stop: record.stop != nil, ReadyEpoch: record.readyEpoch})
 	}
 	// Stable ordering also avoids needless disk writes on heartbeats.
 	sortSavedHosts(hosts)

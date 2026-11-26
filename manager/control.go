@@ -64,12 +64,19 @@ func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	reply, failure := forwardHostControl(r.Context(), record, action)
+	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	defer cancel()
+	reply, failure := forwardHostControl(ctx, record, action)
 	if failure != nil {
 		writeFailure(w, failure.status, failure.code)
 		return
 	}
-	if state, ok := reply["state"].(map[string]any); ok {
+	state, _ := reply["state"].(map[string]any)
+	if needsWindowsLockAuthorization(state) && (action == "permissions" || action == "start" && state["enabled"] == true) {
+		requestWindowsLockAuthorization(ctx, record, reply, action == "permissions")
+		state, _ = reply["state"].(map[string]any)
+	}
+	if state != nil {
 		h.mu.Lock()
 		if current, exists := h.hosts[id]; exists && current.owner == record.owner && current.registration.ControlService == record.registration.ControlService {
 			current.registration.Agent = state
@@ -78,6 +85,46 @@ func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 		h.mu.Unlock()
 	}
 	writeJSON(w, http.StatusAccepted, reply)
+}
+
+func needsWindowsLockAuthorization(state map[string]any) bool {
+	permissions, _ := state["permissions"].(map[string]any)
+	return state["target"] == "win32-x64" &&
+		permissions["can_start"] == true && permissions["lock_screen_authorized"] == false && permissions["requesting"] != true
+}
+
+func requestWindowsLockAuthorization(ctx context.Context, record hostRecord, reply map[string]any, alreadyRequested bool) {
+	// The PC controller can return an accepted response while its read-only
+	// check is in flight. Retry that case once without repeating a live prompt.
+	firstAttempt := 0
+	if alreadyRequested {
+		firstAttempt = 1
+	}
+	for attempt := firstAttempt; attempt < 2; attempt++ {
+		if attempt != 0 {
+			timer := time.NewTimer(350 * time.Millisecond)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				reply["permission_request_deferred"] = true
+				return
+			}
+		}
+		authorization, failure := forwardHostControl(ctx, record, "permissions")
+		if failure != nil {
+			break
+		}
+		state, ok := authorization["state"].(map[string]any)
+		if !ok {
+			break
+		}
+		reply["state"] = state
+		if !needsWindowsLockAuthorization(state) {
+			return
+		}
+	}
+	reply["permission_request_deferred"] = true
 }
 
 func forwardHostControl(parent context.Context, record hostRecord, action string) (map[string]any, *controlFailure) {

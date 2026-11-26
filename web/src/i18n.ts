@@ -174,6 +174,7 @@ const clientPairs: [string, string][] = [
   ["Fullscreen", "全屏"], ["Exit fullscreen", "退出全屏"], ["Open desktop tools", "打开桌面工具栏"], ["Close desktop tools", "收起桌面工具栏"],
   ["Resize virtual desktop", "调整虚拟桌面分辨率"], ["Physical monitor resolution cannot be changed here", "物理桌面不支持更改显示器分辨率"],
   ["Desktop locked or temporarily unavailable.", "桌面已锁定或暂时不可用。"],
+  ["Enter your password on the system lock screen to unlock.", "在系统锁屏界面输入密码以解锁。"],
   ["Choose a physical monitor", "选择一块物理显示器"],
 ];
 

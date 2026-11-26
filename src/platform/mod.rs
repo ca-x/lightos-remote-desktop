@@ -118,6 +118,13 @@ pub trait NativeCapture: Send {
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NativeSurface {
+    Desktop,
+    LockScreen,
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 pub trait NativePlatform: PermissionProvider {
     fn supports_cursor(&self) -> bool {
         false
@@ -137,12 +144,15 @@ pub trait NativePlatform: PermissionProvider {
     fn session_key(&self) -> Result<String>;
     /// False means locked or an inaccessible secure desktop. Errors end this host.
     fn session_active(&self) -> Result<bool>;
-    fn session_ready(&self, key: &str) -> Result<bool> {
+    fn session_surface(&self, key: &str) -> Result<Option<NativeSurface>> {
         ensure!(
             self.session_key()? == key,
             "interactive user session changed"
         );
-        Ok(self.session_active()? && self.permissions()?.require_granted().is_ok())
+        Ok(
+            (self.session_active()? && self.permissions()?.require_granted().is_ok())
+                .then_some(NativeSurface::Desktop),
+        )
     }
     fn displays(&self) -> Result<Vec<DisplayOutput>>;
     fn refresh_display(&self, previous: &DisplayOutput) -> Result<DisplayOutput> {
@@ -151,7 +161,31 @@ pub trait NativePlatform: PermissionProvider {
             .find(|o| o.name == previous.name)
             .ok_or_else(|| anyhow::anyhow!("selected display disconnected"))
     }
-    fn capture(&self, output: &DisplayOutput, fps: u32) -> Result<Box<dyn NativeCapture>>;
+    fn display_for_surface(
+        &self,
+        output: &DisplayOutput,
+        _: NativeSurface,
+    ) -> Result<DisplayOutput> {
+        self.refresh_display(output)
+    }
+    fn lock_display_asleep(&self) -> bool {
+        false
+    }
+    fn can_prepare_lock_display(&self) -> bool {
+        self.lock_display_asleep()
+    }
+    fn wake_lock_display(&self) -> Result<()> {
+        Ok(())
+    }
+    fn lock_screen_input(&self, _: &crate::backend::InputCommand) -> Option<Result<()>> {
+        None
+    }
+    fn capture(
+        &self,
+        output: &DisplayOutput,
+        fps: u32,
+        surface: NativeSurface,
+    ) -> Result<Box<dyn NativeCapture>>;
     fn audio(&self) -> Arc<dyn AudioCaptureFactory>;
 }
 

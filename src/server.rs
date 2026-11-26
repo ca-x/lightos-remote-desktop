@@ -290,6 +290,28 @@ impl AppState {
         use anyhow::{Context, ensure};
         let started = Instant::now();
         let mode = request.desktop.unwrap_or(self.desktop);
+        if mode == DesktopMode::Physical
+            && mode == self.desktop
+            && self.backend.viewer_can_wake_display()
+        {
+            let deadline = Instant::now() + Duration::from_secs(4);
+            let mut wake_sent = false;
+            while !self.backend.is_stopped()
+                && !cancelled.load(Ordering::Acquire)
+                && Instant::now() < deadline
+            {
+                if !wake_sent {
+                    wake_sent = self.backend.wake_display_for_viewer().is_ok();
+                }
+                if !self.backend.paused() && self.backend.frame_is_fresh(Duration::from_secs(5)) {
+                    return Ok(self);
+                }
+                std::thread::park_timeout(Duration::from_millis(50));
+            }
+            anyhow::bail!(
+                "系统锁屏画面暂不可用，请重新连接。 / The system lock screen is temporarily unavailable. Please reconnect."
+            );
+        }
         if mode == self.desktop
             && request.output.is_none()
             && !self.backend.is_deferred()
@@ -579,6 +601,7 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
 async fn health(State(state): State<AppState>) -> impl IntoResponse {
     let ready = !state.backend.is_stopped()
         && (state.backend.is_deferred()
+            || state.backend.viewer_can_wake_display()
             || (!state.backend.paused() && state.backend.frame_is_fresh(Duration::from_secs(5))))
         && state
             .session
@@ -967,7 +990,7 @@ async fn stream_connection(
     let (width, height) = dimensions?;
     let audio_available = state.config.audio && state.audio.available();
     let audio_source = audio_available.then_some("available");
-    let audio_session = audio_available.then(|| {
+    let audio_session = state.config.audio.then(|| {
         let backend = state.backend.clone();
         state.audio_hub.start(
             state.audio.clone(),
@@ -1007,8 +1030,9 @@ async fn stream_connection(
     })
     .await
     .ok()?;
+    let mut lock_screen_epoch = state.backend.lock_screen_epoch();
     let ready = Message::Text(
-        json!({"type":"ready","key_chords":true,"text_clipboard":true,"clipboard_text_input":state.backend.clipboard_text_input(),"image_clipboard":state.backend.supports_image_clipboard(),"clipboard_sync":state.backend.supports_clipboard_sync(),"clipboard_session":Some(cursor_scope.token()),"backend_selection":true,"video_request_ids":true,"video_scaling":true,"control_release":true,"resize_scale":display_capabilities.resize_scale,"resize_scales":if display_capabilities.resize_scale { DisplayMode::SUPPORTED_SCALES.as_slice() } else { &[] },"cursor_session":if state.backend.kind() == BackendKind::Wayland || state.backend.cursor_frames().is_some() { Some(cursor_scope.token()) } else { None },"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":if state.backend.cursor_embedded() { "embedded" } else { "default" },"audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"video_flow_window":12,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktop_backend":state.backend.kind(),"desktops":desktop_options,"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
+        json!({"type":"ready","lock_screen_epoch":lock_screen_epoch,"key_chords":true,"text_clipboard":true,"clipboard_text_input":state.backend.clipboard_text_input(),"image_clipboard":state.backend.supports_image_clipboard(),"clipboard_sync":state.backend.supports_clipboard_sync(),"clipboard_session":Some(cursor_scope.token()),"backend_selection":true,"video_request_ids":true,"video_scaling":true,"control_release":true,"resize_scale":display_capabilities.resize_scale,"resize_scales":if display_capabilities.resize_scale { DisplayMode::SUPPORTED_SCALES.as_slice() } else { &[] },"cursor_session":if state.backend.kind() == BackendKind::Wayland || state.backend.cursor_frames().is_some() { Some(cursor_scope.token()) } else { None },"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":if state.backend.cursor_embedded() { "embedded" } else { "default" },"audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"video_flow_window":12,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktop_backend":state.backend.kind(),"desktops":desktop_options,"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
 
             .to_string()
             .into(),
@@ -1060,15 +1084,20 @@ async fn stream_connection(
         let mut observed_epoch = state.backend.privacy_epoch();
         // An old H264 encoder can retain raw pixels even when a lock and
         // unlock complete before the next frame is published.
+        macro_rules! reset_private_video {
+            () => {
+                scaler = None;
+                encoder.take();
+                codec = None;
+                applied_rate = None;
+                applied_jpeg_quality = None;
+                pacing_tx.send_modify(FrameScheduler::reset);
+            };
+        }
         macro_rules! discard_stale_frame {
             ($epoch:expr) => {
                 if !frame_privacy_current(state.backend.as_ref(), $epoch) {
-                    encoder.take();
-                    scaler = None;
-                    codec = None;
-                    applied_rate = None;
-                    applied_jpeg_quality = None;
-                    pacing_tx.send_modify(FrameScheduler::reset);
+                    reset_private_video!();
                     continue;
                 }
             };
@@ -1076,12 +1105,7 @@ async fn stream_connection(
         loop {
             let current_epoch = state.backend.privacy_epoch();
             if current_epoch != observed_epoch {
-                scaler = None;
-                encoder.take();
-                codec = None;
-                applied_rate = None;
-                applied_jpeg_quality = None;
-                pacing_tx.send_modify(FrameScheduler::reset);
+                reset_private_video!();
                 observed_epoch = current_epoch;
             }
             let frame_deadline = pacing.borrow().next_frame_at();
@@ -1108,6 +1132,10 @@ async fn stream_connection(
                         }
                     }
                     let frame_epoch = state.backend.privacy_epoch();
+                    if frame_epoch != observed_epoch {
+                        reset_private_video!();
+                        observed_epoch = frame_epoch;
+                    }
                     let frame = frames.borrow_and_update().clone();
                     let Some(frame) = frame else {
                         if state.backend.is_stopped() { break; }
@@ -1122,9 +1150,11 @@ async fn stream_connection(
                         continue;
                     };
                     discard_stale_frame!(frame_epoch);
-                    if capture_paused {
+                    let current_lock_screen = state.backend.lock_screen_epoch();
+                    if capture_paused || current_lock_screen != lock_screen_epoch {
                         capture_paused = false;
-                        let resumed = Message::Text(json!({"type":"desktop_state","available":true}).to_string().into());
+                        lock_screen_epoch = current_lock_screen;
+                        let resumed = Message::Text(json!({"type":"desktop_state","available":true,"lock_screen_epoch":lock_screen_epoch,"audio":state.config.audio && state.audio.available()}).to_string().into());
                         if !matches!(timeout(STREAM_WRITE_TIMEOUT, writer.send(resumed)).await, Ok(Ok(()))) { break; }
                         discard_stale_frame!(frame_epoch);
                     }
@@ -1417,7 +1447,10 @@ async fn stream_connection(
                     discard_stale_frame!(epoch);
                 }
                 let audio_packet = matches!(&message, Message::Binary(bytes) if matches!(bytes.first(), Some(2 | 4)));
-                if audio_packet && !frame_privacy_current(state.backend.as_ref(), current_epoch) {
+                if audio_packet
+                    && (state.backend.audio_paused()
+                        || !frame_privacy_current(state.backend.as_ref(), current_epoch))
+                {
                     audio.take();
                     continue;
                 }
@@ -1760,6 +1793,49 @@ async fn receive_commands(
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
                     match value.get("type").and_then(|kind| kind.as_str()) {
                         Some("disconnect") => return true,
+                        Some("lock_screen_text") => {
+                            let Some(scope) = &clipboard else {
+                                continue;
+                            };
+                            let (Some(epoch), Some(text)) =
+                                (value["epoch"].as_u64(), value["text"].as_str())
+                            else {
+                                continue;
+                            };
+                            if scope.backend.lock_screen_epoch() != Some(epoch)
+                                || !scope.backend.frame_is_fresh(Duration::from_secs(5))
+                                || text.is_empty()
+                                || text.chars().any(char::is_control)
+                            {
+                                continue;
+                            }
+                            let command = InputCommand::Text {
+                                text: text.to_owned(),
+                            };
+                            if command.validate().is_err() {
+                                continue;
+                            }
+                            pending_move = None;
+                            let mut guard = crate::backend::InputGuard::new(
+                                scope.stop.clone(),
+                                Instant::now() + Duration::from_secs(1),
+                            );
+                            guard.lock_screen_epoch = Some(epoch);
+                            if !matches!(
+                                timeout(
+                                    Duration::from_millis(500),
+                                    input.send(InputCommand::Guarded {
+                                        command: Box::new(command),
+                                        guard,
+                                    })
+                                )
+                                .await,
+                                Ok(Ok(()))
+                            ) {
+                                break;
+                            }
+                            continue;
+                        }
                         Some("video_flow") => {
                             let strategy = match value.get("strategy") {
                                 Some(value) => match serde_json::from_value::<SchedulingStrategy>(
@@ -2004,7 +2080,7 @@ pub(crate) async fn handle_command(
                 anyhow::ensure!(
                     source.is_some()
                         && state.audio.available()
-                        && !state.backend.paused()
+                        && !state.backend.audio_paused()
                         && !state.backend.is_stopped(),
                     "audio unavailable"
                 );

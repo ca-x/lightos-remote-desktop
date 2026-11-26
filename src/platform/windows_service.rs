@@ -1,5 +1,8 @@
 //! SCM supervisor for one pinned console user's interactive host.
 
+#[path = "windows_lock_screen.rs"]
+pub(super) mod lock_screen;
+
 use std::{
     ffi::{OsStr, OsString, c_void},
     fs::{self, OpenOptions},

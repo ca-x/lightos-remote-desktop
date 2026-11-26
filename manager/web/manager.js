@@ -19,9 +19,13 @@
     desktop_preference_save_failed: "微服未能保存这次启停设置，请重试。",
     count: n => `${n} 台设备`, noPreview: "暂无预览", start: "开启", stop: "关闭", working: "处理中…", currentDevice: "当前设备",
     screen: "屏幕录制", input: "键盘与鼠标", granted: "已授权", denied: "未授权", needs_user_action: "待确认", unknown: "待检查",
-    updating: "正在更新", disabled: "已关闭", running: "运行中", starting: "启动中", permission_required: "待授权", error: "启动失败", offline: "离线",
+    updating: "正在更新", disabled: "已关闭", running: "运行中", starting: "启动中", locked: "已锁屏", temporarily_unavailable: "暂不可连接", permission_required: "待授权", error: "启动失败", offline: "离线",
     permissions: "请求设备权限", requesting: "等待设备确认", permissionApproved: "权限已批准", permissionUnapproved: "权限未批准", container: "LightOS实例", instanceManagedFallback: "版本和状态由lightos管理", footnote: "桌面仅在开启后运行，系统权限由设备本机确认。",
-    enterDesktop: "点击进入桌面", installToEnter: "安装后进入桌面", authorizeToEnter: "授权后进入桌面", startingDesktop: "桌面启动中…",
+    enterDesktop: "点击进入桌面", enterLocked: "点击进入锁屏界面",
+    lockAccessHelp: "锁屏访问尚未获得授权。可重新请求设备权限，然后在被控 Windows 电脑的本机屏幕上批准管理员确认。",
+    lockAccessPending: "正在请求管理员授权。请查看被控 Windows 电脑的本机屏幕。",
+    lockAccessDeferred: "管理员授权请求暂未确认。请重试，并在被控 Windows 电脑的本机屏幕上查看。",
+    installToEnter: "安装后进入桌面", authorizeToEnter: "授权后进入桌面", startingDesktop: "桌面启动中…",
     stopped: "桌面进程已停止，可重新开启。", runtime: "懒猫远程", not_installed: "未安装", installedUnknown: "已安装（版本未知）", latest: "最新", install: "安装远程桌面", update: "更新远程桌面", instanceManaged: "由 LightOS 管理",
     client_update_required: "请先更新并重启这台设备上的懒猫 PC 客户端，再安装或更新远程桌面。",
     interruptNotice: "更新会中断当前远程桌面连接。确认后将自动关闭服务并更新，完成后恢复服务。", cancel: "取消", confirm: "确认", stopping: "正在关闭远程桌面",
@@ -47,9 +51,13 @@
     desktop_preference_save_failed: "The microserver could not save this remote desktop setting. Try again.",
     count: n => `${n} devices`, noPreview: "No preview", start: "Enable", stop: "Disable", working: "Working…", currentDevice: "Current device",
     screen: "Screen", input: "Input", granted: "Granted", denied: "Not granted", needs_user_action: "Needs approval", unknown: "Not checked",
-    updating: "Updating", disabled: "Disabled", running: "Running", starting: "Starting", permission_required: "Needs permission", error: "Failed", offline: "Offline",
+    updating: "Updating", disabled: "Disabled", running: "Running", starting: "Starting", locked: "Locked", temporarily_unavailable: "Temporarily unavailable", permission_required: "Needs permission", error: "Failed", offline: "Offline",
     permissions: "Request access", requesting: "Waiting for approval", permissionApproved: "Access approved", permissionUnapproved: "Access not approved", container: "LightOS instance", instanceManagedFallback: "Version and status managed by LightOS", footnote: "Desktop capture runs only when enabled. System permissions require approval on the device.",
-    enterDesktop: "Open desktop", installToEnter: "Install to connect", authorizeToEnter: "Approve access to connect", startingDesktop: "Desktop is starting…",
+    enterDesktop: "Open desktop", enterLocked: "Open lock screen",
+    lockAccessHelp: "Lock-screen access has not been approved. Request access again, then approve the administrator prompt on the controlled Windows computer's own screen.",
+    lockAccessPending: "Requesting administrator approval. Check the controlled Windows computer's own screen.",
+    lockAccessDeferred: "The administrator request was not confirmed. Try again and check the controlled Windows computer's own screen.",
+    installToEnter: "Install to connect", authorizeToEnter: "Approve access to connect", startingDesktop: "Desktop is starting…",
     stopped: "The desktop process stopped. Try enabling it again.", runtime: "Lazycat Remote", not_installed: "Not installed", installedUnknown: "Installed (version unknown)", latest: "Latest", install: "Install remote desktop", update: "Update remote desktop", instanceManaged: "Managed by LightOS",
     client_update_required: "Update and restart the Lazycat PC client on this device before installing or updating remote desktop.",
     interruptNotice: "Updating will disconnect the current remote desktop session. Confirm to stop the service and update it. The service will resume when the update finishes.", cancel: "Cancel", confirm: "Confirm", stopping: "Stopping remote desktop",
@@ -257,12 +265,18 @@
     p.platform.textContent = item.kind === "instance" ? copy.container : platforms[item.platform] || item.platform || "";
     const mac = macDevice(item);
     const permissionApproved = permissions.screen === "granted" && permissions.input === "granted";
-    p.permissionSummary.textContent = permissionApproved ? copy.permissionApproved : copy.permissionUnapproved;
+    const lockAuthorizationMissing = icon === "windows" && item.installed && permissions.lock_screen_authorized === false;
+    const windowsPermissionHint = lockAuthorizationMissing && item.enabled && !switching && !stopping && !stopPending;
+    const windowsPermissionMessage = windowsPermissionHint ? permissions.requesting ? copy.lockAccessPending : copy.lockAccessHelp : "";
+    if (card.actionError === copy.lockAccessDeferred && (permissions.requesting || permissions.lock_screen_authorized === true)) card.actionError = "";
+    p.permissionSummary.textContent = permissionApproved && !lockAuthorizationMissing ? copy.permissionApproved : copy.permissionUnapproved;
     p.permissionSummary.hidden = item.kind !== "device";
     let state = item.status || (item.ready ? "running" : item.enabled ? "starting" : "disabled");
     if (active) state = "updating";
     else if (pending?.action === "stop") state = "stopping";
     else if (pending?.action === "start" && !item.runtime_error) state = "starting";
+    else if (!stopping && !stopPending && item.enabled && item.online !== false &&
+      (permissions.reason_code === "lock_screen_ready" || !item.ready && permissions.reason_code === "session_locked")) state = "locked";
     p.badge.textContent = copy[state] || copy.disabled; p.badge.dataset.state = state;
     if (unavailable && state === "permission_required") p.badge.textContent = copy.desktopUnavailable;
     if (item.preview) {
@@ -301,11 +315,11 @@
     p.toggle.textContent = stopping || pending?.action === "start" || pending?.action === "stop" ? copy.working : toggleLabel;
     p.toggle.disabled = item.online === false || processing || switching || stopping;
     p.toggle.ariaLabel = `${stopping ? copy.stopping : toggleLabel}: ${item.name}`;
-    p.request.hidden = item.kind !== "device" || permissionApproved;
+    p.request.hidden = item.kind !== "device" || permissionApproved && !windowsPermissionHint;
     p.request.textContent = !mac && permissions.requesting ? copy.requesting : copy.permissions;
     p.request.disabled = item.online === false || !item.managed || !item.installed || switching ||
       stopping || stopPending || (!mac && (processing || permissions.requesting === true));
-    p.request.title = !item.installed ? copy.not_installed : "";
+    p.request.title = !item.installed ? copy.not_installed : windowsPermissionMessage;
     if (linux && item.managed && item.installed) {
       p.request.hidden = permissionApproved || !(unavailable || deferred || physicalUnavailable);
       p.request.textContent = permissions.requesting ? copy.requesting : deferred ? copy.permissions : copy.details;
@@ -315,19 +329,22 @@
       (!mac || permissionApproved) && !(deferred && permissions.requesting);
     p.connect.setAttribute("aria-disabled", String(!ready)); p.connect.tabIndex = ready ? 0 : -1;
     if (ready) p.connect.href = item.url; else p.connect.removeAttribute("href");
-    p.connectLabel.textContent = item.current_device ? copy.currentDevice : ready ? copy.enterDesktop
+    const enter = state === "locked" && permissions.reason_code === "lock_screen_ready" ? copy.enterLocked : copy.enterDesktop;
+    p.connectLabel.textContent = item.current_device ? copy.currentDevice : ready ? enter
       : item.kind === "device" && !item.installed ? copy.installToEnter
-      : permissions.requesting || deferred || item.status === "permission_required" ? copy.authorizeToEnter : copy.startingDesktop;
+      : state === "locked" ? copy.physicalLocked
+      : permissions.requesting || deferred || state === "permission_required" ? copy.authorizeToEnter
+      : state === "starting" ? copy.startingDesktop : copy.temporarily_unavailable;
     p.connectLabel.hidden = active || stopping || stopPending || item.enabled === false;
     p.connect.classList.toggle("show-entry-hint", !p.connectLabel.hidden);
-    p.connect.ariaLabel = item.current_device ? copy.currentDevice : `${copy.enterDesktop}: ${item.name}`;
+    p.connect.ariaLabel = item.current_device ? copy.currentDevice : `${enter}: ${item.name}`;
     const runtimeMessage = deployment.stage === "failed" ? deployment.error || copy.failedInstall
       : item.runtime_error === "desktop_process_stopped" ? copy.stopped : item.runtime_error || "";
     const macHint = mac && item.managed && item.installed && !permissionApproved;
-    if (macHint) p.request.setAttribute("aria-describedby", p.error.id);
+    if (macHint || windowsPermissionHint) p.request.setAttribute("aria-describedby", p.error.id);
     else p.request.removeAttribute("aria-describedby");
     const message = [...new Set([card.actionError || "", stopPending ? copy.stopRetrying : "", runtimeMessage, clientUpdateRequired ? copy.client_update_required : "",
-      macHint ? macPermissionsHelp(permissions) : "",
+      macHint ? macPermissionsHelp(permissions) : "", card.actionError === copy.lockAccessDeferred ? "" : windowsPermissionMessage,
       unavailable ? permissions.reason || permissionHelp(item) : ""].filter(Boolean))].join("\n");
     if (p.error.textContent !== message) p.error.textContent = message;
     p.error.hidden = !message;
@@ -363,6 +380,7 @@
       }
       warning.hidden = true;
       const reply = await response.json();
+      if (reply?.permission_request_deferred === true && card) card.actionError = copy.lockAccessDeferred;
       if (action === "permissions" && !repeatable) pendingActions.delete(id);
       const state = reply?.state;
       controlRevision += 1;

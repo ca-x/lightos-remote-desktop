@@ -120,9 +120,19 @@ pub trait DesktopBackend: Send + Sync {
     fn paused(&self) -> bool {
         false
     }
+    /// Identifies the current system lock screen, when it accepts remote input.
+    fn lock_screen_epoch(&self) -> Option<u64> {
+        None
+    }
     /// Some backends can show an OS lock screen while desktop audio is paused.
     fn audio_paused(&self) -> bool {
         self.paused()
+    }
+    fn viewer_can_wake_display(&self) -> bool {
+        false
+    }
+    fn wake_display_for_viewer(&self) -> Result<()> {
+        Ok(())
     }
     fn is_stopped(&self) -> bool {
         false
@@ -369,6 +379,7 @@ impl Frame {
 pub struct InputGuard {
     pub(crate) cancellation: CancellationToken,
     pub(crate) lock_cancellation: Option<CancellationToken>,
+    pub(crate) lock_screen_epoch: Option<u64>,
     pub(crate) deadline: Instant,
     pub(crate) text_done: Arc<tokio::sync::Notify>,
     #[cfg(all(test, target_os = "linux"))]
@@ -388,6 +399,7 @@ impl InputGuard {
         Self {
             cancellation,
             lock_cancellation: None,
+            lock_screen_epoch: None,
             deadline,
             text_done: Arc::new(tokio::sync::Notify::new()),
             #[cfg(all(test, target_os = "linux"))]

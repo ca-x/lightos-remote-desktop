@@ -281,7 +281,6 @@ impl Keyboard for Enigo {
             })
         }
 
-        debug!("\x1b[93mfast_text(text: {text})\x1b[0m");
         // WORKAROUND: This is a fix for issue https://github.com/enigo-rs/enigo/issues/68
         // The CGEventKeyboardSetUnicodeString function (used inside of
         // event.set_string(chunk)) truncates strings down to 20 characters

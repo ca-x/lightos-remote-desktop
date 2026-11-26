@@ -50,6 +50,7 @@ type hostRecord struct {
 	sourceURL    string
 	stop         *desktopStop
 	starting     bool
+	readyEpoch   string
 }
 type hostRegistry struct {
 	mu        sync.Mutex
@@ -85,6 +86,13 @@ func (h *hostRegistry) list(owner, currentDevice string) []desktopTarget {
 			state = "offline"
 		} else if record.stop != nil {
 			state = record.stopStatus()
+		} else if r.Desktop.Enabled {
+			reason := permissions["reason_code"]
+			if reason == "lock_screen_ready" || reason == "session_locked" && !r.Desktop.Ready {
+				state = "locked"
+			} else if !r.Desktop.Ready && record.readyEpoch != "" && (state == "" || state == "starting" || state == "running") {
+				state = "temporarily_unavailable"
+			}
 		}
 		target := desktopTarget{agent: r.Agent, Kind: "device", ID: id, Name: r.Name, Platform: r.Platform, URL: "/desktop/" + id + "/", RequiresConsent: r.Desktop.RequiresConsent,
 			DeviceID:      r.DeviceID,
@@ -144,6 +152,7 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 			current.registration.Desktop.Password = ""
 			current.registration.DesktopService = ""
 			current.registration.Secret = ""
+			current.readyEpoch = ""
 			h.hosts[id] = current
 			h.persist()
 		}
@@ -199,6 +208,14 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 	registration.DeviceID = device.GetUniqueDeivceId()
 	h.mu.Lock()
 	record := hostRecord{registration: registration, owner: owner(r), until: time.Now().Add(35 * time.Second)}
+	var epoch string
+	if d.Enabled && d.Epoch != "" {
+		sum := sha256.Sum256([]byte(d.Epoch))
+		epoch = hex.EncodeToString(sum[:])
+		if d.Ready {
+			record.readyEpoch = epoch
+		}
+	}
 	previous, exists := h.hosts[id]
 	if exists && previous.until.After(time.Now()) {
 		prior, _ := previous.registration.Agent["controller_protocol"].(float64)
@@ -212,6 +229,11 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 	if exists && record.sameDevice(previous) {
 		record.stop = previous.stop
 		record.starting = previous.starting
+		// A failed health check cannot start a runtime that has already been
+		// ready. A replacement runtime reports a new desktop epoch.
+		if previous.readyEpoch == epoch {
+			record.readyEpoch = epoch
+		}
 		if record.stop != nil {
 			if registration.ControlService != previous.registration.ControlService {
 				record.stop.retryAt = time.Time{}
