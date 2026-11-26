@@ -84,7 +84,8 @@
   let permissionMode = "diagnostics", authorizationSubmission = null, authorizationNotice = "";
   const linuxDevice = item => item.kind === "device" && item.platform === "linux";
   const macDevice = item => item?.kind === "device" && ["darwin", "macos"].includes(item.platform);
-  function macPermissionsHelp(permissions) {
+  function macPermissionsHelp(item) {
+    const permissions = item.permissions || {};
     const settings = permissions.settings || [], missing = [];
     if (permissions.screen !== "granted") {
       missing.push(zh ? "录屏与系统录音（或屏幕录制）" : "Screen & System Audio Recording (or Screen Recording)");
@@ -100,9 +101,12 @@
         missing.push(zh ? "键鼠控制（辅助功能或设备控制和数据访问）" : "keyboard and mouse control (Accessibility or Device Control and Data Access)");
       }
     }
+    const appName = item.controller_protocol >= 2
+      ? (zh ? "懒猫微服客户端（LCMD）" : "the Lazycat PC client (LCMD)")
+      : copy.runtime;
     return zh
-      ? `在被控 Mac 的「隐私与安全性」中，为懒猫远程允许${missing.map(name => `「${name}」`).join("和")}。`
-      : `On the controlled Mac, allow ${missing.join(" and ")} for Lazycat Remote in Privacy & Security.`;
+      ? `在被控 Mac 的「隐私与安全性」中，为${appName}允许${missing.map(name => `「${name}」`).join("和")}。`
+      : `On the controlled Mac, allow ${missing.join(" and ")} for ${appName} in Privacy & Security.`;
   }
   const connectionConsent = item => linuxDevice(item) && (item.permissions?.backend === "portal" || item.permissions?.request_mode === "on_connection" || item.requires_consent === true) && ![item.permissions?.screen, item.permissions?.input].every(value => value === "granted");
   function permissionHelp(item) {
@@ -119,7 +123,7 @@
       const p = item.permissions || {}, granted = p.screen === "granted" && p.input === "granted";
       document.getElementById("permission-title").textContent = copy.permissions;
       document.getElementById("permission-summary").textContent = granted ? copy.authorizationSuccess
-        : macDevice(item) ? macPermissionsHelp(p) : copy.authorizeAt(item.name);
+        : macDevice(item) ? macPermissionsHelp(item) : copy.authorizeAt(item.name);
       document.getElementById("permission-feedback").textContent = granted ? "" : authorizationNotice || (p.requesting || authorizationSubmission?.id === item.id ? copy.authorizationPending : p.reason_code === "authorization_not_saved" ? copy.authorizationNotSaved : copy.authorizationIncomplete);
       const failed = p.reason_code === "authorization_failed" || p.reason_code === "authorization_not_saved" || p.can_start === false;
       document.getElementById("permission-diagnostic").textContent = failed ? p.reason || "" : "";
@@ -344,7 +348,7 @@
     if (macHint || windowsPermissionHint) p.request.setAttribute("aria-describedby", p.error.id);
     else p.request.removeAttribute("aria-describedby");
     const message = [...new Set([card.actionError || "", stopPending ? copy.stopRetrying : "", runtimeMessage, clientUpdateRequired ? copy.client_update_required : "",
-      macHint ? macPermissionsHelp(permissions) : "", card.actionError === copy.lockAccessDeferred ? "" : windowsPermissionMessage,
+      macHint ? macPermissionsHelp(item) : "", card.actionError === copy.lockAccessDeferred ? "" : windowsPermissionMessage,
       unavailable ? permissions.reason || permissionHelp(item) : ""].filter(Boolean))].join("\n");
     if (p.error.textContent !== message) p.error.textContent = message;
     p.error.hidden = !message;

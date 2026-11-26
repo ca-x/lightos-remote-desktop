@@ -159,13 +159,21 @@ pub fn permissions(request: bool) -> Result<Permissions> {
         let screen_pending = !matches!(before.screen, PermissionState::Granted)
             && !unsafe { CGRequestScreenCaptureAccess() };
         if post_event && (input_pending || screen_pending) {
-            // The split permission pane has no documented deep link.
+            // On 27.3 Beta 2, the legacy Accessibility anchor opens System & App
+            // Protection Override. If both grants are pending, start with input.
+            let anchor = if input_pending {
+                "Privacy_Accessibility"
+            } else {
+                "Privacy_ScreenCapture"
+            };
             let opened = Command::new("/usr/bin/open")
-                .arg("x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension")
+                .arg(format!(
+                    "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?{anchor}"
+                ))
                 .stdout(Stdio::null())
                 .status();
             if !opened.is_ok_and(|status| status.success()) {
-                tracing::warn!("could not open macOS Privacy & Security settings");
+                tracing::warn!(anchor, "could not open the macOS permission settings");
             }
         }
     }
@@ -180,7 +188,7 @@ impl PermissionProvider for MacosPlatform {
             screen: if screen { PermissionState::Granted } else { PermissionState::NeedsUserAction },
             input: if input { PermissionState::Granted } else { PermissionState::NeedsUserAction },
             reason: (!screen || !input).then(|| {
-                "Allow screen capture and keyboard and mouse control for Lazycat Remote in Privacy & Security".into()
+                "Approve the missing screen or keyboard and mouse permissions in Privacy & Security".into()
             }),
         })
     }
