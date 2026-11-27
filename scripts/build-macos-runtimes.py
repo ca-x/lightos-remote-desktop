@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Native macOS worker: compile both CPUs and sign stable application bundles."""
+from removal_artifacts import build_removal
 import argparse
 import os
 from pathlib import Path
@@ -39,3 +40,4 @@ for target, triple in [("darwin-arm64", "aarch64-apple-darwin"), ("darwin-x64", 
     details = subprocess.run(["codesign", "-dv", "--verbose=4", str(app)], capture_output=True, text=True, check=True).stderr
     team = re.search(r"^TeamIdentifier=([A-Z0-9]{10})$", details, re.MULTILINE)
     if team: (directory / ".signing-team").write_text(team.group(1))
+    build_removal(args.source, args.output / "removed", target, args.identity)

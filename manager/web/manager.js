@@ -17,22 +17,22 @@
     control_timeout: "等待操作结果超时，请刷新设备状态，确认操作是否已开始。",
     desktop_control_busy: "设备正在处理远程桌面启停，请稍后重试。",
     desktop_preference_save_failed: "微服未能保存这次启停设置，请重试。",
-    count: n => `${n} 台设备`, noPreview: "暂无预览", start: "开启", stop: "关闭", working: "处理中…", currentDevice: "当前设备",
+    count: n => `${n} 台设备`, noPreview: "暂无预览", menu: "设备菜单", start: "开启远程桌面", stop: "关闭远程桌面", uninstall: "卸载远程桌面", removing: "正在卸载远程桌面", working: "处理中…", currentDevice: "当前设备",
     screen: "屏幕录制", input: "键盘与鼠标", granted: "已授权", denied: "未授权", needs_user_action: "待确认", unknown: "待检查",
     updating: "正在更新", disabled: "已关闭", running: "运行中", starting: "启动中", locked: "已锁屏", temporarily_unavailable: "暂不可连接", permission_required: "待授权", error: "启动失败", offline: "离线",
-    permissions: "请求设备权限", requesting: "等待设备确认", permissionApproved: "权限已批准", permissionUnapproved: "权限未批准", container: "LightOS实例", instanceManagedFallback: "版本和状态由lightos管理", footnote: "桌面仅在开启后运行，系统权限由设备本机确认。",
+    permissions: "请求设备权限", requesting: "等待设备确认", permissionApproved: "权限已批准", permissionUnapproved: "权限未批准", unlockedOnly: "仅在桌面解锁时可访问", container: "LightOS实例", instanceManagedFallback: "版本和状态由lightos管理", footnote: "开启后允许连接。进入桌面时启动服务，最后一个连接断开后停止服务。",
     enterDesktop: "点击进入桌面", enterLocked: "点击进入锁屏界面",
     lockAccessHelp: "锁屏访问尚未获得授权。可重新请求设备权限，然后在被控 Windows 电脑的本机屏幕上批准管理员确认。",
     lockAccessPending: "正在请求管理员授权。请查看被控 Windows 电脑的本机屏幕。",
     lockAccessDeferred: "管理员授权请求暂未确认。请重试，并在被控 Windows 电脑的本机屏幕上查看。",
     installToEnter: "安装后进入桌面", authorizeToEnter: "授权后进入桌面", startingDesktop: "桌面启动中…",
-    stopped: "桌面进程已停止，可重新开启。", runtime: "懒猫远程", not_installed: "未安装", installedUnknown: "已安装（版本未知）", latest: "最新", install: "安装远程桌面", update: "更新远程桌面", instanceManaged: "由 LightOS 管理",
+    stopped: "桌面进程已退出，请重新进入桌面。", runtime: "懒猫远程", not_installed: "未安装", installedUnknown: "已安装（版本未知）", latest: "最新", install: "安装远程桌面", update: "更新远程桌面", instanceManaged: "由 LightOS 管理",
     client_update_required: "请先更新并重启这台设备上的懒猫 PC 客户端，再安装或更新远程桌面。",
     interruptNotice: "更新会中断当前远程桌面连接。确认后将自动关闭服务并更新，完成后恢复服务。", cancel: "取消", confirm: "确认", stopping: "正在关闭远程桌面",
     stop_pending: "关闭待确认", stopRetrying: "设备尚未确认关闭。设备在线时会自动重试。",
-    preparing: "正在准备", downloading: "正在下载", verifying: "正在校验", installing: "正在安装", checking: "正在检查新版本", cleaning: "正在清理旧版本", failedInstall: "安装 / 更新失败，可重试", retryOperation: "重试",
+    preparing: "正在准备", downloading: "正在下载", verifying: "正在校验", installing: "正在安装", checking: "正在检查新版本", cleaning: "正在清理旧版本", failedInstall: "安装 / 更新失败，可重试", retryRemoval: "重试卸载", retryOperation: "重试",
     virtualAvailable: "可连接独立虚拟桌面；物理桌面仍需解锁或授权，不会自动切换。", physicalLocked: "物理桌面已锁定，请在被控电脑解锁后重新连接。",
-    usable: "可用", desktopUnavailable: "桌面不可用", details: "查看原因", permissionTitle: "桌面访问检查", diagnosticDetails: "诊断详情", recheck: "刷新状态", rechecking: "正在检查…", checkRequested: "设备状态会根据后台检查结果自动更新。", close: "关闭",
+    usable: "可用", details: "查看原因", permissionTitle: "桌面访问检查", diagnosticDetails: "诊断详情", recheck: "刷新状态", rechecking: "正在检查…", checkRequested: "设备状态会根据后台检查结果自动更新。", close: "关闭",
     connectionHelp: "首次使用请先申请权限。", enableConnectionHelp: "可先申请权限，再开启远程桌面。", currentConnectionHelp: "可在此申请权限，授权后从另一台设备连接。",
     authorizeAt: name => `请在「${name}」电脑的系统窗口中允许屏幕与输入访问。当前页面会显示申请结果。`, authorizationSuccess: "已授权。现在可以连接桌面。", authorizationPending: "正在等待被控电脑确认…", authorizationIncomplete: "授权尚未完成。请处理被控电脑上的系统提示，或重新申请。", authorizationNotSaved: "系统没有保存这次授权，连接桌面时仍需确认。", retryAuthorization: "重新申请", authorizationUpdate: "请先更新这台设备的远程桌面，再使用独立授权入口。", authorizationNotStarted: "申请尚未启动，请稍后重试。",
     permissionHelp: { session_unavailable: "无法定位当前登录的图形桌面。请在这台电脑登录桌面，并从该桌面启动客户端后重新检查。", portal_unavailable: "系统没有可用的桌面共享组件。请检查 xdg-desktop-portal 及与当前桌面匹配的后端是否已安装并可运行。", portal_session_mismatch: "暂时无法连接这台电脑的桌面，会自动重新检查。若持续失败，可点击“重新检查”或提供诊断详情。", portal_input_unavailable: "当前桌面共享组件不支持键盘与鼠标控制，需要支持远程控制的桌面后端。", portal_capture_unavailable: "当前桌面共享组件不支持显示器采集，请检查或更新对应的桌面后端。", portal_cursor_unavailable: "当前桌面共享组件缺少所需的光标支持，请检查或更新对应的桌面后端。", portal_timeout: "桌面共享服务没有及时响应。请重新检查，并确认当前图形会话的桌面共享服务正常运行。", capture_unavailable: "当前图形会话没有可用的屏幕与输入接口。请查看诊断详情，检查会话配置和桌面共享组件。" },
@@ -49,22 +49,22 @@
     control_timeout: "The operation timed out. Refresh the device status to check whether it started.",
     desktop_control_busy: "This device is applying a remote desktop command. Try again shortly.",
     desktop_preference_save_failed: "The microserver could not save this remote desktop setting. Try again.",
-    count: n => `${n} devices`, noPreview: "No preview", start: "Enable", stop: "Disable", working: "Working…", currentDevice: "Current device",
+    count: n => `${n} devices`, noPreview: "No preview", menu: "Device actions", start: "Enable remote desktop", stop: "Disable remote desktop", uninstall: "Uninstall remote desktop", removing: "Uninstalling remote desktop", working: "Working…", currentDevice: "Current device",
     screen: "Screen", input: "Input", granted: "Granted", denied: "Not granted", needs_user_action: "Needs approval", unknown: "Not checked",
     updating: "Updating", disabled: "Disabled", running: "Running", starting: "Starting", locked: "Locked", temporarily_unavailable: "Temporarily unavailable", permission_required: "Needs permission", error: "Failed", offline: "Offline",
-    permissions: "Request access", requesting: "Waiting for approval", permissionApproved: "Access approved", permissionUnapproved: "Access not approved", container: "LightOS instance", instanceManagedFallback: "Version and status managed by LightOS", footnote: "Desktop capture runs only when enabled. System permissions require approval on the device.",
+    permissions: "Request access", requesting: "Waiting for approval", permissionApproved: "Access approved", permissionUnapproved: "Access not approved", unlockedOnly: "Unlocked desktop only", container: "LightOS instance", instanceManagedFallback: "Version and status managed by LightOS", footnote: "Enable a device to allow connections. Opening its desktop starts the service. The service stops after the last connection closes.",
     enterDesktop: "Open desktop", enterLocked: "Open lock screen",
     lockAccessHelp: "Lock-screen access has not been approved. Request access again, then approve the administrator prompt on the controlled Windows computer's own screen.",
     lockAccessPending: "Requesting administrator approval. Check the controlled Windows computer's own screen.",
     lockAccessDeferred: "The administrator request was not confirmed. Try again and check the controlled Windows computer's own screen.",
     installToEnter: "Install to connect", authorizeToEnter: "Approve access to connect", startingDesktop: "Desktop is starting…",
-    stopped: "The desktop process stopped. Try enabling it again.", runtime: "Lazycat Remote", not_installed: "Not installed", installedUnknown: "Installed (version unknown)", latest: "Latest", install: "Install remote desktop", update: "Update remote desktop", instanceManaged: "Managed by LightOS",
+    stopped: "The desktop process exited. Open the desktop again.", runtime: "Lazycat Remote", not_installed: "Not installed", installedUnknown: "Installed (version unknown)", latest: "Latest", install: "Install remote desktop", update: "Update remote desktop", instanceManaged: "Managed by LightOS",
     client_update_required: "Update and restart the Lazycat PC client on this device before installing or updating remote desktop.",
     interruptNotice: "Updating will disconnect the current remote desktop session. Confirm to stop the service and update it. The service will resume when the update finishes.", cancel: "Cancel", confirm: "Confirm", stopping: "Stopping remote desktop",
     stop_pending: "Disable pending", stopRetrying: "The device has not confirmed shutdown. It will retry automatically while the device is online.",
-    preparing: "Preparing", downloading: "Downloading", verifying: "Verifying", installing: "Installing", checking: "Checking the new version", cleaning: "Removing the old version", failedInstall: "Installation / update failed; retry is available", retryOperation: "Retry",
+    preparing: "Preparing", downloading: "Downloading", verifying: "Verifying", installing: "Installing", checking: "Checking the new version", cleaning: "Removing the old version", failedInstall: "Installation / update failed; retry is available", retryRemoval: "Retry uninstall", retryOperation: "Retry",
     virtualAvailable: "A separate virtual desktop is available. Physical access still requires unlocking or consent; switching is never automatic.", physicalLocked: "The physical desktop is locked. Unlock the controlled computer before reconnecting.",
-    usable: "Available", desktopUnavailable: "Desktop unavailable", details: "View details", permissionTitle: "Desktop access check", diagnosticDetails: "Diagnostic details", recheck: "Refresh status", rechecking: "Checking…", checkRequested: "Device status updates automatically from background checks.", close: "Close",
+    usable: "Available", details: "View details", permissionTitle: "Desktop access check", diagnosticDetails: "Diagnostic details", recheck: "Refresh status", rechecking: "Checking…", checkRequested: "Device status updates automatically from background checks.", close: "Close",
     connectionHelp: "Request permissions before first use.", enableConnectionHelp: "You can approve permissions before enabling the desktop.", currentConnectionHelp: "Approve permissions here, then connect from another device.",
     authorizeAt: name => `Allow screen and input access in the system dialog on “${name}”. The result will appear here.`, authorizationSuccess: "Permissions approved. You can now connect to the desktop.", authorizationPending: "Waiting for approval on the controlled computer…", authorizationIncomplete: "Approval is not complete. Respond to the system dialog on the controlled computer or request again.", authorizationNotSaved: "The system did not retain this approval. Confirmation is still needed when connecting.", retryAuthorization: "Request again", authorizationUpdate: "Update this device's desktop runtime before requesting permissions here.", authorizationNotStarted: "The request has not started. Try again shortly.",
     permissionHelp: { session_unavailable: "The logged-in graphical desktop could not be located. Sign in to that desktop, launch the client there and check again.", portal_unavailable: "Desktop sharing services are unavailable. Check that xdg-desktop-portal and the backend for this desktop are installed and running.", portal_session_mismatch: "The system desktop service is temporarily unavailable. Checks retry automatically; you can also select Check again.", portal_input_unavailable: "The sharing service does not support keyboard and mouse control. A remote-control-capable desktop backend is required.", portal_capture_unavailable: "The sharing service does not support monitor capture. Check or update the desktop backend.", portal_cursor_unavailable: "The sharing service lacks the required cursor support. Check or update the desktop backend.", portal_timeout: "The sharing service did not respond in time. Check again and verify that the service is running in the selected graphical session.", capture_unavailable: "No usable screen and input interface was found. Review the diagnostic details and check the graphical session and desktop sharing services." },
@@ -78,7 +78,25 @@
   document.title = copy.title;
   document.querySelectorAll("[data-text]").forEach(node => { node.textContent = copy[node.dataset.text]; });
   const grid = document.getElementById("desktops"), status = document.getElementById("status"), warning = document.getElementById("warning"), empty = document.getElementById("empty");
-  const cards = new Map(), pendingActions = new Map();
+  const cards = new Map(), pendingActions = new Map(), pendingPermissions = new Set();
+  let openMenu = null;
+  function closeMenu(restoreFocus = false) {
+    if (!openMenu) return;
+    const { menu, trigger } = openMenu;
+    menu.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+    if (restoreFocus) trigger.focus();
+    openMenu = null;
+  }
+  document.addEventListener("click", event => {
+    if (openMenu && !openMenu.actions.contains(event.target)) closeMenu();
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape") closeMenu(true);
+  });
+  document.addEventListener("focusin", event => {
+    if (openMenu && !openMenu.actions.contains(event.target)) closeMenu();
+  });
   const permissionDialog = document.getElementById("permission-dialog");
   let permissionDevice = null;
   let permissionMode = "diagnostics", authorizationSubmission = null, authorizationNotice = "";
@@ -113,7 +131,7 @@
     if (!linuxDevice(item) || !item.installed) return "";
     if (item.permissions?.virtual_available === true) return copy.virtualAvailable;
     if (item.permissions?.reason_code === "session_locked") return copy.physicalLocked;
-    if (connectionConsent(item)) return item.current_device ? copy.currentConnectionHelp : item.enabled ? copy.connectionHelp : copy.enableConnectionHelp;
+    if (connectionConsent(item)) return item.current_device ? copy.currentConnectionHelp : item.access_enabled ? copy.connectionHelp : copy.enableConnectionHelp;
     if (item.permissions?.can_start === false) return copy.permissionHelp[item.permissions.reason_code] || copy.permissionHelp.capture_unavailable;
     return "";
   }
@@ -231,35 +249,61 @@
     operation.hidden = true; progress.max = 100; operationHeading.append(operationLabel, operationValue); operation.append(operationHeading, progress);
     cover.append(image, placeholder, connect, notices, operation);
 
-    const body = element("div", "card-body"), heading = element("div", "device-heading"), identity = element("div", "device-identity"), icon = element("img", "platform-icon"), name = element("h2", "device-name"), toggle = element("button", "toggle");
+    const body = element("div", "card-body"), heading = element("div", "device-heading"), identity = element("div", "device-identity"), icon = element("img", "platform-icon"), name = element("h2", "device-name"), actions = element("div", "device-actions");
+    const trigger = element("button", "menu-trigger"), menu = element("div", "device-menu");
+    const toggle = element("button"), uninstall = element("button");
+    menu.hidden = true;
+    menu.id = `device-menu-${item.id}`;
+    trigger.type = uninstall.type = "button";
+    trigger.textContent = "⋯";
+    trigger.setAttribute("aria-expanded", "false");
+    trigger.setAttribute("aria-controls", menu.id);
+    uninstall.textContent = copy.uninstall;
+    menu.append(toggle, uninstall);
+    actions.append(trigger, menu);
     icon.alt = ""; identity.append(icon, name);
     const platformRow = element("div", "platform-row"), platformInfo = element("div", "platform-info"), platform = element("p", "platform"), permissionSummary = element("span", "permission-summary"), request = element("button", "text-action request-permissions");
     const versionRow = element("div", "version-row"), version = element("p", "runtime-version"), install = element("button", "text-action install-runtime");
     toggle.type = request.type = install.type = "button";
-    heading.append(identity, toggle); platformInfo.append(platform, permissionSummary); platformRow.append(platformInfo, request); versionRow.append(version, install);
+    heading.append(identity, actions); platformInfo.append(platform, permissionSummary); platformRow.append(platformInfo, request); versionRow.append(version, install);
     body.append(heading, platformRow, versionRow); card.append(cover, body);
-    card.parts = { version, install, operation, operationLabel, operationValue, progress, image, placeholder, name, icon, badge, platform, permissionSummary, connect, connectLabel, toggle, request, error };
+    card.parts = { version, install, operation, operationLabel, operationValue, progress, image, placeholder, name, icon, badge, platform, permissionSummary, connect, connectLabel, actions, trigger, toggle, uninstall, request, error };
     install.addEventListener("click", async () => {
       const { id, installed, enabled } = card.target;
+      if (card.target.removing && card.target.deployment?.stage === "failed") {
+        void act(id, "uninstall");
+        return;
+      }
       if (installed && enabled && !(await confirmUpdate())) return;
       void act(id, installed ? enabled ? "update-confirmed" : "update" : "install");
     });
-    toggle.addEventListener("click", () => act(card.target.id, toggleAction(card.target)));
-    request.addEventListener("click", () => linuxDevice(card.target) ? showPermissionDetails(card.target, connectionConsent(card.target)) : act(card.target.id, "permissions"));
+    trigger.addEventListener("click", () => {
+      const opening = menu.hidden;
+      closeMenu();
+      if (opening) {
+        openMenu = { actions, menu, trigger };
+        menu.hidden = false;
+        trigger.setAttribute("aria-expanded", "true");
+        toggle.focus();
+      }
+    });
+    toggle.addEventListener("click", () => { closeMenu(true); void act(card.target.id, toggleAction(card.target)); });
+    uninstall.addEventListener("click", () => { closeMenu(true); void act(card.target.id, "uninstall"); });
+    request.addEventListener("click", () => linuxDevice(card.target) ? showPermissionDetails(card.target, card.target.permissions?.request_mode === "system" || connectionConsent(card.target)) : act(card.target.id, "permissions"));
     grid.append(card); return card;
   }
-  const toggleAction = item => item.enabled && item.status !== "stop_pending" ? "stop" : "start";
+  const toggleAction = item => item.access_enabled ? "stop" : "start";
   function updateCard(card, item) {
     card.target = item;
     const p = card.parts, permissions = item.permissions || {}, deployment = item.deployment || { stage: "idle" };
     const active = !["idle", "completed", "failed"].includes(deployment.stage || "idle"), switching = active;
     const stopping = item.status === "stopping", stopPending = item.status === "stop_pending";
     let pending = pendingActions.get(item.id);
-    if (pending && (Date.now() > pending.until || pending.action === "start" && item.enabled && !stopping && !stopPending || pending.action === "stop" && !item.enabled || pending.action === "permissions" && permissions.requesting || ["install", "update", "update-confirmed"].includes(pending.action) && deployment.stage !== "idle")) {
+    if (pending && (Date.now() > pending.until || pending.action === "start" && item.access_enabled || pending.action === "stop" && !item.access_enabled)) {
       pendingActions.delete(item.id); pending = undefined;
     }
     const processing = Boolean(pending);
-    const linux = linuxDevice(item), deferred = connectionConsent(item), unavailable = linux && permissions.can_start === false;
+    const linux = linuxDevice(item), deferred = connectionConsent(item), unavailable = linux && item.installed && permissions.can_start === false;
     const physicalUnavailable = linux && permissions.reason_code === "session_locked";
     p.name.textContent = item.name; p.name.title = item.name;
     const icon = platformIcon(item);
@@ -270,19 +314,14 @@
     const mac = macDevice(item);
     const permissionApproved = permissions.screen === "granted" && permissions.input === "granted";
     const lockAuthorizationMissing = icon === "windows" && item.installed && permissions.lock_screen_authorized === false;
-    const windowsPermissionHint = lockAuthorizationMissing && item.enabled && !switching && !stopping && !stopPending;
-    const windowsPermissionMessage = windowsPermissionHint ? permissions.requesting ? copy.lockAccessPending : copy.lockAccessHelp : "";
+    const unlockedOnly = lockAuthorizationMissing && (permissionApproved || permissions.reason_code === "session_locked");
+    const windowsPermissionMessage = lockAuthorizationMissing ? permissions.requesting ? copy.lockAccessPending : copy.lockAccessHelp : "";
     if (card.actionError === copy.lockAccessDeferred && (permissions.requesting || permissions.lock_screen_authorized === true)) card.actionError = "";
-    p.permissionSummary.textContent = permissionApproved && !lockAuthorizationMissing ? copy.permissionApproved : copy.permissionUnapproved;
+    p.permissionSummary.textContent = unlockedOnly ? copy.unlockedOnly : permissionApproved ? copy.permissionApproved : copy.permissionUnapproved;
     p.permissionSummary.hidden = item.kind !== "device";
-    let state = item.status || (item.ready ? "running" : item.enabled ? "starting" : "disabled");
-    if (active) state = "updating";
-    else if (pending?.action === "stop") state = "stopping";
-    else if (pending?.action === "start" && !item.runtime_error) state = "starting";
-    else if (!stopping && !stopPending && item.enabled && item.online !== false &&
-      (permissions.reason_code === "lock_screen_ready" || !item.ready && permissions.reason_code === "session_locked")) state = "locked";
-    p.badge.textContent = copy[state] || copy.disabled; p.badge.dataset.state = state;
-    if (unavailable && state === "permission_required") p.badge.textContent = copy.desktopUnavailable;
+    const state = item.status || (item.ready ? "running" : "disabled");
+    const badge = item.managed && item.installed ? (item.access_enabled ? "running" : "disabled") : state;
+    p.badge.textContent = copy[badge] || copy.disabled; p.badge.dataset.state = badge;
     if (item.preview) {
       try {
         const preview = new URL(item.preview, location.href);
@@ -301,55 +340,63 @@
     }
     p.version.title = p.version.textContent;
     p.operation.hidden = !active;
-    p.operationLabel.textContent = copy[deployment.stage] || copy.working;
+    p.operationLabel.textContent = item.removing ? copy.removing : copy[deployment.stage] || copy.working;
     const value = Number.isFinite(deployment.progress) ? Math.max(0, Math.min(100, deployment.progress)) : 0;
     p.progress.value = value; p.progress.setAttribute("aria-label", p.operationLabel.textContent);
     p.operationValue.textContent = `${value}%`;
     if (deployment.stage === "downloading" && deployment.total > 0) p.operationValue.textContent += ` · ${(deployment.received / 1048576).toFixed(1)} / ${(deployment.total / 1048576).toFixed(1)} MiB`;
     p.install.hidden = !item.managed || item.installed && !item.update_available && !active && deployment.stage !== "failed";
-    p.install.textContent = active ? copy.working : deployment.stage === "failed" ? copy.retryOperation : item.installed ? copy.update : copy.install;
+    p.install.textContent = item.installed ? copy.update : copy.install;
+    if (active) p.install.textContent = copy.working;
+    else if (deployment.stage === "failed" && item.removing) p.install.textContent = copy.retryRemoval;
+    else if (deployment.stage === "failed" && item.installed) p.install.textContent = copy.retryOperation;
     p.install.disabled = item.online === false || !item.can_install || active || processing || stopping || stopPending;
     const clientUpdateRequired = item.kind === "device" && item.online && !p.install.hidden
       && !item.can_install && !(item.controller_protocol >= 2) && !active && !processing;
     p.install.title = clientUpdateRequired ? copy.client_update_required : item.available_version ? `${copy.latest} ${item.available_version}` : "";
     if (clientUpdateRequired) p.install.setAttribute("aria-describedby", p.error.id);
     else p.install.removeAttribute("aria-describedby");
-    p.toggle.hidden = !item.managed || !item.installed;
+    p.actions.hidden = !item.managed || !item.installed;
+    p.trigger.ariaLabel = `${copy.menu}: ${item.name}`;
+    if (p.actions.hidden && openMenu?.trigger === p.trigger) closeMenu();
     const toggleLabel = copy[toggleAction(item)];
-    p.toggle.textContent = stopping || pending?.action === "start" || pending?.action === "stop" ? copy.working : toggleLabel;
-    p.toggle.disabled = item.online === false || processing || switching || stopping;
-    p.toggle.ariaLabel = `${stopping ? copy.stopping : toggleLabel}: ${item.name}`;
-    p.request.hidden = item.kind !== "device" || permissionApproved && !windowsPermissionHint;
+    p.toggle.textContent = toggleLabel;
+    p.toggle.disabled = item.online === false || processing || switching;
+    p.toggle.ariaLabel = `${toggleLabel}: ${item.name}`;
+    p.uninstall.disabled = p.toggle.disabled || stopping || stopPending || !item.can_install || !item.can_uninstall;
+    p.request.hidden = item.kind !== "device" || permissionApproved && !lockAuthorizationMissing;
     p.request.textContent = !mac && permissions.requesting ? copy.requesting : copy.permissions;
     p.request.disabled = item.online === false || !item.managed || !item.installed || switching ||
-      stopping || stopPending || (!mac && (processing || permissions.requesting === true));
+      (!mac && (pendingPermissions.has(item.id) || permissions.requesting === true));
     p.request.title = !item.installed ? copy.not_installed : windowsPermissionMessage;
     if (linux && item.managed && item.installed) {
-      p.request.hidden = permissionApproved || !(unavailable || deferred || physicalUnavailable);
-      p.request.textContent = permissions.requesting ? copy.requesting : deferred ? copy.permissions : copy.details;
+      const authorize = permissions.request_mode === "system" || deferred;
+      p.request.hidden = permissionApproved || !(unavailable || authorize || physicalUnavailable);
+      p.request.textContent = permissions.requesting ? copy.requesting : authorize ? copy.permissions : copy.details;
       p.request.title = permissionHelp(item);
     }
-    const ready = !item.current_device && item.online !== false && item.ready === true && !switching && pending?.action !== "stop" &&
+    const canEnter = item.managed ? item.access_enabled && item.can_launch === true : item.ready === true;
+    const ready = !item.current_device && item.online !== false && canEnter && !switching && !stopping && !stopPending && !processing &&
       (!mac || permissionApproved) && !(deferred && permissions.requesting);
     p.connect.setAttribute("aria-disabled", String(!ready)); p.connect.tabIndex = ready ? 0 : -1;
-    if (ready) p.connect.href = item.url; else p.connect.removeAttribute("href");
+    if (ready) p.connect.href = item.can_launch ? `/open.html?id=${encodeURIComponent(item.id)}` : item.url; else p.connect.removeAttribute("href");
     const enter = state === "locked" && permissions.reason_code === "lock_screen_ready" ? copy.enterLocked : copy.enterDesktop;
     p.connectLabel.textContent = item.current_device ? copy.currentDevice : ready ? enter
       : item.kind === "device" && !item.installed ? copy.installToEnter
       : state === "locked" ? copy.physicalLocked
-      : permissions.requesting || deferred || state === "permission_required" ? copy.authorizeToEnter
+      : permissions.requesting || deferred || mac && !permissionApproved || state === "permission_required" ? copy.authorizeToEnter
       : state === "starting" ? copy.startingDesktop : copy.temporarily_unavailable;
-    p.connectLabel.hidden = active || stopping || stopPending || item.enabled === false;
+    p.connectLabel.hidden = active || stopping || stopPending || !ready && !item.current_device && item.managed && !item.access_enabled;
     p.connect.classList.toggle("show-entry-hint", !p.connectLabel.hidden);
     p.connect.ariaLabel = item.current_device ? copy.currentDevice : `${enter}: ${item.name}`;
     const runtimeMessage = deployment.stage === "failed" ? deployment.error || copy.failedInstall
       : item.runtime_error === "desktop_process_stopped" ? copy.stopped : item.runtime_error || "";
     const macHint = mac && item.managed && item.installed && !permissionApproved;
-    if (macHint || windowsPermissionHint) p.request.setAttribute("aria-describedby", p.error.id);
+    if (macHint || lockAuthorizationMissing) p.request.setAttribute("aria-describedby", p.error.id);
     else p.request.removeAttribute("aria-describedby");
-    const message = [...new Set([card.actionError || "", stopPending ? copy.stopRetrying : "", runtimeMessage, clientUpdateRequired ? copy.client_update_required : "",
+    const message = [...new Set([card.actionError || "", stopPending ? copy.stopRetrying : stopping ? copy.stopping : "", runtimeMessage, clientUpdateRequired ? copy.client_update_required : "",
       macHint ? macPermissionsHelp(item) : "", card.actionError === copy.lockAccessDeferred ? "" : windowsPermissionMessage,
-      unavailable ? permissions.reason || permissionHelp(item) : ""].filter(Boolean))].join("\n");
+      unavailable ? permissions.reason || permissionHelp(item) : deferred ? permissionHelp(item) : ""].filter(Boolean))].join("\n");
     if (p.error.textContent !== message) p.error.textContent = message;
     p.error.hidden = !message;
     updatePermissionDialog(item);
@@ -358,7 +405,7 @@
     const visible = targets.filter(item => item.online !== false);
     const ids = new Set(visible.map(item => item.id));
     if (permissionDevice && !ids.has(permissionDevice)) permissionDialog.close();
-    for (const [id, card] of cards) if (!ids.has(id)) { card.remove(); cards.delete(id); pendingActions.delete(id); }
+    for (const [id, card] of cards) if (!ids.has(id)) { if (openMenu?.trigger === card.parts.trigger) closeMenu(); card.remove(); cards.delete(id); pendingActions.delete(id); }
     for (const item of visible) {
       let card = cards.get(item.id);
       if (!card) { card = createCard(item); cards.set(item.id, card); }
@@ -368,14 +415,18 @@
   }
   async function act(id, action) {
     const card = cards.get(id);
+    const timeout = action === "uninstall" ? 28000 : 16000;
     const repeatable = action === "permissions" && macDevice(card?.target);
-    if (!repeatable) {
+    if (action === "permissions") {
+      if (!repeatable && pendingPermissions.has(id)) return;
+      if (!repeatable) pendingPermissions.add(id);
+    } else {
       if (pendingActions.has(id)) return;
-      pendingActions.set(id, { action, until: Date.now() + 15000 });
+      pendingActions.set(id, { action, until: Date.now() + timeout });
     }
     if (card) { card.actionError = ""; updateCard(card, card.target); }
     try {
-      const response = await fetch(`/api/hosts/${encodeURIComponent(id)}/${action}`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}", signal: AbortSignal.timeout(16000) });
+      const response = await fetch(`/api/hosts/${encodeURIComponent(id)}/${action}`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}", signal: AbortSignal.timeout(timeout) });
       if (response.redirected || response.status === 401) throw Error("login_required");
       if (!response.ok) {
         const failure = await response.json().catch(() => null);
@@ -385,12 +436,12 @@
       warning.hidden = true;
       const reply = await response.json();
       if (reply?.permission_request_deferred === true && card) card.actionError = copy.lockAccessDeferred;
-      if (action === "permissions" && !repeatable) pendingActions.delete(id);
+      if (["install", "update", "update-confirmed", "uninstall"].includes(action)) pendingActions.delete(id);
       const state = reply?.state;
       controlRevision += 1;
-      if (action === "stop" && reply?.stop_queued === true) {
+      if (typeof reply?.access_enabled === "boolean") {
         pendingActions.delete(id);
-        if (card) updateCard(card, { ...card.target, ready: false, status: "stopping" });
+        if (card) updateCard(card, { ...card.target, access_enabled: reply.access_enabled });
       } else if (card && state && typeof state.ready === "boolean" && typeof state.enabled === "boolean") {
         updateCard(card, { ...card.target, enabled: state.enabled, ready: state.ready,
           status: state.status, permissions: state.permissions || card.target.permissions,
@@ -399,7 +450,7 @@
       await load(true);
       return reply;
     } catch (error) {
-      if (!repeatable) pendingActions.delete(id);
+      if (action !== "permissions") pendingActions.delete(id);
       if (error.message === "update_confirmation_required") {
         await load();
         if (await confirmUpdate()) await act(id, "update-confirmed");
@@ -410,6 +461,11 @@
       else { warning.textContent = message; warning.hidden = false; }
       if (action === "permissions" && permissionDevice === id) document.getElementById("permission-feedback").textContent = message;
       if (card) updateCard(card, card.target);
+    } finally {
+      if (action === "permissions" && !repeatable) {
+        pendingPermissions.delete(id);
+        if (card?.isConnected) updateCard(card, card.target);
+      }
     }
   }
   let permissionRefresh;

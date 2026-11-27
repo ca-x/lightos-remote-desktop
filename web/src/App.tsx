@@ -104,6 +104,7 @@ function Workspace() {
   const lifecycle = useRef<ReturnType<typeof createClient> | null>(null);
   const popover = useRef({ open, close });
   useAutoRefresh(true, () => lifecycle.current?.refreshDesktops() ?? Promise.resolve());
+  const managedDesktop = !!document.querySelector('meta[name="lazycat-managed-desktop"]');
   const version = document.querySelector<HTMLMetaElement>('meta[name="lightos-version"]')?.content ?? "";
   useLayoutEffect(() => { popover.current = { open, close }; });
 
@@ -241,7 +242,7 @@ function Workspace() {
       {canUseVirtual && <p className="desktop-recovery-hint">{t("virtualDesktopHint")}</p>}
       <div className="desktop-recovery-actions">
         {ownership && ownership !== "unavailable" && <Button className="recovery-primary" onClick={() => setTakeoverOpen(true)}>{t("takeoverDesktop")}</Button>}
-        {(!ownership || ownership === "unavailable") && <Button className={canUseVirtual ? undefined : "recovery-primary"} onClick={() => invoke("connection")}>{t("reconnectDesktop")}</Button>}
+        {(!ownership || ownership === "unavailable") && <Button className={canUseVirtual ? undefined : "recovery-primary"} onClick={() => managedDesktop ? location.reload() : invoke("connection")}>{t("reconnectDesktop")}</Button>}
         {canUseVirtual && <Button className="recovery-primary" disabled={controls.switchingDesktop} onClick={() => choose("desktop-source", "virtual")}>{t("useVirtualDesktop")}</Button>}
       </div>
     </div>

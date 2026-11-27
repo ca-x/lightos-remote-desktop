@@ -15,16 +15,20 @@ func storageDirectory() string {
 }
 
 type savedHost struct {
-	ID         string         `json:"id"`
-	Owner      string         `json:"owner"`
-	Name       string         `json:"name"`
-	Platform   string         `json:"platform"`
-	DeviceID   string         `json:"device_id,omitempty"`
-	BoxID      string         `json:"box_id,omitempty"`
-	Managed    *bool          `json:"managed,omitempty"`
-	Agent      map[string]any `json:"agent"`
-	Stop       bool           `json:"stop_requested,omitempty"`
-	ReadyEpoch string         `json:"ready_epoch,omitempty"`
+	ID             string         `json:"id"`
+	Owner          string         `json:"owner"`
+	Name           string         `json:"name"`
+	Platform       string         `json:"platform"`
+	DeviceID       string         `json:"device_id,omitempty"`
+	BoxID          string         `json:"box_id,omitempty"`
+	Managed        *bool          `json:"managed,omitempty"`
+	Agent          map[string]any `json:"agent"`
+	ManifestDevice string         `json:"manifest_device,omitempty"`
+	Removal        bool           `json:"removal,omitempty"`
+	AccessDisabled *bool          `json:"access_disabled,omitempty"`
+	AccessEnabled  *bool          `json:"access_enabled,omitempty"`
+	Stop           bool           `json:"stop_requested,omitempty"`
+	ReadyEpoch     string         `json:"ready_epoch,omitempty"`
 }
 
 func (h *hostRegistry) restore() {
@@ -45,7 +49,18 @@ func (h *hostRegistry) restore() {
 		if host.Managed != nil && !*host.Managed {
 			registration.ControlService = ""
 		}
-		record := hostRecord{owner: host.Owner, registration: registration, readyEpoch: host.ReadyEpoch}
+		record := hostRecord{owner: host.Owner, registration: registration, manifestDevice: host.ManifestDevice, removal: host.Removal, readyEpoch: host.ReadyEpoch}
+		if host.AccessDisabled != nil {
+			record.accessDisabled = *host.AccessDisabled
+		} else if runtimeInstalled(host.Agent, false) {
+			// Older managers also saved "off" for a missing runtime. Only
+			// preserve a legacy gate or stop request on an installed device.
+			if host.AccessEnabled != nil {
+				record.accessDisabled = !*host.AccessEnabled
+			} else {
+				record.accessDisabled = host.Stop
+			}
+		}
 		if host.Stop && host.BoxID != "" && host.DeviceID != "" {
 			record.stop = &desktopStop{}
 		}
@@ -62,7 +77,7 @@ func (h *hostRegistry) persist() error {
 			continue
 		}
 		managed := r.ControlService != ""
-		hosts = append(hosts, savedHost{ID: id, Owner: record.owner, Name: r.Name, Platform: r.Platform, DeviceID: r.DeviceID, BoxID: r.BoxID, Managed: &managed, Agent: r.Agent, Stop: record.stop != nil, ReadyEpoch: record.readyEpoch})
+		hosts = append(hosts, savedHost{ID: id, Owner: record.owner, Name: r.Name, Platform: r.Platform, DeviceID: r.DeviceID, BoxID: r.BoxID, Managed: &managed, Agent: r.Agent, ManifestDevice: record.manifestDevice, Removal: record.removal, AccessDisabled: &record.accessDisabled, Stop: record.stop != nil || record.sessions != nil, ReadyEpoch: record.readyEpoch})
 	}
 	// Stable ordering also avoids needless disk writes on heartbeats.
 	sortSavedHosts(hosts)

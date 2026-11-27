@@ -89,14 +89,20 @@ button:not(:disabled):active { background: var(--hover); }
 .platform-icon { display: block; flex: 0 0 19px; width: 19px; height: 19px; object-fit: contain; }
 :root[data-theme="dark"] .platform-icon[data-platform="apple"] { filter: invert(1); }
 .device-name { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 600; line-height: 20px; }
-.toggle { flex-shrink: 0; min-width: 52px; min-height: 28px; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 500; line-height: 20px; }
+.device-actions { position: relative; flex-shrink: 0; }
+.menu-trigger { display: grid; place-items: center; width: 32px; min-height: 28px; padding: 0; background: transparent; color: var(--secondary); font-size: 23px; line-height: 1; }
+.device-menu { position: absolute; z-index: 4; right: 0; bottom: 100%; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: 0 3px 14px rgb(0 0 0 / .14); }
+.device-menu button { display: block; width: 100%; min-height: 32px; padding: 6px 10px; border-radius: 5px; background: transparent; text-align: start; white-space: nowrap; }
+.device-menu button:not(:disabled):hover { background: var(--hover); }
+.opening-desktop { min-height: 100dvh; display: grid; align-content: center; justify-items: center; }
+.opening-desktop a { color: var(--accent); }
 .platform, .runtime-version { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--secondary); font-size: 12px; line-height: 20px; }
 .platform-info { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .permission-summary { flex-shrink: 0; color: var(--secondary); font-size: 11px; line-height: 20px; white-space: nowrap; }
 .permission-summary::before { content: "·"; margin-right: 6px; color: var(--muted); }
 .runtime-version { color: var(--muted); font-size: 11px; line-height: 20px; }
 .text-action { flex-shrink: 0; min-height: 28px; padding: 4px 0 4px 6px; border-radius: 4px; background: transparent; color: var(--accent); font-size: 11px; font-weight: 500; line-height: 20px; white-space: nowrap; }
-.toggle, .text-action { display: inline-flex; align-items: center; justify-content: center; }
+.text-action { display: inline-flex; align-items: center; justify-content: center; }
 .text-action:not(:disabled):active { background: transparent; text-decoration: underline; text-underline-offset: 3px; }
 .deployment { position: absolute; z-index: 3; left: 10px; right: 10px; bottom: 10px; padding: 8px 10px; border-radius: 7px; background: var(--surface); }
 .deployment-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--secondary); font-size: 10px; line-height: 16px; margin-bottom: 6px; }
@@ -139,6 +145,6 @@ dialog p, dialog details { color: var(--secondary); font-size: 13px; line-height
   .icon-button { min-height: 44px; }
   #desktops { grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .card-body { height: 120px; grid-template-rows: repeat(3, 32px); }
-  .toggle, .request-permissions, .install-runtime { min-height: 32px; }
+  .menu-trigger, .request-permissions, .install-runtime { min-height: 32px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

@@ -19,7 +19,7 @@ func (record hostRecord) sameDevice(other hostRecord) bool {
 }
 
 func (record hostRecord) desktopReady() bool {
-	return record.stop == nil && record.registration.Desktop.Ready
+	return (record.registration.ControlService == "" || record.accessEnabled()) && record.stop == nil && !record.removal && !record.packageCommand && !record.switchingRuntime() && record.registration.Desktop.Ready
 }
 
 func (record hostRecord) stopStatus() string {
@@ -33,39 +33,64 @@ func (record hostRecord) stopStatus() string {
 	return "stop_pending"
 }
 
-// The registry must be locked when changing or scheduling a desktop command.
+// Called with the registry locked. Publish the gate and any pending runtime
+// work together, so a failed save cannot leave an acknowledged partial change.
+func (h *hostRegistry) saveDesktopState(id string, record hostRecord) error {
+	previous := h.hosts[id]
+	h.hosts[id] = record
+	if err := h.persist(); err != nil {
+		h.hosts[id] = previous
+		return err
+	}
+	return nil
+}
+
+func (h *hostRegistry) setDesktopAccess(id string, record hostRecord, enabled bool) error {
+	record.accessDisabled = !enabled
+	if !enabled && (record.registration.Desktop.Enabled || record.sessions != nil || record.starting) {
+		return h.requestDesktopStop(id, record)
+	}
+	return h.saveDesktopState(id, record)
+}
+
 func (h *hostRegistry) requestDesktopStop(id string, record hostRecord) error {
 	if record.stop == nil {
-		updated := record
-		updated.stop = &desktopStop{}
-		h.hosts[id] = updated
-		if err := h.persist(); err != nil {
-			h.hosts[id] = record
-			return err
+		record.stop = &desktopStop{}
+	}
+	sessions := record.sessions
+	record.sessions = nil
+	if err := h.saveDesktopState(id, record); err != nil {
+		return err
+	}
+	if sessions != nil {
+		if sessions.timer != nil {
+			sessions.timer.Stop()
 		}
-		record = updated
-	} else if !record.stop.running {
-		*record.stop = desktopStop{}
+		for _, disconnect := range sessions.connections {
+			disconnect()
+		}
 	}
 	h.scheduleDesktopStop(id, record)
 	return nil
 }
 
-func (h *hostRegistry) beginDesktopStart(id string, record hostRecord) *controlFailure {
-	if record.starting || (record.stop != nil && record.stop.running) {
-		return &controlFailure{409, "desktop_control_busy"}
+// A second window can share an in-flight start. Each opening has a deadline
+// in case its websocket is never established.
+func (h *hostRegistry) prepareDesktopLaunch(id string, record hostRecord) (bool, error) {
+	shouldStart := !record.desktopReady() && !record.starting &&
+		!(record.registration.Desktop.Enabled && record.stop == nil && record.registration.Agent["status"] == "starting")
+	if shouldStart {
+		record.starting = true
+		record.stop = nil
 	}
-	updated := record
-	updated.starting = true
-	updated.stop = nil
-	h.hosts[id] = updated
-	if record.stop != nil {
-		if err := h.persist(); err != nil {
-			h.hosts[id] = record
-			return &controlFailure{500, "desktop_preference_save_failed"}
-		}
+	if record.sessions == nil {
+		record.sessions = &desktopSessions{}
 	}
-	return nil
+	if err := h.saveDesktopState(id, record); err != nil {
+		return false, err
+	}
+	h.stopWhenIdle(id, record.sessions, time.Minute)
+	return shouldStart, nil
 }
 
 func (h *hostRegistry) finishDesktopStart(id string, started hostRecord) {
@@ -80,11 +105,10 @@ func (h *hostRegistry) finishDesktopStart(id string, started hostRecord) {
 
 func (h *hostRegistry) scheduleDesktopStop(id string, record hostRecord) {
 	stop := record.stop
-	if stop == nil || stop.running || record.starting || !record.until.After(time.Now()) || time.Now().Before(stop.retryAt) || record.stopStatus() == "disabled" {
+	if stop == nil || stop.running || record.starting || record.packageCommand || record.switchingRuntime() || !record.until.After(time.Now()) || time.Now().Before(stop.retryAt) || record.stopStatus() == "disabled" {
 		return
 	}
-	protocol, _ := record.registration.Agent["controller_protocol"].(float64)
-	if protocol < 2 || record.registration.ControlService == "" {
+	if record.registration.ControlService == "" {
 		return
 	}
 	stop.running = true
@@ -112,14 +136,23 @@ func (h *hostRegistry) stopDesktop(id string, attempted hostRecord) {
 		h.scheduleDesktopStop(id, current)
 		return
 	}
+	protocol, _ := attempted.registration.Agent["controller_protocol"].(float64)
+	if protocol < 2 && failure == nil && accepted {
+		// The standalone agent acknowledges the command before its heartbeat.
+		stop.confirmedService = current.registration.ControlService
+		stop.retryAt = time.Now().Add(5 * time.Second)
+		return
+	}
 	if failure != nil || !accepted || !hasEnabled || enabled || !hasReady || ready {
 		stop.retryAt = time.Now().Add(5 * time.Second)
 		return
 	}
-	stop.confirmedService = current.registration.ControlService
-	stop.retryAt = time.Time{}
+	// The next heartbeat will schedule a new stop if a controller restores
+	// an old start intent. An idle device needs no recurring stop command.
+	current.stop = nil
 	current.registration.Desktop.Enabled = false
 	current.registration.Desktop.Ready = false
 	current.registration.Agent = state
 	h.hosts[id] = current
+	h.persist()
 }

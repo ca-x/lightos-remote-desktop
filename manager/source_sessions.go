@@ -130,7 +130,7 @@ func (s *server) desktop(w http.ResponseWriter, r *http.Request) {
 					response.Header.Set("Location", "/desktop/"+id+"/"+strings.TrimPrefix(resolved.Path, basePath))
 				}
 			}
-			return decorateDesktopPage(response, record.registration.Name, true)
+			return decorateDesktopPage(response, record.registration.Name, true, false)
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) { writeFailure(w, 502, "desktop_unavailable") },
 	}

@@ -43,14 +43,19 @@ type hostRegistration struct {
 	} `json:"desktop"`
 }
 type hostRecord struct {
-	registration hostRegistration
-	owner        string
-	until        time.Time
-	source       *desktopSource
-	sourceURL    string
-	stop         *desktopStop
-	starting     bool
-	readyEpoch   string
+	registration   hostRegistration
+	owner          string
+	until          time.Time
+	source         *desktopSource
+	sourceURL      string
+	stop           *desktopStop
+	accessDisabled bool
+	starting       bool
+	sessions       *desktopSessions
+	packageCommand bool
+	removal        bool
+	manifestDevice string
+	readyEpoch     string
 }
 type hostRegistry struct {
 	mu        sync.Mutex
@@ -67,6 +72,10 @@ func hostID(owner, id string) string {
 	sum := sha256.Sum256([]byte(owner + "\x00" + id))
 	return hex.EncodeToString(sum[:16])
 }
+func (r hostRecord) isCurrentDevice(device string) bool {
+	return device != "" && (device == r.registration.DeviceID || device == r.manifestDevice)
+}
+
 func (h *hostRegistry) list(owner, currentDevice string) []desktopTarget {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -96,8 +105,10 @@ func (h *hostRegistry) list(owner, currentDevice string) []desktopTarget {
 		}
 		target := desktopTarget{agent: r.Agent, Kind: "device", ID: id, Name: r.Name, Platform: r.Platform, URL: "/desktop/" + id + "/", RequiresConsent: r.Desktop.RequiresConsent,
 			DeviceID:      r.DeviceID,
-			CurrentDevice: currentDevice != "" && r.DeviceID == currentDevice,
-			Managed:       r.ControlService != "", Online: online, Enabled: r.Desktop.Enabled, Ready: online && record.desktopReady(), Status: state, Permissions: permissions}
+			CurrentDevice: record.isCurrentDevice(currentDevice),
+			CanLaunch:     online && record.canLaunch() && !record.isCurrentDevice(currentDevice),
+			CanUninstall:  record.manifestDevice != "", Removing: record.removal,
+			AccessEnabled: record.accessEnabled(), Managed: r.ControlService != "", Online: online, Enabled: r.Desktop.Enabled, Ready: online && record.desktopReady(), Status: state, Permissions: permissions}
 		if stamp := previewStamp(id); stamp != "" {
 			target.Preview = "/api/previews/" + id + "?v=" + stamp
 		}
@@ -206,8 +217,14 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 	}
 	api.Close()
 	registration.DeviceID = device.GetUniqueDeivceId()
+	// The controller sends the same device header on registration and on its
+	// manifest request. Only accept identifiers resolved by the platform.
+	manifestDevice := currentDeviceID(r)
+	if manifestDevice != registration.DeviceID && manifestDevice != device.GetAvoidUseThisPeerId() {
+		manifestDevice = ""
+	}
 	h.mu.Lock()
-	record := hostRecord{registration: registration, owner: owner(r), until: time.Now().Add(35 * time.Second)}
+	record := hostRecord{registration: registration, manifestDevice: manifestDevice, owner: owner(r), until: time.Now().Add(35 * time.Second)}
 	var epoch string
 	if d.Enabled && d.Epoch != "" {
 		sum := sha256.Sum256([]byte(d.Epoch))
@@ -227,6 +244,17 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if exists && record.sameDevice(previous) {
+		record.accessDisabled = previous.accessDisabled
+		record.sessions = previous.sessions
+		record.removal = previous.removal
+		if record.isRemoved() && !record.switchingRuntime() {
+			// Leave failed cleanup retryable even if promotion already succeeded.
+			deployment, _ := registration.Agent["deployment"].(map[string]any)
+			if deployment["stage"] == "completed" {
+				record.removal = false
+			}
+		}
+		record.packageCommand = previous.packageCommand
 		record.stop = previous.stop
 		record.starting = previous.starting
 		// A failed health check cannot start a runtime that has already been
@@ -238,9 +266,19 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 			if registration.ControlService != previous.registration.ControlService {
 				record.stop.retryAt = time.Time{}
 			}
-			if registration.ControlService != previous.registration.ControlService || registration.Desktop.Enabled {
+			if registration.ControlService != previous.registration.ControlService || d.Enabled {
 				record.stop.confirmedService = ""
 			}
+			if !d.Enabled && !record.stop.running && (previous.registration.ControlService == "offline" || record.stop.confirmedService == registration.ControlService) {
+				record.stop = nil
+			}
+		}
+	}
+	if managed {
+		// An old controller may restore its local start intent after a restart.
+		// Only a launch tracked by this manager should keep a managed host up.
+		if d.Enabled && record.sessions == nil && !record.starting && record.stop == nil {
+			record.stop = &desktopStop{}
 		}
 	}
 	h.hosts[id] = record
@@ -262,8 +300,9 @@ func (h *hostRegistry) proxy(w http.ResponseWriter, r *http.Request) {
 	}
 	h.mu.Lock()
 	record, ok := h.hosts[id]
+	canLaunch := ok && record.canLaunch()
 	h.mu.Unlock()
-	if !ok || record.owner != owner(r) || !record.until.After(time.Now()) || !record.desktopReady() {
+	if !ok || record.owner != owner(r) || !record.until.After(time.Now()) {
 		writeFailure(w, 403, "desktop_unavailable")
 		return
 	}
@@ -272,8 +311,20 @@ func (h *hostRegistry) proxy(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusForbidden, "viewer_identity_required")
 		return
 	}
-	if deviceID := currentDeviceID(r); !viewerInput && deviceID != "" && deviceID == record.registration.DeviceID {
+	if !viewerInput && record.isCurrentDevice(currentDeviceID(r)) {
 		http.Error(w, "请从另一台设备连接此远程桌面。 / Connect to this desktop from another device.", http.StatusForbidden)
+		return
+	}
+	if !record.desktopReady() {
+		if (path == "" || path == "index.html") && r.Method == http.MethodGet && canLaunch {
+			openURL := "/open.html?id=" + id
+			if r.URL.Query().Get("from") == "lightos" {
+				openURL += "&from=lightos"
+			}
+			http.Redirect(w, r, openURL, http.StatusSeeOther)
+		} else {
+			writeFailure(w, http.StatusConflict, "desktop_unavailable")
+		}
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
@@ -314,6 +365,15 @@ func (h *hostRegistry) proxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	defer transport.CloseIdleConnections()
+	trackStream := host.ControlService != "" && (path == "ws" || viewerInput)
+	var closeStream context.CancelFunc
+	if trackStream {
+		var streamContext context.Context
+		streamContext, closeStream = context.WithCancel(r.Context())
+		defer closeStream()
+		r = r.WithContext(streamContext)
+	}
+	var disconnected func()
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = upstream.Scheme
@@ -347,8 +407,13 @@ func (h *hostRegistry) proxy(w http.ResponseWriter, r *http.Request) {
 			}
 		}, Transport: transport, FlushInterval: -1,
 		ModifyResponse: func(response *http.Response) error {
+			if trackStream && response.StatusCode == http.StatusSwitchingProtocols {
+				var err error
+				disconnected, err = h.trackConnection(id, record, r, closeStream)
+				return err
+			}
 			if path == "" || path == "index.html" {
-				return decorateDesktopPage(response, host.Name, false)
+				return decorateDesktopPage(response, host.Name, false, host.ControlService != "")
 			}
 			return nil
 		},
@@ -356,5 +421,10 @@ func (h *hostRegistry) proxy(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Remote desktop is unavailable", http.StatusBadGateway)
 		},
 	}
+	defer func() {
+		if disconnected != nil {
+			disconnected()
+		}
+	}()
 	proxy.ServeHTTP(w, r)
 }

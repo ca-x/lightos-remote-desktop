@@ -27,6 +27,7 @@ type runtimeArtifact struct {
 type runtimeCatalog struct {
 	Version   string                     `json:"version"`
 	Targets   map[string]runtimeArtifact `json:"targets"`
+	Removed   map[string]runtimeArtifact `json:"removed"`
 	directory string
 }
 
@@ -47,40 +48,58 @@ func loadRuntimeCatalog() (*runtimeCatalog, error) {
 		return nil, err
 	}
 	for _, target := range []string{"darwin-arm64", "darwin-x64", "win32-x64", "linux-x64"} {
-		artifact, ok := catalog.Targets[target]
-		digest, decodeErr := hex.DecodeString(artifact.SHA256)
-		if artifact.VirtualFallback && target != "linux-x64" {
-			return nil, fmt.Errorf("unsupported virtual desktop runtime: %s", target)
-		}
-		if !ok || artifact.Target != target || artifact.Version != catalog.Version || artifact.Version == "" || artifact.Protocol != 2 || decodeErr != nil || len(digest) != 32 || artifact.ArchiveSize < 1 || !strings.HasPrefix(artifact.DownloadPath, "/api/runtimes/"+target+"/") {
-			return nil, fmt.Errorf("invalid runtime catalog entry: %s", target)
-		}
-		file, err := os.Open(filepath.Join(directory, target+".tar.gz"))
-		if err != nil {
+		full := catalog.Targets[target]
+		removed := catalog.Removed[target]
+		if err := verifyArtifact(directory, target+".tar.gz", target, catalog.Version, full); err != nil {
 			return nil, err
 		}
-		hash := sha256.New()
-		size, copyErr := io.Copy(hash, file)
-		file.Close()
-		if copyErr != nil || size != artifact.ArchiveSize || hex.EncodeToString(hash.Sum(nil)) != artifact.ArchiveSHA256 {
-			return nil, fmt.Errorf("runtime archive does not match its manifest: %s", target)
+		if err := verifyArtifact(directory, "removed-"+target+".tar.gz", target, removedVersion, removed); err != nil {
+			return nil, err
+		}
+		if full.SigningTeam != removed.SigningTeam || full.DownloadPath == removed.DownloadPath || full.Version == removedVersion {
+			return nil, fmt.Errorf("incompatible uninstall package: %s", target)
 		}
 	}
 	return catalog, nil
 }
 
-func (c *runtimeCatalog) serve(w http.ResponseWriter, r *http.Request) {
+func verifyArtifact(directory, filename, target, version string, artifact runtimeArtifact) error {
+	digest, err := hex.DecodeString(artifact.SHA256)
+	if artifact.VirtualFallback && target != "linux-x64" || artifact.Target != target || artifact.Version != version || version == "" || artifact.Protocol != 2 || err != nil || len(digest) != 32 || artifact.ArchiveSize < 1 || !strings.HasPrefix(artifact.DownloadPath, "/api/runtimes/"+target+"/") {
+		return fmt.Errorf("invalid runtime catalog entry: %s", filename)
+	}
+	file, err := os.Open(filepath.Join(directory, filename))
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	size, err := io.Copy(hash, file)
+	if err != nil || size != artifact.ArchiveSize || hex.EncodeToString(hash.Sum(nil)) != artifact.ArchiveSHA256 {
+		return fmt.Errorf("runtime archive does not match its manifest: %s", filename)
+	}
+	return nil
+}
+
+func (s *server) serveRuntime(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.WriteHeader(405)
 		return
 	}
 	target := r.PathValue("target")
+	c := s.runtimes
 	artifact, ok := c.Targets[target]
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
 	file := r.PathValue("file")
+	filename := target + ".tar.gz"
+	removed := c.Removed[target]
+	if file == "manifest" && s.hosts.wantsRemoval(r, target) || r.URL.Path == removed.DownloadPath {
+		artifact = removed
+		filename = "removed-" + filename
+	}
 	if file == "manifest" {
 		writeJSON(w, 200, artifact)
 		return
@@ -91,7 +110,7 @@ func (c *runtimeCatalog) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+target+`.tar.gz"`)
-	http.ServeFile(w, r, filepath.Join(c.directory, target+".tar.gz"))
+	http.ServeFile(w, r, filepath.Join(c.directory, filename))
 }
 
 func (c *runtimeCatalog) decorate(target *desktopTarget) {
@@ -100,15 +119,17 @@ func (c *runtimeCatalog) decorate(target *desktopTarget) {
 	}
 	agent := target.agent
 	target.RuntimeVersion, _ = agent["version"].(string)
-	target.Installed, _ = agent["installed"].(bool)
+	target.Installed = runtimeInstalled(agent, target.Ready)
 	protocol, _ := agent["controller_protocol"].(float64)
 	target.ControllerProtocol = int(protocol)
 	target.PermissionCheck, _ = agent["permission_check"].(bool)
-	if protocol < 2 && (target.RuntimeVersion != "" || target.Ready) {
-		target.Installed = true
-	}
 	target.Deployment, _ = agent["deployment"].(map[string]any)
 	target.RuntimeError, _ = agent["error"].(string)
+	if target.RuntimeVersion == removedVersion {
+		target.RuntimeVersion = ""
+		target.Status = "not_installed"
+		target.Ready = false
+	}
 	platform, _ := agent["target"].(string)
 	artifact, supported := c.Targets[platform]
 	target.RuntimeSupported = supported

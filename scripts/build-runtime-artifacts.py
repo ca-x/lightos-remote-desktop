@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tarfile
 import tomllib
+from removal_artifacts import build_removal
 from runtime_codec import sdk, copy_libraries, notices
 
 repo = Path(__file__).resolve().parent.parent
@@ -31,7 +32,7 @@ native.mkdir(exist_ok=True)
 version = tomllib.loads((repo / "Cargo.toml").read_text())["package"]["version"]
 triples = {"linux-x64": "x86_64-unknown-linux-gnu", "win32-x64": "x86_64-pc-windows-msvc", "darwin-arm64": "aarch64-apple-darwin", "darwin-x64": "x86_64-apple-darwin"}
 sources = [repo / "Cargo.toml", repo / "Cargo.lock"]
-sources += [repo / "scripts" / name for name in ["build-runtime-artifacts.py", "build-linux-runtime.py", "build-macos-runtimes.py", "build-macos-codec.py", "runtime_codec.py", "ffmpeg-videotoolbox-low-delay.patch"]]
+sources += [repo / "scripts" / name for name in ["build-runtime-artifacts.py", "removal_artifacts.py", "build-linux-runtime.py", "build-macos-runtimes.py", "build-macos-codec.py", "runtime_codec.py", "ffmpeg-videotoolbox-low-delay.patch"]]
 sources += [repo / ".github/scripts/prepare-spa-build-sdk.sh", repo / "config/codec-dependencies.json"]
 sources += [repo / "scripts/build-viewer-input.py"]
 for name in ["src", "crates", "web/dist", ".cargo", "native", "config", "scripts/linux-session", "adapters/gnome-input"]:
@@ -114,7 +115,7 @@ def build_windows():
     record("win32-x64")
 
 def build_macos():
-    if cached("darwin-arm64") and cached("darwin-x64"): return
+    if all(cached(t) and (native / "removed" / (t + ".tar.gz")).exists() for t in ("darwin-arm64", "darwin-x64")): return
     options = configuration.get("macos", {})
     identity = options.get("identity", "-")
     if platform.system() == "Darwin":
@@ -129,7 +130,7 @@ def build_macos():
         run(ssh + ["mkdir -p " + shlex.quote(remote)])
         source_archive = cache / "source.tar.gz"
         with tarfile.open(source_archive, "w:gz") as archive:
-            for name in ["Cargo.toml", "Cargo.lock", "src", "crates", "native", "web/dist", "scripts/build-viewer-input.py", "scripts/build-macos-runtimes.py", "scripts/runtime_codec.py", "scripts/build-macos-codec.py", "scripts/ffmpeg-videotoolbox-low-delay.patch", "config/codec-dependencies.json"]:
+            for name in ["Cargo.toml", "Cargo.lock", "src", "crates", "native", "web/dist", "scripts/build-viewer-input.py", "scripts/build-macos-runtimes.py", "scripts/removal_artifacts.py", "scripts/runtime_codec.py", "scripts/build-macos-codec.py", "scripts/ffmpeg-videotoolbox-low-delay.patch", "config/codec-dependencies.json"]:
                 archive.add(repo / name, arcname=name, filter=lambda item: None if "target" in Path(item.name).parts else item)
         run(["scp", *ssh_options, "-P", port, str(source_archive), host + ":" + remote + "/source.tar.gz"])
         body = "set -eu; cd " + shlex.quote(remote) + "; tar -xzf source.tar.gz; python3 scripts/build-macos-runtimes.py --source . --output artifacts --version " + shlex.quote(version) + " --identity " + shlex.quote(identity)
@@ -138,13 +139,13 @@ def build_macos():
         # gateways close recursive SFTP sessions while copying app bundles.
         downloaded = cache / "macos-artifacts.tar.gz"
         with downloaded.open("wb") as output:
-            subprocess.run(ssh + ["COPYFILE_DISABLE=1 tar -czf - -C " + shlex.quote(remote + "/artifacts") + " darwin-arm64 darwin-x64"], stdout=output, check=True)
+            subprocess.run(ssh + ["COPYFILE_DISABLE=1 tar -czf - -C " + shlex.quote(remote + "/artifacts") + " darwin-arm64 darwin-x64 removed"], stdout=output, check=True)
         staged = cache / "macos-extracted"
         if staged.exists(): shutil.rmtree(staged)
         staged.mkdir()
         with tarfile.open(downloaded) as archive:
             archive.extractall(staged, filter="data")
-        for target in ["darwin-arm64", "darwin-x64"]:
+        for target in ["darwin-arm64", "darwin-x64", "removed"]:
             if (native / target).exists(): shutil.rmtree(native / target)
             shutil.move(str(staged / target), str(native / target))
         staged.rmdir()
@@ -155,9 +156,14 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
     for future in futures: future.result()
 
 args.output.mkdir(parents=True, exist_ok=True)
-index = {"version": version, "source_fingerprint": fingerprint, "targets": {}}
+index = {"version": version, "source_fingerprint": fingerprint, "targets": {}, "removed": {}}
 for target, triple in triples.items():
     directory = native / target
+    removed = native / "removed"
+    if not target.startswith("darwin"):
+        build_removal(repo, removed, target)
+    index["removed"][target] = json.loads((removed / (target + ".json")).read_text())
+    shutil.copy2(removed / (target + ".tar.gz"), args.output / ("removed-" + target + ".tar.gz"))
     build = json.loads((directory / ".build.json").read_text())
     artifact = {"target": target, "version": version, "binary": build["binary"], "sha256": build["sha256"], "runtime_protocol": 2, "source_fingerprint": fingerprint}
     if target == "linux-x64" and args.experimental_linux_virtual_desktop:

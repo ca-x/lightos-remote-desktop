@@ -17,8 +17,8 @@
   new MutationObserver(apply).observe(root, { attributes: true, attributeFilter: ["data-lzc-theme"] });
   document.addEventListener("DOMContentLoaded", () => {
     const toggle = document.getElementById("theme-toggle");
-    toggle.setAttribute("aria-label", navigator.language.toLowerCase().startsWith("zh") ? "切换明暗主题" : "Toggle color theme");
-    toggle.addEventListener("click", () => {
+    toggle?.setAttribute("aria-label", navigator.language.toLowerCase().startsWith("zh") ? "切换明暗主题" : "Toggle color theme");
+    toggle?.addEventListener("click", () => {
       choice = root.dataset.theme === "dark" ? "light" : "dark";
       try { localStorage.setItem("lazycat-remote.theme", choice); } catch {}
       apply();

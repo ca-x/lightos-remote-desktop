@@ -12,7 +12,7 @@ import (
 var desktopHeadEnd = regexp.MustCompile(`(?i)</head\s*>`)
 var desktopTitle = regexp.MustCompile(`(?is)<title(?:\s[^>]*)?>(.*?)</title\s*>`)
 
-func decorateDesktopPage(response *http.Response, name string, preview bool) error {
+func decorateDesktopPage(response *http.Response, name string, preview, managed bool) error {
 	if response.StatusCode != http.StatusOK || !strings.Contains(response.Header.Get("Content-Type"), "text/html") || response.Header.Get("Content-Encoding") != "" {
 		return nil
 	}
@@ -39,6 +39,9 @@ func decorateDesktopPage(response *http.Response, name string, preview bool) err
 				extra += "<title>" + title + "</title>"
 			}
 			extra += `<meta name="lightos-desktop-name" content="` + title + `"><script src="/session-title.js"></script>`
+		}
+		if managed {
+			extra += `<meta name="lazycat-managed-desktop" content="true">`
 		}
 		if preview {
 			extra += `<script src="/session-preview.js"></script>`

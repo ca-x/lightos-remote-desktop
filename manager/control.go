@@ -17,7 +17,13 @@ type controlFailure struct {
 
 func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 	action := r.PathValue("action")
-	if r.Method != http.MethodPost || (action != "start" && action != "stop" && action != "permissions" && action != "permissions-check" && action != "install" && action != "update" && action != "update-confirmed") {
+	switch action {
+	case "uninstall", "connect", "start", "stop", "permissions", "permissions-check", "install", "update", "update-confirmed":
+	default:
+		writeFailure(w, http.StatusMethodNotAllowed, "invalid_action")
+		return
+	}
+	if r.Method != http.MethodPost {
 		writeFailure(w, http.StatusMethodNotAllowed, "invalid_action")
 		return
 	}
@@ -37,33 +43,52 @@ func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusConflict, "device_unavailable")
 		return
 	}
-	protocol, _ := record.registration.Agent["controller_protocol"].(float64)
-	if protocol >= 2 && action == "stop" {
-		err := h.requestDesktopStop(id, record)
+	if record.packageCommand || record.switchingRuntime() {
+		h.mu.Unlock()
+		writeFailure(w, 409, "desktop_control_busy")
+		return
+	}
+	if action == "install" || action == "update" || action == "update-confirmed" || action == "uninstall" {
+		h.changeRuntime(w, r, id, record, action)
+		return
+	}
+	if action == "start" || action == "stop" {
+		if !runtimeInstalled(record.registration.Agent, record.registration.Desktop.Ready) {
+			h.mu.Unlock()
+			writeFailure(w, http.StatusConflict, "desktop_unavailable")
+			return
+		}
+		enable := action == "start"
+		err := h.setDesktopAccess(id, record, enable)
 		h.mu.Unlock()
 		if err != nil {
 			writeFailure(w, http.StatusInternalServerError, "desktop_preference_save_failed")
 			return
 		}
-		writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true, "stop_queued": true})
+		writeJSON(w, http.StatusOK, map[string]bool{"accepted": true, "access_enabled": enable})
 		return
 	}
-	if action == "start" && (protocol >= 2 || record.stop != nil) {
-		failure := h.beginDesktopStart(id, record)
-		if failure != nil {
+	if action == "connect" {
+		if record.isCurrentDevice(currentDeviceID(r)) || !record.canLaunch() {
 			h.mu.Unlock()
-			writeFailure(w, failure.status, failure.code)
+			writeFailure(w, http.StatusConflict, "desktop_unavailable")
+			return
+		}
+		start, err := h.prepareDesktopLaunch(id, record)
+		if err != nil {
+			h.mu.Unlock()
+			writeFailure(w, 500, "desktop_preference_save_failed")
+			return
+		}
+		if !start {
+			h.mu.Unlock()
+			writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
 			return
 		}
 		defer h.finishDesktopStart(id, record)
+		action = "start"
 	}
 	h.mu.Unlock()
-	if action == "install" || action == "update" || action == "update-confirmed" {
-		if protocol < 2 {
-			writeFailure(w, 409, "client_update_required")
-			return
-		}
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
 	reply, failure := forwardHostControl(ctx, record, action)
@@ -72,8 +97,8 @@ func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state, _ := reply["state"].(map[string]any)
-	if needsWindowsLockAuthorization(state) && (action == "permissions" || action == "start" && state["enabled"] == true) {
-		requestWindowsLockAuthorization(ctx, record, reply, action == "permissions")
+	if action == "permissions" && needsWindowsLockAuthorization(state) {
+		retryWindowsLockAuthorization(ctx, record, reply)
 		state, _ = reply["state"].(map[string]any)
 	}
 	if state != nil {
@@ -93,36 +118,21 @@ func needsWindowsLockAuthorization(state map[string]any) bool {
 		permissions["can_start"] == true && permissions["lock_screen_authorized"] == false && permissions["requesting"] != true
 }
 
-func requestWindowsLockAuthorization(ctx context.Context, record hostRecord, reply map[string]any, alreadyRequested bool) {
-	// The PC controller can return an accepted response while its read-only
-	// check is in flight. Retry that case once without repeating a live prompt.
-	firstAttempt := 0
-	if alreadyRequested {
-		firstAttempt = 1
-	}
-	for attempt := firstAttempt; attempt < 2; attempt++ {
-		if attempt != 0 {
-			timer := time.NewTimer(350 * time.Millisecond)
-			select {
-			case <-timer.C:
-			case <-ctx.Done():
-				timer.Stop()
-				reply["permission_request_deferred"] = true
+// A read-only controller probe can briefly occupy the permission worker.
+// Retry an explicitly requested prompt once when it did not start.
+func retryWindowsLockAuthorization(ctx context.Context, record hostRecord, reply map[string]any) {
+	timer := time.NewTimer(350 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		authorization, failure := forwardHostControl(ctx, record, "permissions")
+		if state, ok := authorization["state"].(map[string]any); failure == nil && ok {
+			reply["state"] = state
+			if !needsWindowsLockAuthorization(state) {
 				return
 			}
 		}
-		authorization, failure := forwardHostControl(ctx, record, "permissions")
-		if failure != nil {
-			break
-		}
-		state, ok := authorization["state"].(map[string]any)
-		if !ok {
-			break
-		}
-		reply["state"] = state
-		if !needsWindowsLockAuthorization(state) {
-			return
-		}
+	case <-ctx.Done():
 	}
 	reply["permission_request_deferred"] = true
 }

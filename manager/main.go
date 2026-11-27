@@ -20,6 +20,10 @@ type desktopTarget struct {
 	RuntimeVersion     string         `json:"runtime_version,omitempty"`
 	AvailableVersion   string         `json:"available_version,omitempty"`
 	Installed          bool           `json:"installed"`
+	AccessEnabled      bool           `json:"access_enabled"`
+	CanLaunch          bool           `json:"can_launch,omitempty"`
+	CanUninstall       bool           `json:"can_uninstall,omitempty"`
+	Removing           bool           `json:"removing,omitempty"`
 	CanInstall         bool           `json:"can_install"`
 	RuntimeSupported   bool           `json:"runtime_supported"`
 	ControllerProtocol int            `json:"controller_protocol,omitempty"`
@@ -99,6 +103,10 @@ func (s *server) targets(w http.ResponseWriter, r *http.Request) {
 		stage, _ := target.Deployment["stage"].(string)
 		switching := stage != "" && stage != "idle" && stage != "completed" && stage != "failed"
 		requesting, _ := target.Permissions["requesting"].(bool)
+		if target.Managed {
+			target.CanConnect = target.CanLaunch && target.Installed
+			continue
+		}
 		target.CanConnect = target.Online && target.Enabled && target.Ready &&
 			!target.CurrentDevice && !switching && !requesting &&
 			(target.Kind != "device" || target.Installed)
@@ -129,7 +137,7 @@ func main() {
 	s := &server{hosts: newHostRegistry(), sources: sources, runtimes: runtimes}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/targets", s.targets)
-	mux.HandleFunc("/api/runtimes/{target}/{file}", runtimes.serve)
+	mux.HandleFunc("/api/runtimes/{target}/{file}", s.serveRuntime)
 	mux.HandleFunc("/api/hosts", s.hosts.register)
 	mux.HandleFunc("/api/hosts/{id}/{action}", s.hosts.control)
 	mux.HandleFunc("/api/previews/{id}", s.preview)
@@ -144,6 +152,10 @@ func main() {
 		}
 		if owner(r) == "" {
 			writeFailure(w, http.StatusUnauthorized, "login_required")
+			return
+		}
+		if r.URL.Path == "/open.html" && r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+			writeFailure(w, http.StatusForbidden, "invalid_desktop_origin")
 			return
 		}
 		mux.ServeHTTP(w, r)
