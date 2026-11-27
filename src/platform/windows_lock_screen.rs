@@ -30,9 +30,12 @@ use windows::Win32::{
             CloseDesktop, DESKTOP_READOBJECTS, GetThreadDesktop, GetUserObjectInformationW,
             OpenInputDesktop, UOI_NAME,
         },
-        Threading::{GetCurrentProcess, GetCurrentThreadId, OpenProcessToken},
+        Threading::{GetCurrentProcess, GetCurrentThreadId, GetExitCodeProcess, OpenProcessToken},
     },
-    UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
+    UI::{
+        Shell::{SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW},
+        WindowsAndMessaging::SW_SHOWNORMAL,
+    },
 };
 use windows_capture::{
     dxgi_duplication_api::{DxgiDuplicationApi, DxgiDuplicationFormat, Error as DuplicationError},
@@ -45,10 +48,6 @@ const MAX_INPUT: usize = 96 * 1024;
 const MAX_FRAME: usize = 64 * 1024 * 1024;
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(2);
 const SYSTEM: &str = "S-1-5-18";
-
-fn data_dir() -> Result<PathBuf> {
-    Ok(known_folder(&FOLDERID_ProgramData)?.join(NAME))
-}
 
 fn executable_dir() -> Result<PathBuf> {
     Ok(known_folder(&FOLDERID_ProgramFiles)?.join("LightOS Remote Desktop Lock Screen"))
@@ -63,6 +62,16 @@ fn installed_owner(dir: &Path, sid: &str) -> Result<bool> {
     validate_managed_path(dir, true, sid)?;
     validate_managed_path(&owner, false, sid)?;
     Ok(fs::read_to_string(owner)? == sid)
+}
+
+// An already installed helper can still use its original protected owner file.
+// New helpers keep it beside the executable, under the same trusted ancestors.
+fn existing_service_owner(binaries: &Path, sid: &str) -> Result<bool> {
+    if managed_exists(&binaries.join(OWNER_FILE))? {
+        return installed_owner(binaries, sid);
+    }
+    let legacy = known_folder(&FOLDERID_ProgramData)?.join(NAME);
+    installed_owner(&legacy, sid)
 }
 
 fn console_account_sid(session: u32) -> Result<String> {
@@ -115,6 +124,47 @@ fn console_account_sid(session: u32) -> Result<String> {
     sid_string(sid)
 }
 
+/// Only suppress the setup prompt on a positive result for the console owner.
+/// Evaluating this policy is read-only. Never apply it or attempt a logon.
+pub(in crate::platform) fn current_console_has_blank_password() -> bool {
+    use windows::Security::ExchangeActiveSyncProvisioning::{
+        EasClientSecurityPolicy, EasMinPasswordComplexCharactersResult, EasMinPasswordLengthResult,
+    };
+    use windows::Win32::Foundation::EAS_E_CURRENT_USER_HAS_BLANK_PASSWORD;
+
+    let check = || -> Result<bool> {
+        let session = current_session_id()?;
+        if active_console_session_id() != Some(session)
+            || current_user_sid()? != console_account_sid(session)?
+        {
+            return Ok(false);
+        }
+        let evaluate = || -> windows::core::Result<bool> {
+            let policy = EasClientSecurityPolicy::new()?;
+            policy.SetMinPasswordLength(1)?;
+            policy.SetMinPasswordComplexCharacters(1)?;
+            let compliance = policy.CheckCompliance()?;
+            let length = compliance.MinPasswordLengthResult();
+            let complexity = compliance.MinPasswordComplexCharactersResult();
+            Ok(matches!(
+                length,
+                Ok(EasMinPasswordLengthResult::CurrentUserHasBlankPassword)
+            ) || matches!(
+                complexity,
+                Ok(EasMinPasswordComplexCharactersResult::CurrentUserHasBlankPassword)
+            ) || [length.err(), complexity.err()]
+                .into_iter()
+                .flatten()
+                .any(|error| error.code() == EAS_E_CURRENT_USER_HAS_BLANK_PASSWORD))
+        };
+        Ok(match evaluate() {
+            Ok(blank) => blank,
+            Err(error) => error.code() == EAS_E_CURRENT_USER_HAS_BLANK_PASSWORD,
+        })
+    };
+    check().unwrap_or(false)
+}
+
 pub(in crate::platform) fn authorized() -> bool {
     static CHECK: OnceLock<Mutex<Option<(Instant, bool)>>> = OnceLock::new();
     let mut cached = CHECK
@@ -127,52 +177,106 @@ pub(in crate::platform) fn authorized() -> bool {
         return allowed;
     }
     let valid = || -> Result<bool> {
-        let owner = current_user_sid()?;
-        let dir = data_dir()?;
-        if !installed_owner(&dir, &owner)? {
-            return Ok(false);
-        }
         let manager = service_manager(ServiceManagerAccess::CONNECT)?;
         let service = manager.open_service(NAME, ServiceAccess::QUERY_STATUS)?;
-        Ok(matches!(
-            service.query_status()?.current_state,
-            ServiceState::StartPending | ServiceState::Running
-        ))
+        if service.query_status()?.current_state != ServiceState::Running {
+            return Ok(false);
+        }
+        existing_service_owner(&executable_dir()?, &current_user_sid()?)
     };
     let allowed = valid().unwrap_or(false);
     *cached = Some((Instant::now(), allowed));
     allowed
 }
 
-pub(in crate::platform) fn request_setup() -> Result<()> {
+pub(in crate::platform) fn request_setup() -> Result<&'static str> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        IDNO, IDYES, MB_DEFBUTTON2, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
+        MessageBoxW,
+    };
     if authorized() {
-        return Ok(());
+        return Ok("authorized");
     }
     let session = current_session_id()?;
     ensure!(
         active_console_session_id() == Some(session) && console_session_ready(session)?,
         "Windows lock-screen access must be approved in the active console"
     );
+    let owner = current_user_sid()?;
+    ensure!(
+        console_account_sid(session)? == owner,
+        "Windows console user changed"
+    );
+    // Some administrator policies elevate silently. Always obtain an explicit
+    // answer in the user's interactive session before requesting elevation.
+    let choice = unsafe {
+        MessageBoxW(
+            None,
+            windows::core::w!(
+                "是否允许懒猫远程在这台电脑锁屏时继续访问桌面？选择“是”将申请安装锁屏辅助服务。"
+            ),
+            windows::core::w!("懒猫远程 · 锁屏访问"),
+            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_SETFOREGROUND | MB_TOPMOST,
+        )
+    };
+    if choice == IDNO {
+        return Ok("declined");
+    }
+    ensure!(
+        choice == IDYES,
+        "Windows could not display the lock-screen request"
+    );
+    ensure!(
+        active_console_session_id() == Some(session)
+            && console_session_ready(session)?
+            && console_account_sid(session)? == owner,
+        "Windows console changed before lock-screen approval"
+    );
     let source = std::env::current_exe()?;
     let file = wide(source.as_os_str());
     let operation = wide(OsStr::new("runas"));
-    let owner = current_user_sid()?;
     let command = command_line(&["install-lock-screen-service".into(), owner.into()]);
-    let result = unsafe {
-        ShellExecuteW(
-            None,
-            PCWSTR(operation.as_ptr()),
-            PCWSTR(file.as_ptr()),
-            PCWSTR(command.as_ptr()),
-            PCWSTR::null(),
-            SW_SHOWNORMAL,
-        )
+    let mut launch = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
+        lpVerb: PCWSTR(operation.as_ptr()),
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(command.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
     };
+    if let Err(error) = unsafe { ShellExecuteExW(&mut launch) } {
+        if error.code()
+            == windows::core::HRESULT::from_win32(windows::Win32::Foundation::ERROR_CANCELLED.0)
+        {
+            return Ok("declined");
+        }
+        return Err(error).context("request Windows administrator approval");
+    }
     ensure!(
-        result.0 as isize > 32,
-        "Windows administrator approval was not granted"
+        !launch.hProcess.is_invalid(),
+        "Windows did not return the installer process"
     );
-    Ok(())
+    let installer = OwnedHandle::new(launch.hProcess);
+    match unsafe { WaitForSingleObject(installer.raw(), 30_000) } {
+        WAIT_OBJECT_0 => {}
+        WAIT_TIMEOUT => return Ok("submitted"),
+        _ => bail!("could not wait for the Windows lock-screen installer"),
+    }
+    let mut exit_code = 0;
+    unsafe { GetExitCodeProcess(installer.raw(), &mut exit_code)? };
+    if exit_code != 0 {
+        tracing::warn!(exit_code, "Windows lock-screen installer failed");
+        return Ok("install_failed");
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !authorized() {
+        if Instant::now() >= deadline {
+            return Ok("service_not_ready");
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    Ok("authorized")
 }
 
 pub fn install(owner_sid: &str) -> Result<()> {
@@ -187,11 +291,9 @@ pub fn install(owner_sid: &str) -> Result<()> {
         "Windows lock-screen access must belong to the current console user"
     );
     let sid = owner_sid.to_owned();
-    let dir = data_dir()?;
     let binaries = executable_dir()?;
-    let owner = dir.join(OWNER_FILE);
+    let owner = binaries.join(OWNER_FILE);
     let executable = binaries.join(BINARY_FILE);
-    validate_root_chain(&dir)?;
     validate_root_chain(&binaries)?;
     let manager =
         service_manager(ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)?;
@@ -216,7 +318,7 @@ pub fn install(owner_sid: &str) -> Result<()> {
                     })
                     && info.executable_path.as_os_str()
                         == OsString::from_wide(&expected[..expected.len() - 1])
-                    && installed_owner(&dir, &sid)?,
+                    && existing_service_owner(&binaries, &sid)?,
                 "unexpected existing Windows lock-screen service"
             );
             validate_managed_path(&binaries, true, &sid)?;
@@ -232,16 +334,15 @@ pub fn install(owner_sid: &str) -> Result<()> {
     }
     if managed_exists(&owner)? {
         ensure!(
-            installed_owner(&dir, &sid)?,
+            installed_owner(&binaries, &sid)?,
             "Windows lock-screen access belongs to another user"
         );
     }
-    prepare_directory(&dir, &settings_sddl(&sid, true), &sid)?;
     prepare_directory(&binaries, &binary_sddl(&sid, true), &sid)?;
     // The executable and the pinned owner are writable only by administrators and SYSTEM.
     let suffix = rand::random::<u128>();
     let staged = binaries.join(format!("host-{suffix:032x}.exe"));
-    let staged_owner = dir.join(format!("owner-{suffix:032x}.sid"));
+    let staged_owner = binaries.join(format!("owner-{suffix:032x}.sid"));
     let result = (|| -> Result<()> {
         write_secure_staging_file(&staged, &binary_sddl(&sid, false), &sid, |file| {
             io::copy(&mut fs::File::open(std::env::current_exe()?)?, file)?;
@@ -330,7 +431,8 @@ fn supervise() -> Result<()> {
             "Windows lock-screen supervisor requires the service account"
         );
         enable_console_token_access()?;
-        let dir = data_dir()?;
+        let dir = executable_dir()?;
+        validate_root_chain(&dir)?;
         let owner = fs::read_to_string(dir.join(OWNER_FILE))?;
         ensure!(
             owner.starts_with("S-1-") && owner.len() < 256 && installed_owner(&dir, &owner)?,

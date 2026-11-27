@@ -55,7 +55,7 @@ impl Connection {
             .await?;
         ensure!(active["status"] == 2, "client is not connected");
         let box_id = text(&active, "boxId")?;
-        let account = text(&active, "loginUser")?;
+        let account = text(&active, "loginUser")?.trim().to_owned();
         let domain = text(&active, "boxDomain")
             .or_else(|_| text(&active, "boxName").map(|n| format!("{n}.heiyu.space")))?;
         let host = reqwest::Url::parse(&format!("https://{domain}/"))?;

@@ -20,6 +20,11 @@ pub struct PermissionReport {
     pub backend: Option<crate::backend::BackendKind>,
     #[cfg(target_os = "windows")]
     pub lock_screen_authorized: bool,
+    #[cfg(target_os = "windows")]
+    pub lock_screen_setup_required: bool,
+    #[cfg(target_os = "windows")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lock_screen_request_result: Option<&'static str>,
 }
 impl PermissionReport {
     fn new(
@@ -40,6 +45,10 @@ impl PermissionReport {
             backend: None,
             #[cfg(target_os = "windows")]
             lock_screen_authorized: false,
+            #[cfg(target_os = "windows")]
+            lock_screen_setup_required: true,
+            #[cfg(target_os = "windows")]
+            lock_screen_request_result: None,
         }
     }
     pub(super) fn unavailable(reason: String, code: &'static str) -> Self {
@@ -115,9 +124,7 @@ fn physical_report(config: &Config, request: bool) -> Result<PermissionReport> {
     #[cfg(target_os = "windows")]
     {
         let _ = config;
-        let mut report = super::windows::permission_report(request)?;
-        report.lock_screen_authorized = super::windows::lock_screen_authorized();
-        Ok(report)
+        super::windows::permission_report(request)
     }
     #[cfg(target_os = "linux")]
     {

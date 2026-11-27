@@ -18,13 +18,16 @@
     desktop_control_busy: "设备正在处理远程桌面启停，请稍后重试。",
     desktop_preference_save_failed: "微服未能保存这次启停设置，请重试。",
     count: n => `${n} 台设备`, noPreview: "暂无预览", menu: "设备菜单", start: "开启远程桌面", stop: "关闭远程桌面", uninstall: "卸载远程桌面", removing: "正在卸载远程桌面", working: "处理中…", currentDevice: "当前设备",
+    powerEnable: "申请禁用休眠", powerRestore: "关闭防止休眠", powerChecking: "正在读取休眠状态…", powerPending: "请在被控设备上确认系统授权", power_unknown: "暂时无法读取休眠状态",
+    power_update_required: "更新远程桌面后可管理休眠", power_busy: "设备正在处理其他请求，请稍后重试。", power_not_applied: "休眠设置未完成，请检查被控设备上的系统授权或电源策略。",
     screen: "屏幕录制", input: "键盘与鼠标", granted: "已授权", denied: "未授权", needs_user_action: "待确认", unknown: "待检查",
     updating: "正在更新", disabled: "已关闭", running: "运行中", starting: "启动中", locked: "已锁屏", temporarily_unavailable: "暂不可连接", permission_required: "待授权", error: "启动失败", offline: "离线",
     permissions: "请求设备权限", requesting: "等待设备确认", permissionApproved: "权限已批准", permissionUnapproved: "权限未批准", unlockedOnly: "仅在桌面解锁时可访问", container: "LightOS实例", instanceManagedFallback: "版本和状态由lightos管理", footnote: "开启后允许连接。进入桌面时启动服务，最后一个连接断开后停止服务。",
     enterDesktop: "点击进入桌面", enterLocked: "点击进入锁屏界面",
-    lockAccessHelp: "锁屏访问尚未获得授权。可重新请求设备权限，然后在被控 Windows 电脑的本机屏幕上批准管理员确认。",
-    lockAccessPending: "正在请求管理员授权。请查看被控 Windows 电脑的本机屏幕。",
-    lockAccessDeferred: "管理员授权请求暂未确认。请重试，并在被控 Windows 电脑的本机屏幕上查看。",
+    lockAccessHelp: "如需在锁屏时访问，请点击“请求设备权限”，并在这台 Windows 电脑上确认。",
+    lockAccessPending: "请在被控 Windows 电脑上查看“懒猫远程 · 锁屏访问”确认窗口。",
+    lockAccessDeferred: "设备尚未收到锁屏授权请求。请确认懒猫客户端在线后重试。",
+    lockRequestResults: { install_failed: "锁屏辅助服务安装失败，请重新请求设备权限。", service_not_ready: "安装程序已退出，尚未确认锁屏辅助服务正在运行。可重新请求设备权限。", declined: "已在被控电脑上取消锁屏授权。", unlock_required: "请先在被控电脑上解锁桌面，再请求权限。", failed: "未能完成锁屏授权。请检查被控电脑上的管理员确认后重试。", submitted: "已提交安装请求。若仍只能访问解锁的桌面，请在被控电脑上检查安装结果。" },
     installToEnter: "安装后进入桌面", authorizeToEnter: "授权后进入桌面", startingDesktop: "桌面启动中…",
     stopped: "桌面进程已退出，请重新进入桌面。", runtime: "懒猫远程", not_installed: "未安装", installedUnknown: "已安装（版本未知）", latest: "最新", install: "安装远程桌面", update: "更新远程桌面", instanceManaged: "由 LightOS 管理",
     client_update_required: "请先更新并重启这台设备上的懒猫 PC 客户端，再安装或更新远程桌面。",
@@ -50,13 +53,16 @@
     desktop_control_busy: "This device is applying a remote desktop command. Try again shortly.",
     desktop_preference_save_failed: "The microserver could not save this remote desktop setting. Try again.",
     count: n => `${n} devices`, noPreview: "No preview", menu: "Device actions", start: "Enable remote desktop", stop: "Disable remote desktop", uninstall: "Uninstall remote desktop", removing: "Uninstalling remote desktop", working: "Working…", currentDevice: "Current device",
+    powerEnable: "Request sleep prevention", powerRestore: "Turn off sleep prevention", powerChecking: "Checking sleep settings…", powerPending: "Confirm the system prompt on the device", power_unknown: "Sleep settings unavailable",
+    power_update_required: "Update remote desktop to manage sleep", power_busy: "Another request is in progress on this device. Try again shortly.", power_not_applied: "The sleep setting was not applied. Check approval and power policy on the device.",
     screen: "Screen", input: "Input", granted: "Granted", denied: "Not granted", needs_user_action: "Needs approval", unknown: "Not checked",
     updating: "Updating", disabled: "Disabled", running: "Running", starting: "Starting", locked: "Locked", temporarily_unavailable: "Temporarily unavailable", permission_required: "Needs permission", error: "Failed", offline: "Offline",
     permissions: "Request access", requesting: "Waiting for approval", permissionApproved: "Access approved", permissionUnapproved: "Access not approved", unlockedOnly: "Unlocked desktop only", container: "LightOS instance", instanceManagedFallback: "Version and status managed by LightOS", footnote: "Enable a device to allow connections. Opening its desktop starts the service. The service stops after the last connection closes.",
     enterDesktop: "Open desktop", enterLocked: "Open lock screen",
-    lockAccessHelp: "Lock-screen access has not been approved. Request access again, then approve the administrator prompt on the controlled Windows computer's own screen.",
-    lockAccessPending: "Requesting administrator approval. Check the controlled Windows computer's own screen.",
+    lockAccessHelp: "To enable access while locked, select Request access and confirm on the Windows computer.",
+    lockAccessPending: "Check the Windows computer for the Lazycat Remote lock-screen access dialog.",
     lockAccessDeferred: "The administrator request was not confirmed. Try again and check the controlled Windows computer's own screen.",
+    lockRequestResults: { install_failed: "The lock-screen service installer failed. Request access to try again.", service_not_ready: "The installer finished, but the lock-screen service is not ready. Request access to retry.", declined: "Lock-screen access was declined on the device.", unlock_required: "Unlock the Windows desktop, then request access again.", failed: "Lock-screen setup did not finish. Check administrator approval on the device and try again.", submitted: "Installation was requested. If access remains limited to the unlocked desktop, check setup on the Windows computer." },
     installToEnter: "Install to connect", authorizeToEnter: "Approve access to connect", startingDesktop: "Desktop is starting…",
     stopped: "The desktop process exited. Open the desktop again.", runtime: "Lazycat Remote", not_installed: "Not installed", installedUnknown: "Installed (version unknown)", latest: "Latest", install: "Install remote desktop", update: "Update remote desktop", instanceManaged: "Managed by LightOS",
     client_update_required: "Update and restart the Lazycat PC client on this device before installing or updating remote desktop.",
@@ -72,7 +78,7 @@
   const controlFailures = new Set([
     "update_confirmation_required", "client_update_required", "device_unavailable",
     "device_authorization_failed", "control_unavailable", "control_rejected",
-    "invalid_control_response", "invalid_control_origin", "desktop_control_busy", "desktop_preference_save_failed",
+    "invalid_control_response", "invalid_control_origin", "desktop_control_busy", "desktop_preference_save_failed", "power_busy",
   ]);
   document.documentElement.lang = zh ? "zh-CN" : "en";
   document.title = copy.title;
@@ -82,11 +88,82 @@
   let openMenu = null;
   function closeMenu(restoreFocus = false) {
     if (!openMenu) return;
-    const { menu, trigger } = openMenu;
+    const { menu, trigger, read, timer } = openMenu;
+    read?.abort();
+    clearTimeout(timer);
     menu.hidden = true;
     trigger.setAttribute("aria-expanded", "false");
     if (restoreFocus) trigger.focus();
     openMenu = null;
+  }
+  function renderPower(scope) {
+    const { card, power } = scope;
+    power.disabled = !card.target.power_supported || card.parts.toggle.disabled || Boolean(scope.read) || Boolean(card.powerChanging) || typeof scope.enabled !== "boolean";
+    power.textContent = !card.target.power_supported ? copy.power_update_required : card.powerChanging ? copy.powerPending
+      : scope.enabled === true ? copy.powerRestore : scope.enabled === false ? copy.powerEnable
+      : scope.read ? copy.powerChecking : copy.power_unknown;
+  }
+  async function requestPower(id, action, signal) {
+    const response = await fetch(`/api/hosts/${encodeURIComponent(id)}/power-${action}`, {
+      method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}", signal,
+    });
+    if (response.redirected || response.status === 401) throw Error("login_required");
+    const body = await response.json();
+    if (!response.ok || typeof body.enabled !== "boolean") throw Error(body.error || "power_unknown");
+    return body.enabled;
+  }
+  async function readPower(scope) {
+    if (openMenu !== scope || document.hidden || scope.read || scope.card.powerChanging) {
+      if (openMenu === scope) renderPower(scope);
+      return;
+    }
+    clearTimeout(scope.timer);
+    let nextCheck = 10000;
+    if (scope.card.target.power_supported && !scope.card.parts.toggle.disabled) {
+      const controller = new AbortController();
+      scope.read = controller;
+      renderPower(scope);
+      try {
+        const enabled = await requestPower(scope.card.target.id, "read", controller.signal);
+        if (!controller.signal.aborted) scope.enabled = enabled;
+      } catch (error) {
+        if (!controller.signal.aborted) scope.enabled = undefined;
+        if (error.message === "power_busy") nextCheck = 3000;
+      } finally {
+        if (scope.read === controller) scope.read = null;
+      }
+    } else { scope.enabled = undefined; }
+    if (openMenu !== scope || document.hidden || scope.card.powerChanging) return;
+    renderPower(scope);
+    scope.timer = setTimeout(() => void readPower(scope), nextCheck);
+  }
+  async function changePower(card) {
+    const scope = openMenu;
+    if (scope?.card !== card || scope.power.disabled) return;
+    scope.read?.abort();
+    clearTimeout(scope.timer);
+    const action = scope.enabled ? "restore" : "enable";
+    scope.enabled = undefined;
+    card.powerChanging = true;
+    card.actionError = "";
+    updateCard(card, card.target);
+    let confirmed;
+    try {
+      confirmed = await requestPower(card.target.id, action, AbortSignal.timeout(115000));
+    } catch (error) {
+      card.actionError = copy[error.message] || copy.power_not_applied;
+    } finally {
+      card.powerChanging = false;
+      if (card.isConnected) updateCard(card, card.target);
+      const current = openMenu;
+      if (current?.card === card && !document.hidden) {
+        if (typeof confirmed === "boolean") {
+          current.enabled = confirmed;
+          renderPower(current);
+          current.timer = setTimeout(() => void readPower(current), 10000);
+        } else { void readPower(current); }
+      }
+    }
   }
   document.addEventListener("click", event => {
     if (openMenu && !openMenu.actions.contains(event.target)) closeMenu();
@@ -251,15 +328,15 @@
 
     const body = element("div", "card-body"), heading = element("div", "device-heading"), identity = element("div", "device-identity"), icon = element("img", "platform-icon"), name = element("h2", "device-name"), actions = element("div", "device-actions");
     const trigger = element("button", "menu-trigger"), menu = element("div", "device-menu");
-    const toggle = element("button"), uninstall = element("button");
+    const toggle = element("button"), power = element("button"), uninstall = element("button");
     menu.hidden = true;
     menu.id = `device-menu-${item.id}`;
-    trigger.type = uninstall.type = "button";
+    trigger.type = power.type = uninstall.type = "button";
     trigger.textContent = "⋯";
     trigger.setAttribute("aria-expanded", "false");
     trigger.setAttribute("aria-controls", menu.id);
     uninstall.textContent = copy.uninstall;
-    menu.append(toggle, uninstall);
+    menu.append(toggle, power, uninstall);
     actions.append(trigger, menu);
     icon.alt = ""; identity.append(icon, name);
     const platformRow = element("div", "platform-row"), platformInfo = element("div", "platform-info"), platform = element("p", "platform"), permissionSummary = element("span", "permission-summary"), request = element("button", "text-action request-permissions");
@@ -281,13 +358,15 @@
       const opening = menu.hidden;
       closeMenu();
       if (opening) {
-        openMenu = { actions, menu, trigger };
+        openMenu = { actions, menu, trigger, card, power };
         menu.hidden = false;
         trigger.setAttribute("aria-expanded", "true");
         toggle.focus();
+        void readPower(openMenu);
       }
     });
     toggle.addEventListener("click", () => { closeMenu(true); void act(card.target.id, toggleAction(card.target)); });
+    power.addEventListener("click", () => void changePower(card));
     uninstall.addEventListener("click", () => { closeMenu(true); void act(card.target.id, "uninstall"); });
     request.addEventListener("click", () => linuxDevice(card.target) ? showPermissionDetails(card.target, card.target.permissions?.request_mode === "system" || connectionConsent(card.target)) : act(card.target.id, "permissions"));
     grid.append(card); return card;
@@ -313,11 +392,19 @@
     p.platform.textContent = item.kind === "instance" ? copy.container : platforms[item.platform] || item.platform || "";
     const mac = macDevice(item);
     const permissionApproved = permissions.screen === "granted" && permissions.input === "granted";
-    const lockAuthorizationMissing = icon === "windows" && item.installed && permissions.lock_screen_authorized === false;
+    const windowsWithoutHelper = icon === "windows" && item.installed && permissions.lock_screen_authorized === false;
+    const lockAuthorizationMissing = windowsWithoutHelper && permissions.lock_screen_setup_required !== false;
+    const waitForUnlock = windowsWithoutHelper && permissions.lock_screen_setup_required === false && permissions.reason_code === "session_locked";
     const unlockedOnly = lockAuthorizationMissing && (permissionApproved || permissions.reason_code === "session_locked");
-    const windowsPermissionMessage = lockAuthorizationMissing ? permissions.requesting ? copy.lockAccessPending : copy.lockAccessHelp : "";
-    if (card.actionError === copy.lockAccessDeferred && (permissions.requesting || permissions.lock_screen_authorized === true)) card.actionError = "";
-    p.permissionSummary.textContent = unlockedOnly ? copy.unlockedOnly : permissionApproved ? copy.permissionApproved : copy.permissionUnapproved;
+    if (!lockAuthorizationMissing || permissions.requesting) card.lockRequestFeedback = "";
+    else if (Object.hasOwn(copy.lockRequestResults, permissions.lock_screen_request_result)) {
+      card.lockRequestFeedback = copy.lockRequestResults[permissions.lock_screen_request_result];
+    }
+    const windowsPermissionMessage = lockAuthorizationMissing
+      ? permissions.requesting ? copy.lockAccessPending : card.lockRequestFeedback || copy.lockAccessHelp
+      : "";
+    if (card.actionError === copy.lockAccessDeferred && !lockAuthorizationMissing) card.actionError = "";
+    p.permissionSummary.textContent = waitForUnlock ? copy.locked : unlockedOnly ? copy.unlockedOnly : permissionApproved ? copy.permissionApproved : copy.permissionUnapproved;
     p.permissionSummary.hidden = item.kind !== "device";
     const state = item.status || (item.ready ? "running" : "disabled");
     const badge = item.managed && item.installed ? (item.access_enabled ? "running" : "disabled") : state;
@@ -362,10 +449,11 @@
     const toggleLabel = copy[toggleAction(item)];
     p.toggle.textContent = toggleLabel;
     p.toggle.disabled = item.online === false || processing || switching;
+    if (openMenu?.card === card) renderPower(openMenu);
     p.toggle.ariaLabel = `${toggleLabel}: ${item.name}`;
     p.uninstall.disabled = p.toggle.disabled || stopping || stopPending || !item.can_install || !item.can_uninstall;
-    p.request.hidden = item.kind !== "device" || permissionApproved && !lockAuthorizationMissing;
-    p.request.textContent = !mac && permissions.requesting ? copy.requesting : copy.permissions;
+    p.request.hidden = item.kind !== "device" || waitForUnlock || permissionApproved && !lockAuthorizationMissing;
+    p.request.textContent = !mac && (permissions.requesting || pendingPermissions.has(item.id)) ? copy.requesting : copy.permissions;
     p.request.disabled = item.online === false || !item.managed || !item.installed || switching ||
       (!mac && (pendingPermissions.has(item.id) || permissions.requesting === true));
     p.request.title = !item.installed ? copy.not_installed : windowsPermissionMessage;
@@ -395,7 +483,7 @@
     if (macHint || lockAuthorizationMissing) p.request.setAttribute("aria-describedby", p.error.id);
     else p.request.removeAttribute("aria-describedby");
     const message = [...new Set([card.actionError || "", stopPending ? copy.stopRetrying : stopping ? copy.stopping : "", runtimeMessage, clientUpdateRequired ? copy.client_update_required : "",
-      macHint ? macPermissionsHelp(item) : "", card.actionError === copy.lockAccessDeferred ? "" : windowsPermissionMessage,
+      macHint ? macPermissionsHelp(item) : "", waitForUnlock ? copy.physicalLocked : card.actionError === copy.lockAccessDeferred ? "" : windowsPermissionMessage,
       unavailable ? permissions.reason || permissionHelp(item) : deferred ? permissionHelp(item) : ""].filter(Boolean))].join("\n");
     if (p.error.textContent !== message) p.error.textContent = message;
     p.error.hidden = !message;
@@ -537,6 +625,7 @@
     void load(true);
   }
   function stopRefresh() {
+    closeMenu();
     pending?.abort();
     permissionRefresh?.controller.abort();
     permissionRefresh = undefined;

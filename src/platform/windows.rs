@@ -93,10 +93,6 @@ pub use windows_service::lock_screen::{
     run_worker as run_lock_screen_worker,
 };
 
-pub(super) fn lock_screen_authorized() -> bool {
-    lock_screen::authorized()
-}
-
 fn locked_console_session() -> bool {
     current_session_id().is_ok_and(|id| {
         active_console_session_id() == Some(id)
@@ -106,13 +102,7 @@ fn locked_console_session() -> bool {
 }
 
 pub(super) fn permission_report(request: bool) -> Result<super::permissions::PermissionReport> {
-    use windows::{
-        Foundation::Metadata::ApiInformation,
-        Graphics::Capture::{GraphicsCaptureAccess, GraphicsCaptureAccessKind},
-        Security::Authorization::AppCapabilityAccess::{AppCapability, AppCapabilityAccessStatus},
-        Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
-        core::HSTRING,
-    };
+    use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
     struct Apartment(bool);
     impl Drop for Apartment {
         fn drop(&mut self) {
@@ -122,12 +112,38 @@ pub(super) fn permission_report(request: bool) -> Result<super::permissions::Per
         }
     }
     let _apartment = Apartment(unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_ok());
-    if request
-        && session_active().unwrap_or(false)
-        && let Err(error) = lock_screen::request_setup()
-    {
-        tracing::warn!(%error, "Windows lock-screen setup was not completed");
-    }
+    let authorized = lock_screen::authorized();
+    let blank_password = !authorized && lock_screen::current_console_has_blank_password();
+    let setup_result = if request && !authorized && !blank_password {
+        if session_active().unwrap_or(false) {
+            Some(lock_screen::request_setup().unwrap_or_else(|error| {
+                tracing::warn!(%error, "Windows lock-screen setup was not completed");
+                "failed"
+            }))
+        } else {
+            Some("unlock_required")
+        }
+    } else {
+        None
+    };
+    let mut report = desktop_permission_report(request)?;
+    report.lock_screen_request_result = setup_result;
+    report.lock_screen_authorized = if request {
+        lock_screen::authorized()
+    } else {
+        authorized
+    };
+    report.lock_screen_setup_required = !report.lock_screen_authorized && !blank_password;
+    Ok(report)
+}
+
+fn desktop_permission_report(request: bool) -> Result<super::permissions::PermissionReport> {
+    use windows::{
+        Foundation::Metadata::ApiInformation,
+        Graphics::Capture::{GraphicsCaptureAccess, GraphicsCaptureAccessKind},
+        Security::Authorization::AppCapabilityAccess::{AppCapability, AppCapabilityAccessStatus},
+        core::HSTRING,
+    };
     let platform = WindowsPlatform;
     let permissions = match platform.permissions() {
         Ok(permissions) => permissions,

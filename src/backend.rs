@@ -427,7 +427,9 @@ impl PendingPointerMove {
 
     pub(crate) fn replace(&self, x: f64, y: f64) -> bool {
         let mut point = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        if point.is_none() {
+        // A locked or stopped backend may discard the command without taking
+        // its position. The producer alone cannot deliver another move.
+        if point.is_none() || Arc::strong_count(&self.0) == 1 {
             return false;
         }
         *point = Some((x, y));
@@ -485,20 +487,24 @@ pub enum InputCommand {
 
 impl InputCommand {
     pub(crate) fn into_active(self) -> Option<(Self, Option<InputGuard>)> {
-        match self {
+        let (command, guard) = match self {
             Self::Guarded { command, guard } => {
-                if guard.active() {
-                    Some((*command, Some(guard)))
-                } else {
+                if !guard.active() {
                     guard.text_done.notify_one();
-                    None
+                    return None;
                 }
+                (*command, Some(guard))
             }
+            command => (command, None),
+        };
+        let command = match command {
             Self::PendingMove { position } => {
-                position.take().map(|(x, y)| (Self::Move { x, y }, None))
+                let (x, y) = position.take()?;
+                Self::Move { x, y }
             }
-            command => Some((command, None)),
-        }
+            command => command,
+        };
+        Some((command, guard))
     }
     pub fn validate(&self) -> Result<()> {
         match self {

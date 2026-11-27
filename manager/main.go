@@ -47,6 +47,7 @@ type desktopTarget struct {
 	Ready           bool           `json:"ready"`
 	Status          string         `json:"status,omitempty"`
 	Permissions     map[string]any `json:"permissions,omitempty"`
+	PowerSupported  bool           `json:"power_supported,omitempty"`
 	PermissionCheck bool           `json:"permission_check,omitempty"`
 	Preview         string         `json:"preview,omitempty"`
 }
@@ -139,6 +140,7 @@ func main() {
 	mux.HandleFunc("/api/targets", s.targets)
 	mux.HandleFunc("/api/runtimes/{target}/{file}", s.serveRuntime)
 	mux.HandleFunc("/api/hosts", s.hosts.register)
+	mux.HandleFunc("POST /api/power-worker/{registration}/{phase}", s.hosts.powerWorker)
 	mux.HandleFunc("/api/hosts/{id}/{action}", s.hosts.control)
 	mux.HandleFunc("/api/previews/{id}", s.preview)
 	mux.HandleFunc("/desktop/", s.desktop)

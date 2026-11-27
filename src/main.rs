@@ -115,6 +115,11 @@ async fn main() -> Result<()> {
     match cli.command {
         Action::Agent(options) => lightos_remote_desktop::agent::run(options).await,
         Action::Permissions { request, config } => {
+            let request = if request {
+                lightos_remote_desktop::agent::power::dispatch().await?
+            } else {
+                false
+            };
             #[cfg(target_os = "linux")]
             let report = tokio::task::spawn_blocking(move || {
                 lightos_remote_desktop::platform::permissions::report(&config, request)
@@ -122,6 +127,10 @@ async fn main() -> Result<()> {
             .await??;
             #[cfg(not(target_os = "linux"))]
             let report = lightos_remote_desktop::platform::permissions::report(&config, request)?;
+            let mut report = serde_json::to_value(report)?;
+            if let Some(verifier) = lightos_remote_desktop::agent::power::verifier() {
+                report["power_verifier"] = serde_json::Value::String(verifier);
+            }
             println!("{}", serde_json::to_string(&report)?);
             Ok(())
         }

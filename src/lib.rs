@@ -19,6 +19,7 @@ pub mod install;
 pub mod mcp;
 #[cfg(target_os = "linux")]
 mod owned_wayland;
+mod power;
 pub mod rdp;
 pub mod server;
 #[cfg(target_os = "linux")]

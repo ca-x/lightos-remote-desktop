@@ -1,6 +1,7 @@
 //! An always available controller. It never opens a capture session itself.
 mod instance;
 mod network;
+pub mod power;
 mod runtime;
 
 use anyhow::{Context, Result, ensure};

@@ -58,9 +58,11 @@ type hostRecord struct {
 	readyEpoch     string
 }
 type hostRegistry struct {
-	mu        sync.Mutex
-	hosts     map[string]hostRecord
-	persisted []byte
+	powerJobs         map[string]*powerJob
+	permissionPrompts map[string]time.Time
+	mu                sync.Mutex
+	hosts             map[string]hostRecord
+	persisted         []byte
 }
 
 func newHostRegistry() *hostRegistry {
@@ -104,10 +106,11 @@ func (h *hostRegistry) list(owner, currentDevice string) []desktopTarget {
 			}
 		}
 		target := desktopTarget{agent: r.Agent, Kind: "device", ID: id, Name: r.Name, Platform: r.Platform, URL: "/desktop/" + id + "/", RequiresConsent: r.Desktop.RequiresConsent,
-			DeviceID:      r.DeviceID,
-			CurrentDevice: record.isCurrentDevice(currentDevice),
-			CanLaunch:     online && record.canLaunch() && !record.isCurrentDevice(currentDevice),
-			CanUninstall:  record.manifestDevice != "", Removing: record.removal,
+			DeviceID:       r.DeviceID,
+			CurrentDevice:  record.isCurrentDevice(currentDevice),
+			PowerSupported: powerVerifier(record) != "",
+			CanLaunch:      online && record.canLaunch() && !record.isCurrentDevice(currentDevice),
+			CanUninstall:   record.manifestDevice != "", Removing: record.removal,
 			AccessEnabled: record.accessEnabled(), Managed: r.ControlService != "", Online: online, Enabled: r.Desktop.Enabled, Ready: online && record.desktopReady(), Status: state, Permissions: permissions}
 		if stamp := previewStamp(id); stamp != "" {
 			target.Preview = "/api/previews/" + id + "?v=" + stamp
@@ -136,6 +139,34 @@ func ownedDevice(ctx context.Context, uid, id string) (*sdk.APIGateway, *common.
 	}
 	api.Close()
 	return nil, nil, errors.New("device is not online or not owned by this account")
+}
+
+// The PC periodically replaces its entire permission report. Keep the last
+// completed request visible across read-only probes for this same installation.
+func keepWindowsLockResult(record, previous hostRecord) {
+	current := record.registration.Agent
+	prior := previous.registration.Agent
+	hash, _ := current["binary_sha256"].(string)
+	if current["target"] != "win32-x64" || hash == "" || prior["binary_sha256"] != hash ||
+		record.registration.ControlService != previous.registration.ControlService || !previous.until.After(time.Now()) {
+		return
+	}
+	p, _ := current["permissions"].(map[string]any)
+	if p["lock_screen_authorized"] != false || p["lock_screen_setup_required"] != true {
+		return
+	}
+	if p["requesting"] == true {
+		delete(p, "lock_screen_request_result")
+		return
+	}
+	if p["lock_screen_request_result"] == nil {
+		last, _ := prior["permissions"].(map[string]any)
+		result, _ := last["lock_screen_request_result"].(string)
+		switch result {
+		case "install_failed", "service_not_ready", "failed", "declined", "unlock_required":
+			p["lock_screen_request_result"] = result
+		}
+	}
 }
 
 func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +264,12 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 			record.readyEpoch = epoch
 		}
 	}
+	// The unchanged PC controller uses the permission process to wake this
+	// worker. Keep power approval independent of desktop access and readiness.
+	if job := h.powerJobs[id]; job != nil && job.controlService == registration.ControlService && job.verifier == powerVerifier(record) {
+		permissions, _ := registration.Agent["permissions"].(map[string]any)
+		permissions["requesting"] = false
+	}
 	previous, exists := h.hosts[id]
 	if exists && previous.until.After(time.Now()) {
 		prior, _ := previous.registration.Agent["controller_protocol"].(float64)
@@ -244,6 +281,7 @@ func (h *hostRegistry) register(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if exists && record.sameDevice(previous) {
+		keepWindowsLockResult(record, previous)
 		record.accessDisabled = previous.accessDisabled
 		record.sessions = previous.sessions
 		record.removal = previous.removal

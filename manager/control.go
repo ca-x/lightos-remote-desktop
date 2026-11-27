@@ -18,7 +18,7 @@ type controlFailure struct {
 func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 	action := r.PathValue("action")
 	switch action {
-	case "uninstall", "connect", "start", "stop", "permissions", "permissions-check", "install", "update", "update-confirmed":
+	case "power-read", "power-enable", "power-restore", "uninstall", "connect", "start", "stop", "permissions", "permissions-check", "install", "update", "update-confirmed":
 	default:
 		writeFailure(w, http.StatusMethodNotAllowed, "invalid_action")
 		return
@@ -47,6 +47,20 @@ func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 		h.mu.Unlock()
 		writeFailure(w, 409, "desktop_control_busy")
 		return
+	}
+	if strings.HasPrefix(action, "power-") {
+		h.powerControl(w, r, id, record, strings.TrimPrefix(action, "power-"))
+		return
+	}
+	if (action == "uninstall" || action == "update" || action == "update-confirmed" || action == "permissions") && h.powerJobs[id] != nil {
+		h.mu.Unlock()
+		writeFailure(w, 409, "power_busy")
+		return
+	}
+	var promptUntil time.Time
+	if action == "permissions" {
+		h.allowPermissionPrompt(id)
+		promptUntil = h.permissionPrompts[id]
 	}
 	if action == "install" || action == "update" || action == "update-confirmed" || action == "uninstall" {
 		h.changeRuntime(w, r, id, record, action)
@@ -85,6 +99,9 @@ func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
 			return
 		}
+		if permissions, _ := record.registration.Agent["permissions"].(map[string]any); permissions["can_start"] != true {
+			h.allowPermissionPrompt(id)
+		}
 		defer h.finishDesktopStart(id, record)
 		action = "start"
 	}
@@ -98,7 +115,7 @@ func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 	}
 	state, _ := reply["state"].(map[string]any)
 	if action == "permissions" && needsWindowsLockAuthorization(state) {
-		retryWindowsLockAuthorization(ctx, record, reply)
+		h.deliverWindowsLockRequest(ctx, id, record, promptUntil, reply)
 		state, _ = reply["state"].(map[string]any)
 	}
 	if state != nil {
@@ -115,26 +132,49 @@ func (h *hostRegistry) control(w http.ResponseWriter, r *http.Request) {
 func needsWindowsLockAuthorization(state map[string]any) bool {
 	permissions, _ := state["permissions"].(map[string]any)
 	return state["target"] == "win32-x64" &&
-		permissions["can_start"] == true && permissions["lock_screen_authorized"] == false && permissions["requesting"] != true
+		permissions["can_start"] == true && permissions["lock_screen_authorized"] == false &&
+		permissions["lock_screen_setup_required"] != false
 }
 
-// A read-only controller probe can briefly occupy the permission worker.
-// Retry an explicitly requested prompt once when it did not start.
-func retryWindowsLockAuthorization(ctx context.Context, record hostRecord, reply map[string]any) {
-	timer := time.NewTimer(350 * time.Millisecond)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
+// A controller acknowledges the wake even when a read-only probe occupies
+// its worker. With the managed runtime, the claim confirms actual delivery.
+func (h *hostRegistry) deliverWindowsLockRequest(parent context.Context, id string, record hostRecord, until time.Time, reply map[string]any) {
+	ctx, cancel := context.WithTimeout(parent, 8*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	nextWake := time.Now().Add(time.Second)
+	for {
+		state, _ := reply["state"].(map[string]any)
+		p, _ := state["permissions"].(map[string]any)
+		h.mu.Lock()
+		pending := h.permissionPrompts[id]
+		h.mu.Unlock()
+		if pending != until || !needsWindowsLockAuthorization(state) ||
+			(powerVerifier(record) == "" && p["requesting"] == true) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			h.mu.Lock()
+			if h.permissionPrompts[id] == until {
+				delete(h.permissionPrompts, id)
+				reply["permission_request_deferred"] = true
+			}
+			h.mu.Unlock()
+			return
+		case <-ticker.C:
+		}
+		if p["requesting"] == true || time.Now().Before(nextWake) {
+			continue
+		}
+		// Never re-arm a consumed permission when retrying a dropped wake.
 		authorization, failure := forwardHostControl(ctx, record, "permissions")
 		if state, ok := authorization["state"].(map[string]any); failure == nil && ok {
 			reply["state"] = state
-			if !needsWindowsLockAuthorization(state) {
-				return
-			}
 		}
-	case <-ctx.Done():
+		nextWake = time.Now().Add(time.Second)
 	}
-	reply["permission_request_deferred"] = true
 }
 
 func forwardHostControl(parent context.Context, record hostRecord, action string) (map[string]any, *controlFailure) {
