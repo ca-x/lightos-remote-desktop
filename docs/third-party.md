@@ -57,7 +57,7 @@ ISC/MIT notices must be retained, including inherited Feather attribution.
 
 The optional `rdp` feature uses rcgen (MIT/Apache-2.0) to generate persistent self-signed TLS identities without external commands, plus IronRDP 0.13 and its protocol crates
 (MIT OR Apache-2.0), Tokio-rustls/rustls and the selected AWS-LC provider.
-The published Linux binary includes the feature with RDP disabled at runtime;
+Published Linux, Windows, and macOS hosts include the feature with RDP disabled by default;
 default source builds omit it. CI traverses the locked MCP/RDP runtime dependency
 graph (including TLS, AWS-LC and codec IPC dependencies) and retains upstream
 notices in `licenses/protocol-dependencies.txt`. RustDesk remains a read-only AGPL reference; no

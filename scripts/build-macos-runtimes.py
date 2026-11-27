@@ -22,7 +22,7 @@ target_directory = Path(environment.get("CARGO_TARGET_DIR", args.source.parent /
 environment["CARGO_TARGET_DIR"] = str(target_directory)
 environment.update(PATH=str(Path.home() / ".cargo/bin") + ":/opt/homebrew/bin:" + environment.get("PATH", ""), TURBOJPEG_SOURCE="vendor", TURBOJPEG_STATIC="1", MACOSX_DEPLOYMENT_TARGET="13.0", CARGO_PROFILE_RELEASE_STRIP="none", CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_DEBUG="2")
 for target, triple in [("darwin-arm64", "aarch64-apple-darwin"), ("darwin-x64", "x86_64-apple-darwin")]:
-    subprocess.run(["cargo", "build", "--release", "--locked", "--target", triple, "--features", "bundled-jpeg", "--bin", "lightos-remoted"], cwd=args.source, env=environment, check=True)
+    subprocess.run(["cargo", "build", "--release", "--locked", "--target", triple, "--features", "bundled-jpeg,rdp", "--bin", "lightos-remoted"], cwd=args.source, env=environment, check=True)
     directory = args.output / target
     if directory.exists(): shutil.rmtree(directory)
     app = directory / "Lazycat Remote.app"

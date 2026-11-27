@@ -1,4 +1,4 @@
-//! Optional TLS RDP access to the existing owned virtual desktop.
+//! Optional TLS RDP access to an eligible desktop session.
 use std::{net::SocketAddr, path::PathBuf};
 
 use anyhow::{Result, ensure};
@@ -6,7 +6,7 @@ use clap::Args;
 
 #[derive(Clone, Args)]
 pub struct RdpConfig {
-    /// Expose the current virtual desktop over authenticated TLS RDP (requires the rdp feature).
+    /// Expose the current desktop over authenticated TLS RDP (requires the rdp feature).
     #[arg(long, env = "LIGHTOS_REMOTE_DESKTOP_RDP", default_value_t = false)]
     pub rdp: bool,
     /// Private persistent RDP settings (defaults to the service user state directory).
@@ -27,7 +27,7 @@ pub struct RdpConfig {
 }
 
 impl RdpConfig {
-    pub fn validate(&self, external_desktop: bool) -> Result<()> {
+    pub fn validate(&self, desktop_restricted: bool) -> Result<()> {
         if let Some(path) = &self.rdp_settings {
             ensure!(
                 path.is_absolute() && path.file_name().is_some(),
@@ -42,8 +42,8 @@ impl RdpConfig {
             "RDP is not compiled in; build with --features rdp (Rust 1.89+)"
         );
         ensure!(
-            !external_desktop,
-            "RDP is available only for the owned virtual desktop; external/physical sessions are read-only"
+            !desktop_restricted,
+            "RDP is unavailable for this desktop configuration"
         );
         ensure!(self.rdp_listen.port() != 0, "RDP port must not be zero");
         ensure!(
@@ -71,26 +71,23 @@ mod tests {
     fn rdp_is_disabled_and_loopback_by_default() {
         let config = Config::try_parse_from(["test", "--password", "some-long-secret"]).unwrap();
         assert!(!config.rdp.rdp);
+        if cfg!(any(target_os = "macos", target_os = "windows")) {
+            assert_eq!(config.rdp_unavailable_reason(), Some("native_opt_in"));
+        }
         assert!(config.rdp.rdp_listen.ip().is_loopback());
         assert_eq!(config.rdp.rdp_listen.port(), 3389);
         assert!(config.validate().is_ok());
     }
 
     #[test]
-    fn enabling_rdp_requires_feature_owned_desktop_and_complete_explicit_tls() {
+    fn enabling_rdp_requires_feature_eligible_desktop_and_complete_explicit_tls() {
         let mut config =
             Config::try_parse_from(["test", "--password", "some-long-secret", "--rdp"]).unwrap();
-        assert_eq!(
-            config.validate().is_ok(),
-            cfg!(all(feature = "rdp", target_os = "linux"))
-        );
+        assert_eq!(config.validate().is_ok(), cfg!(feature = "rdp"));
         config.rdp.rdp_tls_cert = Some(PathBuf::from("cert.pem"));
         assert!(config.validate().is_err());
         config.rdp.rdp_tls_key = Some(PathBuf::from("key.pem"));
-        assert_eq!(
-            config.validate().is_ok(),
-            cfg!(all(feature = "rdp", target_os = "linux"))
-        );
+        assert_eq!(config.validate().is_ok(), cfg!(feature = "rdp"));
         config.wayland_socket = Some(PathBuf::from("/tmp/physical-wayland"));
         assert!(config.validate().is_err());
         config.wayland_socket = None;

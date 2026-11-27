@@ -1,10 +1,9 @@
 # Optional RDP access
 
-The optional RDP server exposes the **same owned virtual Wayland desktop** as
-the browser. It uses IronRDP to encode the existing raw capture and forwards
-validated input through the existing Wayland backend. It does not start xrdp,
-Xorg, another compositor, or another desktop. The browser transport remains
-available; one browser or RDP connection may control the desktop at a time.
+An RDP client can control the service-owned virtual desktop on Linux or the
+authorized desktop of the logged-in user on macOS and Windows. The built-in
+IronRDP server uses the same capture and input backend as the browser. One
+browser or RDP connection can control a service instance at a time.
 
 RustDesk's RDP action is different: its client forwards a local TCP port through
 RustDesk to an existing RDP service (3389 by default), then launches an RDP
@@ -13,8 +12,7 @@ reference details are in [rustdesk-reference.md](rustdesk-reference.md).
 
 ## Build and configuration
 
-The published Linux binary includes RDP, with its listener disabled until
-configured. Source builds can omit it: RDP is an optional Cargo feature requiring
+The published Linux, macOS (Apple silicon and Intel), and Windows x64 hosts include RDP. Its listener is disabled by default. Source builds can omit it: RDP is an optional Cargo feature requiring
 Rust **1.89+** (IronRDP 0.13's minimum). Builds without it retain Rust 1.88 and their
 existing prerequisites. To build with RDP:
 
@@ -24,7 +22,7 @@ npm run build
 cargo build --release --locked --features bundled-jpeg,rdp
 ```
 
-Runtime RDP is off by default even in that binary. Open **Settings → RDP** to
+On an eligible host, open **Settings → RDP** to
 enable it or change its port (1–65535). Press Enter or leave the port field to
 apply it. Those are the only RDP controls; video quality remains negotiated with
 the RDP client. Toggling RDP or changing its port does not restart the HTTP server
@@ -58,8 +56,27 @@ export LIGHTOS_REMOTE_DESKTOP_AUTH_PASSWORD
 This is a transport startup example, not an instruction to replace/restart the
 current desktop owner or install a second service. `--wayland-socket` attaches
 an external/physical desktop and is deliberately rejected with RDP enabled.
-RDP supports the current Linux Wayland backend; other OS capture/input are not
-implemented by this feature.
+On macOS and Windows, the device owner can opt in by starting a standalone
+host with `serve --rdp` in the logged-in user's session. Grant the ordinary
+screen and input permissions for the host. Set `LIGHTOS_REMOTE_DESKTOP_AUTH_PASSWORD`
+in the host environment, then run the appropriate command from the installation directory.
+
+```powershell
+.\lightos-remoted.exe serve --listen 127.0.0.1 --rdp --rdp-listen 127.0.0.1:33890
+```
+
+```sh
+"./Lazycat Remote.app/Contents/MacOS/lightos-remoted" serve --listen 127.0.0.1 --rdp --rdp-listen 127.0.0.1:33890
+```
+
+The examples use a loopback port independent of Windows Remote Desktop Services.
+Use an authenticated tunnel to reach it from another computer. Connect with the
+application username (default `lightos`) and its configured password. For
+subsequent launches keep `--rdp` in the command. Settings saved by the user,
+including a disabled listener or a different port, take precedence. While the
+device-card service keeps its browser-driven lifetime, the standalone process
+owns its listener until shutdown. A change of authorized native screen ends
+the RDP connection; reconnect when the desired screen is available.
 
 | CLI option | Environment | Default |
 | --- | --- | --- |
@@ -105,7 +122,7 @@ The authenticated API is `GET`/`PUT <prefix>/api/rdp`. PUT accepts exactly
 the `X-LightOS-RDP: 1` header and same-origin checks equivalent to MCP management.
 GET returns feature availability, active status, port, actual bind endpoint and a
 public fingerprint; it never exposes a key. Builds without RDP report unsupported
-and reject updates. Enabling on an attached physical desktop is rejected.
+and reject updates. Attached Linux sessions and native services started without local RDP opt-in report the corresponding restriction.
 
 ## Connect
 
@@ -152,8 +169,8 @@ its protocol. Verify the RDP certificate even when using the tunnel.
   through validated `InputCommand`s. The compositor's existing keyboard layout
   applies to physical key events. Unknown vendor keys, relative-pointer mode,
   extra mouse buttons and client lock-state synchronization are unsupported.
-- Capture includes the compositor cursor; the RDP client pointer is hidden to
-  avoid duplicates. The cursor follows capture cadence, as it does in the browser.
+- Linux capture includes the compositor cursor. On macOS and Windows the client
+  uses its default pointer when the native backend supplies a separate cursor.
 - RDP audio, clipboard, files/drives, printer redirection, multiple monitors,
   client-requested resolution changes and Windows session management are not
   implemented. Continue using the browser path for its existing audio/clipboard

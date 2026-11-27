@@ -206,8 +206,14 @@ impl AppState {
     #[cfg(feature = "rdp")]
     pub(crate) fn claim_rdp_control(&self) -> anyhow::Result<ControllerLease> {
         anyhow::ensure!(
-            self.desktop == DesktopMode::Virtual,
-            "RDP cannot control a physical desktop"
+            self.config.rdp_unavailable_reason().is_none()
+                && (self.desktop == DesktopMode::Virtual
+                    || cfg!(any(target_os = "macos", target_os = "windows"))),
+            "RDP is unavailable for this desktop configuration"
+        );
+        anyhow::ensure!(
+            !self.input_failed() && !self.backend.is_stopped() && !self.backend.paused(),
+            "desktop control is unavailable"
         );
         anyhow::ensure!(
             self.controller

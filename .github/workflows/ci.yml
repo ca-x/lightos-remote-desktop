@@ -264,13 +264,11 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Native contracts, storage and installer unit tests
-        run: cargo test --locked -p lightos-remote-desktop --target ${{ matrix.target }} --features bundled-jpeg --lib
+        run: cargo test --locked -p lightos-remote-desktop --target ${{ matrix.target }} --features bundled-jpeg,rdp --lib
       - name: Native host lint
-        run: cargo clippy --locked -p lightos-remote-desktop --target ${{ matrix.target }} --features bundled-jpeg --all-targets -- -D warnings
-      - name: Optional RDP remains buildable and physical desktop restricted
-        run: cargo check --locked -p lightos-remote-desktop --target ${{ matrix.target }} --features bundled-jpeg,rdp
+        run: cargo clippy --locked -p lightos-remote-desktop --target ${{ matrix.target }} --features bundled-jpeg,rdp --all-targets -- -D warnings
       - name: Build native host
-        run: cargo build --release --locked -p lightos-remote-desktop --target ${{ matrix.target }} --features bundled-jpeg
+        run: cargo build --release --locked -p lightos-remote-desktop --target ${{ matrix.target }} --features bundled-jpeg,rdp
       - name: CLI smoke test
         shell: bash
         run: |
@@ -292,7 +290,7 @@ jobs:
         shell: bash
         run: |
           target=$(rustc -vV | sed -n 's/^host: //p')
-          python scripts/mcp-notices.py dist/native-runtime-notices.txt --target "$target" --features bundled-jpeg
+          python scripts/mcp-notices.py dist/native-runtime-notices.txt --target "$target" --features bundled-jpeg,rdp
           python scripts/package-native-host.py --target "$target" --notices dist/native-runtime-notices.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

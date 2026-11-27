@@ -85,6 +85,7 @@ describe("RDP settings", () => {
 
   it.each([
     [false, true, null, "This server build does not include RDP support."],
+    [true, false, "native_opt_in", "To configure RDP on this device, start a standalone desktop service locally with serve --rdp."],
     [true, false, "attached", "RDP is available only for the owned virtual desktop, not an attached physical desktop."],
     [true, false, "private_state", "RDP settings are unavailable. Check the server’s private state directory and its permissions."],
   ])("explains unavailable settings", async (supported, available, reason, message) => {

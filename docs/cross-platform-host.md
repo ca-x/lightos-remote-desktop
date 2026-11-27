@@ -149,9 +149,9 @@ replace the user's GUI session or TCC authorization.
   不会延长旧像素的有效时间。
 - Independent virtual desktops, virtual display drivers, Windows UAC/logon
   secure desktops and remote login before a GUI user session are outside this
-  implementation. Existing MCP/RDP physical-desktop control restrictions remain.
+  implementation. MCP keeps its physical-desktop restrictions. A locally configured standalone host can offer [optional RDP](rdp.md).
   本期不创建独立虚拟桌面、不安装虚拟显示驱动、不控制 Windows UAC/登录安全桌面，
-  也不代替 GUI 登录。保留现有 MCP/RDP 对物理桌面控制的限制。
+  也不代替 GUI 登录。物理桌面继续遵循 MCP 的访问限制，用户可在独立部署的主机上手动配置 [RDP](rdp.md)。
 
 ## Architecture and validation / 架构与验证
 

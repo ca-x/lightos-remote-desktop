@@ -92,11 +92,7 @@ pub(super) async fn start_with(state: AppState, settings: &super::RdpConfig) -> 
 
 pub(super) async fn prepare(state: AppState, settings: &super::RdpConfig) -> Result<RdpService> {
     state.config.validate()?;
-    settings.validate(
-        !cfg!(target_os = "linux")
-            || state.config.wayland_socket.is_some()
-            || state.config.x11_display.is_some(),
-    )?;
+    settings.validate(state.config.rdp_unavailable_reason().is_some())?;
     let mut cert_reader = BufReader::new(
         File::open(
             settings
@@ -204,12 +200,13 @@ async fn accept_connections(
         };
         stream.set_nodelay(true)?;
         let connection = Arc::new(Connection {
+            surface_epoch: state.backend.privacy_epoch(),
             state: state.clone(),
             authenticated: AtomicBool::new(false),
             control: Mutex::new(Control::default()),
             ready: Notify::new(),
             close: Notify::new(),
-            #[cfg(test)]
+            #[cfg(all(test, target_os = "linux"))]
             before_input_enqueue: Mutex::new(None),
         });
         let mut server = RdpServer::builder()
@@ -258,11 +255,12 @@ async fn accept_connections(
 
 struct Connection {
     state: AppState,
+    surface_epoch: u64,
     authenticated: AtomicBool,
     control: Mutex<Control>,
     ready: Notify,
     close: Notify,
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     before_input_enqueue: Mutex<Option<tests::InputPause>>,
 }
 
@@ -273,6 +271,20 @@ struct Control {
 }
 
 impl Connection {
+    fn check_surface(&self) -> Result<()> {
+        if cfg!(any(target_os = "windows", target_os = "macos")) {
+            let backend = &self.state.backend;
+            if backend.paused()
+                || backend.is_stopped()
+                || backend.privacy_epoch() != self.surface_epoch
+            {
+                self.close.notify_one();
+                anyhow::bail!("native desktop availability changed")
+            }
+        }
+        Ok(())
+    }
+
     fn deactivate(&self) -> Option<ControllerLease> {
         // IronRDP also dispatches input on blocking workers. Closing admission
         // under the enqueue lock puts every accepted event before ReleaseSync.
@@ -337,6 +349,7 @@ impl RdpServerDisplay for Display {
             self.connection.authenticated.load(Ordering::Acquire),
             "RDP credentials are required"
         );
+        self.connection.check_surface()?;
         let mut control = self.connection.control.lock().unwrap();
         if control.lease.is_none() {
             control.lease = Some(self.connection.state.claim_rdp_control()?);
@@ -344,33 +357,42 @@ impl RdpServerDisplay for Display {
         control.active = true;
         self.connection.ready.notify_one();
         Ok(Box::new(Updates {
+            connection: self.connection.clone(),
             frames: self.connection.state.backend.frames(),
             first: true,
-            hide_pointer: true,
+            initial_pointer: true,
             announced: self.announced.clone(),
         }))
     }
 }
 
 struct Updates {
+    connection: Arc<Connection>,
     frames: watch::Receiver<Option<Arc<Frame>>>,
     first: bool,
-    hide_pointer: bool,
+    initial_pointer: bool,
     announced: Arc<Mutex<Option<(u32, u32)>>>,
 }
 
 #[async_trait]
 impl RdpServerDisplayUpdates for Updates {
     async fn next_update(&mut self) -> Result<Option<DisplayUpdate>> {
-        if std::mem::take(&mut self.hide_pointer) {
-            // Capture already contains the compositor cursor, including its
-            // application-defined shape; avoid a second client-side pointer.
-            return Ok(Some(DisplayUpdate::HidePointer));
+        if std::mem::take(&mut self.initial_pointer) {
+            return Ok(Some(
+                if cfg!(any(target_os = "macos", target_os = "windows"))
+                    && !self.connection.state.backend.cursor_embedded()
+                {
+                    DisplayUpdate::DefaultPointer
+                } else {
+                    DisplayUpdate::HidePointer
+                },
+            ));
         }
         loop {
             if !self.first && self.frames.changed().await.is_err() {
                 return Ok(None);
             }
+            self.connection.check_surface()?;
             let Some(frame) = self.frames.borrow_and_update().clone() else {
                 self.first = false;
                 continue;
@@ -394,7 +416,9 @@ impl RdpServerDisplayUpdates for Updates {
                 })));
             }
             self.first = false;
-            return Ok(Some(DisplayUpdate::Bitmap(bitmap(frame)?)));
+            let update = bitmap(frame)?;
+            self.connection.check_surface()?;
+            return Ok(Some(DisplayUpdate::Bitmap(update)));
         }
     }
 }
@@ -436,10 +460,10 @@ impl Input {
             return;
         }
         let mut control = self.connection.control.lock().unwrap();
-        if !control.active {
+        if !control.active || self.connection.check_surface().is_err() {
             return;
         }
-        #[cfg(test)]
+        #[cfg(all(test, target_os = "linux"))]
         if let Some(pause) = self.connection.before_input_enqueue.lock().unwrap().take() {
             pause.wait();
         }

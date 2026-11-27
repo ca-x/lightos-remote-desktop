@@ -100,7 +100,7 @@ def build_windows():
         environment["LD_LIBRARY_PATH"] = str(Path(tools) / "lib") + os.pathsep + environment.get("LD_LIBRARY_PATH", "")
     environment["CARGO_TARGET_DIR"] = str(cache / "windows-target")
     command = ["cargo", "build"] if platform.system() == "Windows" else ["cargo", "xwin", "build"]
-    run(command + ["--release", "--locked", "--target", triples["win32-x64"], "--features", "bundled-jpeg", "--bin", "lightos-remoted"], environment=environment)
+    run(command + ["--release", "--locked", "--target", triples["win32-x64"], "--features", "bundled-jpeg,rdp", "--bin", "lightos-remoted"], environment=environment)
     directory = native / "win32-x64"
     if directory.exists(): shutil.rmtree(directory)
     directory.mkdir()
@@ -171,7 +171,7 @@ for target, triple in triples.items():
     team = directory / ".signing-team"
     if team.exists(): artifact["signing_team"] = team.read_text().strip()
     runtime_notices = cache / (target + "-NOTICE.txt")
-    run(["python3", str(repo / "scripts/mcp-notices.py"), str(runtime_notices), "--target", triple, "--features", "bundled-jpeg,rdp,portal" if target.startswith("linux") else "bundled-jpeg"])
+    run(["python3", str(repo / "scripts/mcp-notices.py"), str(runtime_notices), "--target", triple, "--features", "bundled-jpeg,rdp,portal" if target.startswith("linux") else "bundled-jpeg,rdp"])
     codec_notices = cache / (target + "-codec-NOTICE.txt")
     run(["python3", str(repo / "scripts/codec-worker-notices.py"), str(repo), str(codec_notices)])
     files = {str(p.relative_to(directory)): p for p in directory.rglob("*") if p.is_file() and not p.name.startswith(".")}

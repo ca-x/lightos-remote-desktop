@@ -611,10 +611,9 @@ fn run_capture(
         if surface == NativeSurface::LockScreen
             && ready.is_some()
             && platform.can_prepare_lock_display()
+            && let Some(ready) = ready.take()
         {
-            if let Some(ready) = ready.take() {
-                let _ = ready.send(Ok(()));
-            }
+            let _ = ready.send(Ok(()));
         }
         if surface == NativeSurface::LockScreen && platform.lock_display_asleep() {
             shared.pause();
@@ -1181,6 +1180,7 @@ mod tests {
             stopped: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             epoch: AtomicU64::new(0),
+            lock_screen: AtomicBool::new(false),
             frames,
             cursors: watch::channel(None).0,
             output: Mutex::new(output),
@@ -1193,20 +1193,30 @@ mod tests {
                 input_available: true,
                 started: Default::default(),
             }),
+            key: "test-session".into(),
             shared: shared.clone(),
             input,
             workers: Mutex::new(Vec::new()),
         };
         assert!(!backend.frame_is_fresh(Duration::from_secs(3)));
-        assert!(shared.publish(Frame::new(2, 2, vec![0; 16].into()), 0));
+        assert!(shared.publish(
+            Frame::new(2, 2, vec![0; 16].into()),
+            0,
+            NativeSurface::Desktop
+        ));
         assert!(backend.frame_is_fresh(Duration::from_secs(3)));
         shared.pause();
-        assert!(!shared.publish(Frame::new(2, 2, vec![0; 16].into()), 0));
+        assert!(!shared.publish(
+            Frame::new(2, 2, vec![0; 16].into()),
+            0,
+            NativeSurface::Desktop
+        ));
         assert!(backend.frames().borrow().is_none());
         backend.stop();
         assert!(!shared.publish(
             Frame::new(2, 2, vec![0; 16].into()),
-            shared.epoch.load(Ordering::Acquire)
+            shared.epoch.load(Ordering::Acquire),
+            NativeSurface::Desktop,
         ));
     }
     #[test]

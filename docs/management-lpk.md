@@ -64,6 +64,8 @@ Portal RemoteDesktop v2 支持时申请恢复令牌，只有系统在真实授�
 
 macOS 正式发布应配置稳定的签名身份，始终保持应用标识和签名团队，避免升级后重新申请系统权限；未配置时使用临时签名，仅适合开发。硬件编码依赖由 `config/codec-dependencies.json` 固定下载地址和摘要；Windows/Linux 使用 LGPL 共享库，macOS 从固定源码构建 VideoToolbox 所需的最小共享库并随应用签名。客户端无需自行安装 FFmpeg。构建产物和本机签名身份保存在忽略目录，不提交二进制或设备登录凭据。
 
-原生主机构建用 `cargo build --release --locked --features bundled-jpeg --bin lightos-remoted`，前端先执行 `npm run build`。Windows 使用静态 CRT，保证没有安装 VC++ 运行库的机器也能直接运行。使用 `RUSTFLAGS` 覆盖 Cargo 配置时，需同时保留 `.cargo/config.toml` 中的静态运行库选项。macOS 27 配合旧 Rust 编译器时，本机快速构建可设置 `CARGO_PROFILE_RELEASE_STRIP=none CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_DEBUG=2`，避免工具链裁剪编译期宏库导致的 LINKEDIT 错误。
+Windows 和 macOS 的原生主机构建用 `cargo build --release --locked --features bundled-jpeg,rdp --bin lightos-remoted`，前端先执行 `npm run build`。Windows 使用静态 CRT，保证没有安装 VC++ 运行库的机器也能直接运行。使用 `RUSTFLAGS` 覆盖 Cargo 配置时，需同时保留 `.cargo/config.toml` 中的静态运行库选项。macOS 27 配合旧 Rust 编译器时，本机快速构建可设置 `CARGO_PROFILE_RELEASE_STRIP=none CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_DEBUG=2`，避免工具链裁剪编译期宏库导致的 LINKEDIT 错误。
 
 人工验证未安装及关闭时设备可见、匹配平台下载、安装进度、版本差异、取消或确认运行中的更新、已关闭时直接更新、切换后的旧版本清理，以及权限申请、启停、实际画面和封面保留。macOS 和 Windows 分别记录真实交互会话；桌面浏览器的移动视口只能验证布局，不能算物理手机验证。不新增自动真机场景，也不把编译、HTTP 成功或只出现 Canvas 当作完整画面与输入验收通过。
+
+Windows x64 和 macOS 两种架构均内置 RDP，默认关闭。设备卡片按原方式打开桌面。需要 RDP 的用户可在被控机已登录的图形会话中设置环境变量 `LIGHTOS_REMOTE_DESKTOP_AUTH_PASSWORD`，然后以 `serve --listen 127.0.0.1 --rdp --rdp-listen 127.0.0.1:33890` 启动独立运行时，通过自己的端口转发连接。使用服务账号（默认 `lightos`）和上述密码登录。独立进程拥有该监听端口，退出进程会关闭端口。参见 [RDP 使用说明](rdp.md)。

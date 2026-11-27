@@ -28,6 +28,7 @@ fn fixture() -> (
 
 fn connection(state: AppState) -> Arc<Connection> {
     Arc::new(Connection {
+        surface_epoch: state.backend.privacy_epoch(),
         state,
         authenticated: AtomicBool::new(false),
         control: Mutex::new(Control::default()),
@@ -359,11 +360,12 @@ async fn credentials_gate_pixels_input_and_shared_browser_controller() {
 
 #[tokio::test]
 async fn display_uses_latest_raw_frame_and_resizes_before_new_geometry() {
-    let (_state, frames, _input) = fixture();
+    let (state, frames, _input) = fixture();
     let mut updates = Updates {
+        connection: connection(state),
         frames: frames.subscribe(),
         first: true,
-        hide_pointer: false,
+        initial_pointer: false,
         announced: Arc::new(Mutex::new(Some((320, 200)))),
     };
     let Some(DisplayUpdate::Bitmap(bitmap)) = updates.next_update().await.unwrap() else {

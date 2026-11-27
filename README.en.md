@@ -28,7 +28,9 @@ retains its existing virtual desktops and systemd services. See
   what happened and stops automatic reconnect; another takeover requires confirmation.
   Desktop applications keep running. Non-browser controllers must disconnect first.
 - Enable/disable TLS RDP and set its port in Settings → RDP, using the same
-  owned virtual desktop as the browser. It is off by default and retains the
+  desktop as the browser. Linux supports the owned virtual desktop. On Windows
+  and macOS, start a standalone host with `serve --rdp` to share the authorized
+  logged-in desktop. RDP is off by default and retains the
   loopback bind policy; use SSH forwarding for remote access. Settings shows the
   actual endpoint and TLS fingerprint. A private persistent TLS identity is
   generated when no certificate is configured; explicit certificates remain
@@ -283,7 +285,7 @@ change remote resolution. Clipboard and resolution fields are tucked away.
 Use a current stable Rust toolchain. Native linking requires Wayland,
 libxkbcommon, libpulse and libturbojpeg 3+, plus a C/C++ toolchain and NASM for
 source-built OpenH264 and libopus. `bundled-jpeg` statically bundles libjpeg-turbo
-and needs CMake/NASM. Official binaries enable `bundled-jpeg,rdp,portal`; building
+and needs CMake/NASM. Official Linux binaries enable `bundled-jpeg,rdp,portal`; building
 `portal` additionally requires PipeWire/SPA development headers, pkg-config and
 libclang, and the binary links `libpipewire-0.3.so.0` at runtime. Custom builds
 without that feature report Portal as unavailable.

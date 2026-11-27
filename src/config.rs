@@ -585,13 +585,19 @@ impl Config {
         Ok((width, height))
     }
 
+    pub(crate) fn rdp_unavailable_reason(&self) -> Option<&'static str> {
+        if self.on_demand_desktops() || self.wayland_socket.is_some() || self.x11_display.is_some()
+        {
+            Some("attached")
+        } else if cfg!(any(target_os = "macos", target_os = "windows")) && !self.rdp.rdp {
+            Some("native_opt_in")
+        } else {
+            None
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
-        self.rdp.validate(
-            !cfg!(target_os = "linux")
-                || self.on_demand_desktops()
-                || self.wayland_socket.is_some()
-                || self.x11_display.is_some(),
-        )?;
+        self.rdp.validate(self.rdp_unavailable_reason().is_some())?;
         #[cfg(not(target_os = "linux"))]
         ensure!(
             self.wayland_socket.is_none()

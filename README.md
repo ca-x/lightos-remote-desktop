@@ -16,7 +16,7 @@ Windows/macOS 物理桌面主机正在加入实验性支持：共用浏览器协
 
 - 紧凑工具栏提供显示、键盘、剪贴板和连接信息菜单；独立的设置窗口管理分辨率、编码、外观、MCP 和 RDP；「设置 → 关于」显示版本、许可证及项目链接。界面支持中文、英文或跟随浏览器，以及浅色、深色或跟随系统主题。偏好保存在本地，修改时无需重连；主题只影响控制界面，不改变远程桌面的画面。
 - 通过浏览器查看和控制桌面，支持身份认证和自动重连。其他浏览器窗口已连接时显示占用提示，确认「抢占画面」后断开原窗口并在当前窗口重新连接；取消不影响原连接。被接管的窗口显示原因并停止自动重连，可由用户再次确认抢占。桌面及应用保持运行；非浏览器控制端需先自行断开。
-- 在「设置 → RDP」中启用或关闭 TLS RDP，并设置端口，与浏览器共用同一个虚拟桌面。默认关闭，监听地址默认是回环地址；远程连接可通过 SSH 转发，具体地址和 TLS 指纹会显示在设置中。没有指定证书时自动生成并保存私有 TLS 身份，也支持显式配置证书。启停或更换端口不重启 HTTP 服务和桌面 owner；RDP 画质由客户端能力和协议协商决定，不受浏览器编码或画质设置影响。参见 [RDP 配置与限制](docs/rdp.md)。
+- 在「设置 → RDP」中启用或关闭 TLS RDP，并设置端口，与浏览器共用桌面。Linux 支持服务拥有的虚拟桌面。Windows 和 macOS 用户可在已登录的会话中以 `serve --rdp` 启动独立服务，共享已授权的本机桌面。RDP 默认关闭，监听地址默认是回环地址；远程连接可通过 SSH 转发，具体地址和 TLS 指纹会显示在设置中。没有指定证书时自动生成并保存私有 TLS 身份，也支持显式配置证书。启停或更换端口不重启 HTTP 服务和桌面 owner；RDP 画质由客户端能力和协议协商决定，不受浏览器编码或画质设置影响。参见 [RDP 配置与限制](docs/rdp.md)。
 - 可选 MCP Streamable HTTP 接口，使用独立的观察或控制 token。在「设置 → MCP」中创建或撤销 token，通过截图、鼠标和键盘工具操作现有桌面。默认关闭，参见 [MCP 接入与 Cua 兼容性](docs/mcp.md)。
 - 拖动悬浮工具栏手柄可将其停靠在屏幕任意边缘，位置保存在当前浏览器。菜单支持悬停切换、方向键导航和二级选项；全屏按钮位于工具栏右侧。点击手柄展开工具栏，也可聚焦手柄后用 Alt + 方向键停靠。菜单向屏幕内侧展开，在边缘自动避让，小窗口中可滚动；菜单和设置在全屏模式下仍可使用。
 - 点击页面的全屏按钮后，会通过浏览器 Keyboard Lock API 请求捕获所有可用按键，不依赖应用专用快捷键映射。此功能需要浏览器支持和授权，通常还需要 HTTPS 等安全上下文；系统或合成器保留的快捷键仍可能无法到达页面。失去焦点、断开连接或退出全屏时，会释放捕获和按住的按键。Ctrl + Alt + Shift + Esc 可释放捕获并打开工具栏，浏览器长按 Escape 退出全屏的功能也保留。
@@ -145,7 +145,7 @@ sudo ./lightos-remoted rollback-service
 
 桌面占满页面，右侧图标打开悬浮工具栏，通过图标提示和焦点标签识别操作。显示模式包括适应窗口、按配置分辨率以 1:1 显示并滚动，以及浏览器全屏。全屏时保留工具栏，Escape 恢复此前的窗口模式。默认跟随浏览器分辨率，在 250 ms 防抖后按有界、偶数的 CSS 像素尺寸调整桌面。手动指定分辨率或切换到 1:1 模式会关闭跟随；关闭后，只改变显示缩放不会调整远程分辨率。剪贴板与分辨率输入位于相应菜单或设置中。
 
-请使用当前稳定版 Rust。原生链接需要 Wayland、libxkbcommon、libpulse、libturbojpeg 3+，以及用于从源码构建 OpenH264 和 libopus 的 C / C++ 工具链与 NASM。`bundled-jpeg` feature 可静态内置 libjpeg-turbo，需要 CMake 和 NASM。正式二进制启用 `bundled-jpeg,rdp,portal`；`portal` 编译还需要 PipeWire / SPA 开发包、pkg-config 和 libclang，运行时动态链接 `libpipewire-0.3.so.0`。不启用此 feature 的自编译版本会明确报告 Portal 不可用。
+请使用当前稳定版 Rust。原生链接需要 Wayland、libxkbcommon、libpulse、libturbojpeg 3+，以及用于从源码构建 OpenH264 和 libopus 的 C / C++ 工具链与 NASM。`bundled-jpeg` feature 可静态内置 libjpeg-turbo，需要 CMake 和 NASM。Linux 正式二进制启用 `bundled-jpeg,rdp,portal`；`portal` 编译还需要 PipeWire / SPA 开发包、pkg-config 和 libclang，运行时动态链接 `libpipewire-0.3.so.0`。不启用此 feature 的自编译版本会明确报告 Portal 不可用。
 
 Ubuntu 22.04 的发布构建使用带 SHA-256 校验的 SPA 1.0.5 头文件，放在私有目录中，仍链接发行版自带的 PipeWire 库。系统自带的 SPA 0.3.48 头文件无法编译当前 Rust 绑定。参见[构建辅助脚本](.github/scripts/prepare-spa-build-sdk.sh)，通过导出的 `PKG_CONFIG_PATH` 选择构建头文件，无需更换运行库；发布包包含 SDK 来源、校验值和版权声明。
 

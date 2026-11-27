@@ -6,7 +6,7 @@ import { useAutoRefresh } from "./use-auto-refresh";
 type Status = {
   supported: boolean; available: boolean; enabled: boolean; port: number;
   endpoint: string; loopback: boolean; fingerprint: string | null; error: boolean;
-  unavailable_reason: "attached" | "private_state" | "stopping" | null;
+  unavailable_reason: "attached" | "native_opt_in" | "private_state" | "stopping" | null;
 };
 
 export function RdpSettings({ visible }: { visible: boolean }) {
@@ -68,7 +68,7 @@ export function RdpSettings({ visible }: { visible: boolean }) {
     else { portDirty.current = false; setError(""); }
   }
   const disabled = !status?.supported || !status.available || busy;
-  const unavailable = !status?.supported ? "rdpUnsupported" : status.unavailable_reason === "attached" ? "rdpAttached" : "rdpUnavailable";
+  const unavailable = !status?.supported ? "rdpUnsupported" : status.unavailable_reason === "native_opt_in" ? "rdpNativeOptIn" : status.unavailable_reason === "attached" ? "rdpAttached" : "rdpUnavailable";
 
   return <section className="settings-section" aria-label={t("rdpTitle")}>
     <h3>{t("rdpTitle")}</h3>

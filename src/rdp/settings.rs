@@ -52,7 +52,7 @@ pub struct Manager {
     #[cfg(feature = "rdp")]
     path: Option<PathBuf>,
     config: super::RdpConfig,
-    attached: bool,
+    desktop_restriction: Option<&'static str>,
     runtime: Mutex<Runtime>,
 }
 
@@ -94,10 +94,7 @@ impl Manager {
             #[cfg(feature = "rdp")]
             path,
             config: config.rdp.clone(),
-            attached: (!cfg!(target_os = "linux")
-                || config.on_demand_desktops()
-                || config.wayland_socket.is_some()
-                || config.x11_display.is_some()),
+            desktop_restriction: config.rdp_unavailable_reason(),
             runtime: Mutex::new(Runtime {
                 settings,
                 invalid_store,
@@ -113,7 +110,8 @@ impl Manager {
     /// A bad optional listener must not take down the browser or desktop owner.
     pub async fn initialize(&self, state: AppState) {
         let mut runtime = self.runtime.lock().await;
-        if runtime.invalid_store || !runtime.settings.enabled {
+        if self.desktop_restriction.is_some() || runtime.invalid_store || !runtime.settings.enabled
+        {
             return;
         }
         #[cfg(feature = "rdp")]
@@ -147,9 +145,11 @@ impl Manager {
         endpoint.set_port(runtime.settings.port);
         Status {
             supported: cfg!(feature = "rdp"),
-            available: !self.attached && !runtime.invalid_store && !runtime.stopping,
-            unavailable_reason: if self.attached {
-                Some("attached")
+            available: self.desktop_restriction.is_none()
+                && !runtime.invalid_store
+                && !runtime.stopping,
+            unavailable_reason: if let Some(reason) = self.desktop_restriction {
+                Some(reason)
             } else if runtime.invalid_store {
                 Some("private_state")
             } else if runtime.stopping {
@@ -165,7 +165,7 @@ impl Manager {
             fingerprint: runtime.fingerprint.clone(),
             error: runtime.invalid_store
                 || runtime.startup_error
-                || (runtime.settings.enabled && !enabled),
+                || (self.desktop_restriction.is_none() && runtime.settings.enabled && !enabled),
         }
     }
 
@@ -175,11 +175,14 @@ impl Manager {
 
     #[cfg(feature = "rdp")]
     async fn candidate(&self, state: AppState, settings: Settings) -> Result<super::RdpService> {
-        ensure!(!self.attached, "RDP requires an owned virtual desktop");
+        ensure!(
+            self.desktop_restriction.is_none(),
+            "RDP is unavailable for this desktop configuration"
+        );
         let mut config = self.config.clone();
         config.rdp = true;
         config.rdp_listen.set_port(settings.port);
-        config.validate(self.attached)?;
+        config.validate(self.desktop_restriction.is_some())?;
         if config.rdp_tls_cert.is_none() {
             let identity = self
                 .path
@@ -214,8 +217,8 @@ impl Manager {
             "RDP settings unavailable"
         );
         ensure!(
-            !settings.enabled || !self.attached,
-            "RDP requires an owned virtual desktop"
+            !settings.enabled || self.desktop_restriction.is_none(),
+            "RDP is unavailable for this desktop configuration"
         );
         #[cfg(feature = "rdp")]
         {
@@ -318,11 +321,7 @@ async fn update(State(state): State<AppState>, Json(settings): Json<Settings>) -
     if settings.port == 0 {
         return (StatusCode::BAD_REQUEST, "Port must be 1–65535").into_response();
     }
-    if settings.enabled
-        && (!cfg!(target_os = "linux")
-            || state.config.wayland_socket.is_some()
-            || state.config.x11_display.is_some())
-    {
+    if settings.enabled && state.rdp.desktop_restriction.is_some() {
         return StatusCode::CONFLICT.into_response();
     }
     // Finish the transaction even if a browser closes the settings tab mid-request.
