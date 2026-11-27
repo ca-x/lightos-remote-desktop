@@ -1,28 +1,11 @@
 //! Conservative Portal routing for an explicitly selected Wayland socket.
 //!
-//! xdg-desktop-portal's `register_portal` loads DBusName/Interfaces from .portal
-//! files; `xdp_portal_config_find_impl_config_by_iface` and the legacy fallbacks
-//! select only from that registry. Configuration cannot name an implementation
-//! outside it. We count every descriptor in a conservative search-path superset,
-//! including duplicate basenames: older frontends load only compiled DATADIR,
-//! while newer ones support XDG data paths and basename shadowing. A user file
-//! must not hide a competing system provider from this check. One provider for
-//! both interfaces therefore proves the same route on both frontend versions.
-//! See upstream desktop-portal/xdp-portal-config.c and older src/xdp-impl.c.
-//!
-//! Newer frontends (>= 1.17) first honor `portals.conf`: the `[preferred]`
-//! entry for the interface, then `default`, name the backend to select
-//! regardless of `UseIn`. We replicate the same search path and selection
-//! order, so a config that explicitly selects another backend in this session
-//! changes the admitted provider instead of validating the wrong one. Frontends
-//! <= 1.16 ignore that configuration, so a config-selected provider that a
-//! legacy frontend could not reach stays unavailable.
-//!
-//! Without configuration, upstream falls back to `UseIn`: a descriptor whose
-//! `UseIn` list does not name the frontend's `XDG_CURRENT_DESKTOP` is not a
-//! competing route. Distributions that install both xdg-desktop-portal-kde and
-//! xdg-desktop-portal-gnome (Ubuntu, Debian) would otherwise report two
-//! providers in a session where the frontend sees one.
+//! Older Portal frontends load only the compiled descriptor directory. Newer
+//! ones also load XDG data directories, where the first copy of each basename
+//! takes precedence. Configuration lookup and backend priority also differ
+//! across releases. Require the same route under those rules before accepting
+//! a compositor identity, since the D-Bus interfaces do not expose the actual
+//! backend selection.
 //!
 //! Scope still needs independent proof: the implementation's exact Wayland
 //! environment AND the selected listening socket must match the compositor
@@ -199,7 +182,8 @@ pub(super) async fn validate_target_identity(
     let mut snapshot = Snapshot::default();
     let descriptors = load_descriptors(&mut snapshot, &search.descriptor_directories(), started)?;
     let configs = load_configurations(&mut snapshot, &search, &desktops, started)?;
-    let provider = unique_provider(&descriptors, &configs, &desktops)?;
+    let registry = ProviderRegistry::new(&descriptors, &search.system_descriptor_directory());
+    let provider = registry.provider(&configs, &desktops)?;
     snapshot.verify()?;
 
     let implementation = peer(&bus, provider.bus_name(), uid).await?;
@@ -500,8 +484,8 @@ struct SearchPath {
     data_bases: Vec<PathBuf>,
 }
 impl SearchPath {
-    /// Base directories consulted for `portals.conf`, newest frontend first;
-    /// each one contributes at most one configuration file.
+    /// Base directories consulted for `portals.conf` in priority order.
+    /// Each directory contributes at most one configuration file.
     fn config_directories(&self) -> Vec<PathBuf> {
         match &self.override_directory {
             Some(directory) => vec![directory.clone()],
@@ -513,6 +497,15 @@ impl SearchPath {
                 .collect(),
         }
     }
+    fn system_descriptor_directory(&self) -> PathBuf {
+        self.override_directory.clone().unwrap_or_else(|| {
+            self.data_bases
+                .last()
+                .expect("the compiled-in data directory is always present")
+                .join("xdg-desktop-portal/portals")
+        })
+    }
+
     /// Directories holding `.portal` descriptors, in upstream load order;
     /// duplicate shadowed basenames stay observable.
     fn descriptor_directories(&self) -> Vec<PathBuf> {
@@ -594,6 +587,7 @@ fn search_paths(environment: &[u8], executable: &Path) -> Result<SearchPath> {
 
 #[derive(Debug)]
 struct Descriptor {
+    path: PathBuf,
     name: String,
     /// Descriptor basename without the `.portal` suffix: `portals.conf` names
     /// backends by this source, so shadowed duplicates must stay distinguishable.
@@ -673,6 +667,7 @@ fn parse_descriptor(path: &Path, bytes: Vec<u8>) -> Result<Descriptor> {
         interfaces.insert(interface.to_owned());
     }
     Ok(Descriptor {
+        path: path.to_owned(),
         name,
         source,
         interfaces,
@@ -680,153 +675,171 @@ fn parse_descriptor(path: &Path, bytes: Vec<u8>) -> Result<Descriptor> {
     })
 }
 
-/// Upstream admits the first route in its deterministic order; this check
-/// cannot reproduce directory iteration order on old frontends, so it only
-/// admits what is unique regardless of order.
+// The configured interfaces are public on the frontend, but neither exposes
+// its implementation's identity. Evaluate the registries independently so a
+// descriptor visible only to newer frontends cannot hide an older route.
+struct ProviderRegistry<'a> {
+    system: Vec<&'a Descriptor>,
+    xdg: Vec<&'a Descriptor>,
+}
+
+impl<'a> ProviderRegistry<'a> {
+    fn new(descriptors: &'a [Descriptor], system_directory: &Path) -> Self {
+        let mut sources = BTreeSet::new();
+        Self {
+            system: descriptors
+                .iter()
+                .filter(|descriptor| descriptor.path.parent() == Some(system_directory))
+                .collect(),
+            xdg: descriptors
+                .iter()
+                .filter(|descriptor| sources.insert(descriptor.source.as_str()))
+                .collect(),
+        }
+    }
+
+    fn provider(&self, configs: &[PortalConfiguration], desktops: &[String]) -> Result<Provider> {
+        let current =
+            |interface| select_name(&self.xdg, configs, desktops, interface, Selection::Listed);
+        let remote = current(REMOTE_DESKTOP)?;
+        let cast = current(SCREEN_CAST)?;
+        ensure!(
+            remote == cast,
+            "Portal capture and input use different implementations; their common session scope cannot be verified"
+        );
+        let first_config = configs.first().map_or(&[][..], std::slice::from_ref);
+        for (registry, configs, selection) in [
+            // 1.16 ignores portals.conf and falls back to any backend.
+            (&self.system, &[][..], Selection::Legacy),
+            // 1.18 treats configured backends as an allowlist.
+            (&self.system, first_config, Selection::Allowlist),
+            // 1.20 and 1.21 honor list order and load only one config.
+            (&self.system, first_config, Selection::Listed),
+            (&self.xdg, first_config, Selection::Listed),
+        ] {
+            for interface in [REMOTE_DESKTOP, SCREEN_CAST] {
+                let alternate = select_name(registry, configs, desktops, interface, selection)?;
+                ensure!(
+                    alternate == remote,
+                    "Portal frontend versions select different providers for {interface}; the capture session cannot be verified"
+                );
+            }
+        }
+        match remote {
+            "org.freedesktop.impl.portal.desktop.gnome" => Ok(Provider::Gnome),
+            "org.freedesktop.impl.portal.desktop.kde" => Ok(Provider::Kde),
+            _ => bail!(
+                "Portal provider has no verified compositor identity adapter; supported routes are GNOME and KDE"
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Selection {
+    Legacy,
+    Allowlist,
+    Listed,
+}
+
 fn unique_name<'a>(
     descriptors: impl IntoIterator<Item = &'a Descriptor>,
     interface: &str,
-) -> Result<&'a str> {
+) -> Result<Option<&'a str>> {
     let names = descriptors
         .into_iter()
-        .filter(|descriptor| descriptor.interfaces.contains(interface))
         .map(|descriptor| descriptor.name.as_str())
         .collect::<BTreeSet<_>>();
     ensure!(
-        names.len() == 1,
+        names.len() <= 1,
         "Portal requires one installed provider for {interface}; found {}",
         names.len()
     );
-    Ok(names.first().copied().unwrap_or_default())
+    Ok(names.first().copied())
 }
 
-fn provider_for(name: &str) -> Result<Provider> {
-    match name {
-        "org.freedesktop.impl.portal.desktop.gnome" => Ok(Provider::Gnome),
-        "org.freedesktop.impl.portal.desktop.kde" => Ok(Provider::Kde),
-        _ => bail!(
-            "Portal provider has no verified compositor identity adapter; supported routes are GNOME and KDE"
-        ),
-    }
-}
-
-/// The selection a configuration-aware frontend (>= 1.17) makes: the
-/// interface-specific `[preferred]` entry, then `default`, naming a backend
-/// regardless of `UseIn`; only then the `UseIn` fallback.
-fn configured_provider(
-    descriptors: &[Descriptor],
+fn select_name<'a>(
+    registry: &[&'a Descriptor],
     configs: &[PortalConfiguration],
     desktops: &[String],
-) -> Result<Option<Provider>> {
-    let select = |interface: &str| -> Result<String> {
-        for config in configs {
-            let preferred = config.preferred.get(interface).or(config.default.as_ref());
-            if let Some(backends) = preferred {
-                ensure!(
-                    !backends.iter().any(|backend| backend == "none"),
-                    "Portal configuration explicitly disables {interface}; its capture session cannot be verified"
-                );
+    interface: &str,
+    selection: Selection,
+) -> Result<&'a str> {
+    let candidates: Vec<_> = registry
+        .iter()
+        .copied()
+        .filter(|descriptor| descriptor.interfaces.contains(interface))
+        .collect();
+    for config in configs {
+        let preferred = config.preferred.get(interface);
+        let default = config.default.as_ref();
+        if let Some(backends) = preferred.or(default) {
+            ensure!(
+                !backends.iter().any(|backend| backend == "none"),
+                "Portal configuration explicitly disables {interface}; its capture session cannot be verified"
+            );
+        }
+
+        if matches!(selection, Selection::Allowlist) {
+            if let Some(backends) = preferred.or(default)
+                && let Some(name) = unique_name(
+                    candidates.iter().copied().filter(|descriptor| {
+                        backends
+                            .iter()
+                            .any(|backend| backend == "*" || backend == &descriptor.source)
+                    }),
+                    interface,
+                )?
+            {
+                return Ok(name);
+            }
+        } else {
+            for backends in preferred.into_iter().chain(default) {
                 for backend in backends {
                     if backend == "*" {
-                        return Ok(unique_name(descriptors, interface)?.to_owned());
+                        if let Some(name) = unique_name(candidates.iter().copied(), interface)? {
+                            return Ok(name);
+                        }
+                        break;
                     }
-                    let named: Vec<_> = descriptors
-                        .iter()
-                        .filter(|descriptor| descriptor.source == *backend)
-                        .collect();
-                    if named.is_empty() {
-                        continue;
+                    if let Some(name) = unique_name(
+                        candidates
+                            .iter()
+                            .copied()
+                            .filter(|descriptor| &descriptor.source == backend),
+                        interface,
+                    )? {
+                        return Ok(name);
                     }
-                    return Ok(unique_name(named, interface)?.to_owned());
                 }
             }
         }
-        // With an unidentifiable desktop the frontend behaves like the legacy
-        // generation and may reach any descriptor; refuse unless that set is
-        // unambiguous, rather than admitting nothing.
-        if desktops.is_empty() {
-            return Ok(unique_name(descriptors, interface)?.to_owned());
-        }
-        let admitted = descriptors
-            .iter()
-            .filter(|descriptor| {
-                let Some(use_in) = &descriptor.use_in else {
-                    return false;
-                };
-                desktops
-                    .iter()
-                    .any(|desktop| use_in.contains(desktop.as_str()))
-            })
-            .collect::<Vec<_>>();
-        if !admitted.is_empty() {
-            return Ok(unique_name(admitted, interface)?.to_owned());
-        }
-        // Last resort upstream is the gtk backend, which this check cannot
-        // verify; anything else here is a foreign provider.
-        bail!(
-            "Portal has no provider for the active desktop ({}); {} installed descriptors do not list it in UseIn",
-            desktops.join(":"),
-            descriptors.len()
-        )
-    };
-    let remote = select(REMOTE_DESKTOP)?;
-    let cast = select(SCREEN_CAST)?;
-    ensure!(
-        remote == cast,
-        "Portal capture and input use different implementations; their common session scope cannot be verified"
-    );
-    provider_for(&remote).map(Some)
-}
+    }
 
-/// Frontends <= 1.16 ignore `portals.conf` and route through `UseIn`, falling
-/// back to any installed descriptor when nothing matches; an unidentifiable
-/// desktop also ends up there.
-fn legacy_provider(descriptors: &[Descriptor], desktops: &[String]) -> Result<Option<Provider>> {
-    let mut admitted: Vec<&Descriptor> = Vec::new();
-    for desktop in desktops {
-        for descriptor in descriptors {
-            if descriptor
-                .use_in
-                .as_ref()
-                .is_some_and(|use_in| use_in.contains(desktop.as_str()))
-            {
-                admitted.push(descriptor);
-            }
-        }
-        if !admitted.is_empty() {
-            break;
-        }
+    // All releases check UseIn per interface. Keep all matching desktop names
+    // as candidates so an ambiguous list does not require guessing the order.
+    let matching = candidates.iter().copied().filter(|descriptor| {
+        descriptor
+            .use_in
+            .as_ref()
+            .is_some_and(|use_in| desktops.iter().any(|desktop| use_in.contains(desktop)))
+    });
+    if let Some(name) = unique_name(matching, interface)? {
+        return Ok(name);
     }
-    if admitted.is_empty() {
-        admitted = descriptors.iter().collect();
-    }
-    let remote = unique_name(admitted.iter().copied(), REMOTE_DESKTOP)?;
-    let cast = unique_name(admitted.iter().copied(), SCREEN_CAST)?;
-    ensure!(
-        remote == cast,
-        "Portal capture and input use different implementations; their common session scope cannot be verified"
-    );
-    provider_for(remote).map(Some)
-}
 
-fn unique_provider(
-    descriptors: &[Descriptor],
-    configs: &[PortalConfiguration],
-    desktops: &[String],
-) -> Result<Provider> {
-    let provider = configured_provider(descriptors, configs, desktops)?;
-    if !configs.is_empty() {
-        // A frontend older than portals.conf still routes through UseIn. Only
-        // admit the configuration when both generations would reach the same
-        // provider; otherwise the validated identity could differ from the
-        // backend the running frontend actually calls.
-        let legacy = legacy_provider(descriptors, desktops)?;
-        ensure!(
-            legacy == provider,
-            "portals.conf selects a different provider than the deprecated UseIn fallback; frontends too old for portals.conf would route elsewhere"
-        );
+    // Only the legacy frontend falls back to any backend; newer ones can fall
+    // back to GTK. When the desktop is unknown, retaining the full candidate
+    // set also keeps a possible GTK route in the check.
+    if matches!(selection, Selection::Legacy) || desktops.is_empty() {
+        return unique_name(candidates, interface)?
+            .with_context(|| format!("Portal has no installed provider for {interface}"));
     }
-    provider.context("Portal has no provider for the active desktop")
+    bail!(
+        "Portal has no provider for the active desktop ({}); {} installed descriptors do not list it in UseIn or implement {interface}",
+        desktops.join(":"),
+        registry.len()
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1011,69 +1024,81 @@ fn load_descriptors(
     Ok(descriptors)
 }
 
-/// One `portals.conf` file as a newer frontend reads it: every `[preferred]`
-/// key maps to an ordered, lowercase backend list. GLib keeps the first value
-/// of a duplicate key, and only the first `default` entry becomes the catch
-/// all; duplicate sections merge.
+/// A `portals.conf` file's case-sensitive `[preferred]` entries. GLib
+/// merges repeated groups and reads the last value for duplicate keys.
 #[derive(Debug, Default)]
 struct PortalConfiguration {
     preferred: BTreeMap<String, Vec<String>>,
     default: Option<Vec<String>>,
 }
-fn parse_configuration(_path: &Path, bytes: Vec<u8>) -> Result<Option<PortalConfiguration>> {
+fn parse_configuration(bytes: Vec<u8>) -> Result<Option<PortalConfiguration>> {
     let text = String::from_utf8(bytes).context("Portal configuration is not UTF-8")?;
     let mut preferred: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut default = None;
+    let mut section_seen = false;
+    let mut preferred_seen = false;
     let mut in_preferred = false;
+    ensure!(
+        !text.contains('\0'),
+        "Portal configuration contains a NUL byte"
+    );
     for (number, raw) in text.lines().enumerate() {
-        let line = raw.trim();
+        let line = raw.trim_ascii_start();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
         if let Some(section) = line
+            .trim_ascii_end()
             .strip_prefix('[')
             .and_then(|line| line.strip_suffix(']'))
         {
-            in_preferred = section.trim().eq_ignore_ascii_case("preferred");
+            ensure!(
+                !section.is_empty() && !section.contains(['[', ']']),
+                "invalid Portal configuration group on line {}",
+                number + 1
+            );
+            section_seen = true;
+            in_preferred = section == "preferred";
+            preferred_seen |= in_preferred;
             continue;
         }
+        let (key, value) = line.split_once('=').with_context(|| {
+            format!(
+                "invalid Portal configuration line {}: expected key=value",
+                number + 1
+            )
+        })?;
+        let key = key.trim_ascii_end();
+        ensure!(
+            section_seen && !key.is_empty(),
+            "invalid Portal configuration key on line {}",
+            number + 1
+        );
         if !in_preferred {
             continue;
         }
-        let Some((key, value)) = line.split_once('=') else {
-            bail!(
-                "invalid Portal configuration line {}: expected key=value",
-                number + 1
-            );
-        };
-        let key = key.trim();
         ensure!(
-            !key.is_empty(),
-            "invalid Portal configuration line {}: empty key",
+            !key.contains(['[', ']']) && !value.contains('\\'),
+            "Portal configuration has a localized key or escaped backend list on line {}; its route cannot be verified",
             number + 1
         );
-        let backends: Vec<String> = value
+        let backends = value
+            .trim_ascii_start()
             .split(';')
-            .map(str::trim)
             .filter(|backend| !backend.is_empty())
-            .map(str::to_ascii_lowercase)
+            .map(str::to_owned)
             .collect();
         if key == "default" {
-            if default.is_none() {
-                default = Some(backends);
-            }
-            continue;
+            default = Some(backends);
+        } else {
+            preferred.insert(key.to_owned(), backends);
         }
-        preferred.entry(key.to_owned()).or_insert(backends);
     }
-    if preferred.is_empty() && default.is_none() {
-        return Ok(None);
-    }
-    Ok(Some(PortalConfiguration { preferred, default }))
+    Ok(preferred_seen.then_some(PortalConfiguration { preferred, default }))
 }
 
 /// The configuration files a newer frontend consults, in its search order.
-/// Every directory contributes at most one file: the first existing
+/// Every directory contributes at most one file: the first applicable
 /// `<desktop>-portals.conf` in desktop order, else `portals.conf`. Absent
 /// files and absent parent directories are still observed, so creating either
 /// one later invalidates this snapshot.
@@ -1112,12 +1137,12 @@ fn load_configurations(
                 "Portal configuration is not a regular file"
             );
             if let Some(configuration) =
-                parse_configuration(&path, read_bounded(&path, MAX_DESCRIPTOR_BYTES)?)
+                parse_configuration(read_bounded(&path, MAX_DESCRIPTOR_BYTES)?)
                     .with_context(|| format!("read Portal configuration {}", path.display()))?
             {
                 configurations.push(configuration);
+                found = Some(());
             }
-            found = Some(());
         }
     }
     Ok(configurations)
@@ -1156,6 +1181,14 @@ mod tests {
     use super::*;
     use std::fs::{File, FileTimes};
 
+    fn unique_provider(
+        descriptors: &[Descriptor],
+        configs: &[PortalConfiguration],
+        desktops: &[String],
+    ) -> Result<Provider> {
+        ProviderRegistry::new(descriptors, Path::new("")).provider(configs, desktops)
+    }
+
     fn descriptor(name: &str, interfaces: &[&str]) -> Descriptor {
         descriptor_for(name, interfaces, None)
     }
@@ -1184,7 +1217,6 @@ mod tests {
     }
     fn configuration(entries: &[(&str, &str)]) -> PortalConfiguration {
         parse_configuration(
-            Path::new("portals.conf"),
             entries
                 .iter()
                 .fold("[preferred]\n".to_owned(), |text, (key, value)| {
@@ -1356,7 +1388,7 @@ mod tests {
             unique_provider(&descriptors, std::slice::from_ref(&config), &desktops)
                 .unwrap_err()
                 .to_string()
-                .contains("portals.conf selects a different provider")
+                .contains("Portal frontend versions select different providers")
         );
         // Old frontends cannot reach the configured route either; when the
         // legacy fallback would agree, the configuration is honored.
@@ -1398,7 +1430,7 @@ mod tests {
             unique_provider(&descriptors, std::slice::from_ref(&config), &desktops)
                 .unwrap_err()
                 .to_string()
-                .contains("portals.conf selects a different provider")
+                .contains("Portal frontend versions select different providers")
         );
         // A later configuration is consulted when an earlier one does not
         // cover the interface, mirroring the newest frontend.
@@ -1555,7 +1587,8 @@ mod tests {
     fn inventory(directories: &[PathBuf], desktops: &[String]) -> Result<(Provider, Snapshot)> {
         inventory_with_start(directories, SystemTime::now() + Duration::from_secs(2)).and_then(
             |(descriptors, snapshot)| {
-                let provider = unique_provider(&descriptors, &[], desktops)?;
+                let provider = ProviderRegistry::new(&descriptors, directories.last().unwrap())
+                    .provider(&[], desktops)?;
                 Ok((provider, snapshot))
             },
         )
@@ -1595,18 +1628,10 @@ mod tests {
         // an old frontend ignores it and uses system desktop.portal (KDE).
         write_provider(&user, Provider::Gnome.bus_name());
         write_provider(&system, Provider::Kde.bus_name());
-        fs::write(
-            system.join("gnome.portal"),
-            format!(
-                "[portal]\nDBusName={}\nInterfaces={REMOTE_DESKTOP};{SCREEN_CAST};\n",
-                Provider::Gnome.bus_name()
-            ),
-        )
-        .unwrap();
         let error = inventory(&[user, system], &desktops(&[]))
             .unwrap_err()
             .to_string();
-        assert!(error.contains(REMOTE_DESKTOP) && error.contains("found 2"));
+        assert!(error.contains("Portal frontend versions select different providers"));
     }
 
     #[test]
@@ -1654,6 +1679,11 @@ mod tests {
         let started = SystemTime::now() + Duration::from_secs(2);
         let (_, snapshot) = inventory(&[root.path().to_owned()], &desktops(&[])).unwrap();
         fs::write(root.path().join("new.portal"), "new provider").unwrap();
+        // Directory writes can share a filesystem clock tick.
+        File::open(root.path())
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(started + Duration::from_secs(1)))
+            .unwrap();
         assert!(
             snapshot
                 .verify()
@@ -1708,8 +1738,8 @@ mod tests {
         assert_eq!(configs[0].default, Some(vec!["kde".to_owned()]));
         assert_eq!(configs[1].default, Some(vec!["kde".to_owned()]));
         snapshot.verify().unwrap();
-        // A file without a [preferred] group is ignored like upstream, but a
-        // desktop-specific file still shadows the generic one in that directory.
+        // A file without a [preferred] group is skipped, allowing the next
+        // desktop-specific configuration in the directory to take effect.
         fs::write(
             user.join("xdg-desktop-portal/kde-portals.conf"),
             "[other]\ndefault=kde;\n",
@@ -1723,8 +1753,9 @@ mod tests {
             started,
         )
         .unwrap();
-        assert_eq!(configs.len(), 1);
-        assert_eq!(configs[0].default, Some(vec!["kde".to_owned()]));
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[0].default, Some(vec!["gnome".to_owned()]));
+        assert_eq!(configs[1].default, Some(vec!["kde".to_owned()]));
         // Appearing and disappearing configuration is caught by the snapshot.
         fs::remove_file(user.join("xdg-desktop-portal/gnome-portals.conf")).unwrap();
         assert!(
@@ -1734,14 +1765,11 @@ mod tests {
                 .to_string()
                 .contains("changed during target validation")
         );
-        // The duplicate `default` keeps its first value, as GLib reads it.
-        let config = parse_configuration(
-            Path::new("portals.conf"),
-            b"[preferred]\ndefault=kde;\ndefault=gnome;\n".to_vec(),
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(config.default, Some(vec!["kde".to_owned()]));
+        // GKeyFile lookups return the last value of a duplicate key.
+        let config = parse_configuration(b"[preferred]\ndefault=kde;\ndefault=gnome;\n".to_vec())
+            .unwrap()
+            .unwrap();
+        assert_eq!(config.default, Some(vec!["gnome".to_owned()]));
     }
 
     #[test]
